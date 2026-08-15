@@ -26,7 +26,7 @@ jobs:
       # компілюються нормально. Якщо якийсь optional-модуль раптом не збереться,
       # npm НЕ впаде (optional), тож інсталятор усе одно вийде.
       - name: Install dependencies
-        run: npm install
+        run: npm install --omit=optional --no-audit --no-fund
 
       - name: Run smoke tests
         run: npm test
