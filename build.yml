@@ -1,0 +1,40 @@
+name: Build Windows Installer
+
+# Запускається, коли ви пушите тег виду v2.0.1 (або вручну через кнопку Run workflow).
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # потрібно, щоб викласти .exe у Releases
+
+jobs:
+  build-win:
+    runs-on: windows-latest   # раннер Windows має Python + VS Build Tools для ATEM
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Повний install: optionalDependencies (atem-connection, onvif) тут
+      # компілюються нормально. Якщо якийсь optional-модуль раптом не збереться,
+      # npm НЕ впаде (optional), тож інсталятор усе одно вийде.
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run smoke tests
+        run: npm test
+
+      # electron-builder бере owner/repo з "publish" у package.json і
+      # використовує GH_TOKEN, щоб залити .exe та latest.yml (автооновлення)
+      # до релізу з відповідним тегом.
+      - name: Build & publish Windows installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run publish-win
