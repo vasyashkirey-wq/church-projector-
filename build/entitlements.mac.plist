@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Electron/V8 потребує JIT та виконання неписаної пам'яті -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <!-- Дозволяє завантажувати нативні модулі (напр. atem-connection), які
+         можуть бути не підписані тим самим сертифікатом -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- Мережа: HTTP API та WebSocket-пульт для телефонів/Stream Deck -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

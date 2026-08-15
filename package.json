@@ -1,0 +1,76 @@
+{
+  "name": "church-projector",
+  "version": "2.0.1",
+  "description": "Церква Прага — Панель керування проектором",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build-mac": "electron-builder --mac",
+    "build-win": "electron-builder --win",
+    "publish-win": "electron-builder --win --publish always",
+    "publish-mac": "electron-builder --mac --publish always",
+    "test": "node tools/smoke-test.js"
+  },
+  "build": {
+    "appId": "com.church.projector",
+    "productName": "Церква Проектор",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerLanguages": [
+        "uk_UA",
+        "ru_RU",
+        "en_US"
+      ],
+      "language": "1058"
+    },
+    "files": [
+      "main.js",
+      "src/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "vasyashkirey-wq",
+        "repo": "church-projector"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "electron-updater": "^6.1.0",
+    "ffmpeg-static": "^5.2.0",
+    "heic-convert": "^2.1.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vasyashkirey-wq/church-projector.git"
+  },
+  "optionalDependencies": {
+    "atem-connection": "^3.8.0",
+    "onvif": "^0.7.1"
+  }
+}
