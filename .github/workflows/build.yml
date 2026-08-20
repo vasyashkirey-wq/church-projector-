@@ -50,8 +50,13 @@ jobs:
         with:
           node-version: '20'
 
+      # На відміну від Windows-джоби, тут НЕ пропускаємо optionalDependencies:
+      # dmg-builder (частина electron-builder) залежить від dmg-license, який
+      # сам є optional-пакетом — без нього збірка .dmg падає з "Cannot find
+      # module 'dmg-license'". atem-connection/onvif теж спокійно компілюються
+      # на macOS.
       - name: Install dependencies
-        run: npm install --omit=optional --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
       - name: Run smoke tests
         run: npm test
