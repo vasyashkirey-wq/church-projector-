@@ -278,6 +278,44 @@ body.modern-ui ::-webkit-scrollbar-thumb { background:rgba(255,255,255,.14); bor
 body.modern-ui ::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.24); }
 body.modern-ui #modernUIBtn { border-color:var(--accent); color:#fff; background:linear-gradient(135deg,rgba(124,92,255,.3),rgba(79,155,255,.2)); }
 
+/* ===== СВІТЛА ТЕМА (перемикач ☀️/🌙 у топбарі) ===== */
+body.light-theme {
+  --bg:#f3f5fa; --panel:#ffffff; --panel2:#eef1f7;
+  --text:#1a1d26; --text2:#5b6478;
+  --border:#dde2ec;
+}
+body.light-theme { background:var(--bg); color:var(--text); }
+body.light-theme .topbar { background:#ffffff; border-bottom:1px solid var(--border); }
+body.light-theme .sidebar { background:#f7f9fd; border-right:1px solid var(--border); }
+body.light-theme .card { background:#ffffff; border:1px solid var(--border); box-shadow:0 1px 3px rgba(20,25,45,.06); }
+body.light-theme .btn-ghost { background:#f2f4f9; border:1px solid var(--border); color:var(--text); }
+body.light-theme .btn-ghost:hover { background:#e8ecf4; }
+body.light-theme input, body.light-theme select, body.light-theme textarea { background:#ffffff; color:var(--text); border:1px solid var(--border); }
+body.light-theme .tab-btn { color:var(--text2); }
+body.light-theme .tab-btn.active { color:var(--text); background:#eef1f8; }
+/* Світла + сучасна разом */
+body.light-theme.modern-ui { --panel:#ffffff; --panel2:#f0f3fa; --text:#171a24; --text2:#556; --border:#e3e8f2; background:radial-gradient(1000px 500px at 85% -10%, rgba(124,92,255,.08), transparent 60%), var(--bg) !important; }
+body.light-theme.modern-ui .card { background:#ffffff; box-shadow:0 6px 22px rgba(30,35,60,.08); }
+/* Світла тема — решта куточків */
+body.light-theme .badge.accent { background:#ece9ff; color:#6a5ae0; border-color:#c9c0ff; }
+body.light-theme input[type="range"] { accent-color:#6a5ae0; }
+body.light-theme ::-webkit-scrollbar-thumb { background:#c6cfe0; border-radius:8px; }
+body.light-theme ::-webkit-scrollbar-track { background:#eef1f7; }
+body.light-theme .pdf-drop { background:#f7f9fd; border-color:#ccd5e6; color:var(--text2); }
+body.light-theme .pdf-drop:hover { background:#eef2fa; }
+body.light-theme .modal h2 { color:var(--text); }
+body.light-theme hr { border-color:var(--border); }
+body.light-theme .topbar input, body.light-theme .topbar select { background:#ffffff; color:var(--text); }
+body.light-theme .topbar button { color:var(--text2); }
+body.light-theme .btn-block { color:var(--text); }
+/* «скляні» напівпрозорі-білі елементи сучасної теми стають субтильно-сірими, а не невидимими */
+body.light-theme.modern-ui .btn-ghost { background:#f2f4f9; border-color:#e0e5f0; }
+body.light-theme.modern-ui .btn-ghost:hover { background:#e9edf6; }
+body.light-theme.modern-ui .topbar { background:rgba(255,255,255,.85); }
+body.light-theme.modern-ui .sidebar { background:rgba(247,249,253,.9); }
+body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,rgba(124,92,255,.14),rgba(79,155,255,.1)); color:var(--text); }
+/* Прев'ю проектора (.preview-box) навмисно лишається темним — це імітація екрана в залі */
+
 </style>
 </head>
 <body>
@@ -838,6 +876,15 @@ body.modern-ui #modernUIBtn { border-color:var(--accent); color:#fff; background
               <div id="bibleImportMsg" class="mt8"></div>
               <div class="card-title" style="margin-top:14px">Завантажені переклади</div>
               <div id="bibleTranslationsList"><p class="text-muted">Тільки вбудований УКБ</p></div>
+              <div style="margin-top:12px;padding:10px;background:linear-gradient(135deg,rgba(124,92,255,.10),rgba(79,155,255,.06));border:1px solid var(--accent);border-radius:8px">
+                <div style="font-size:12px;color:var(--text);margin-bottom:8px">🛟 <b>Щоб не втратити переклади при оновленні</b> — збережи їх у файл, а після оновлення завантаж назад:</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  <button class="btn btn-ghost btn-sm" onclick="exportTranslations()">💾 Зберегти всі переклади у файл</button>
+                  <button class="btn btn-ghost btn-sm" onclick="document.getElementById('translImportInput').click()">📂 Відновити переклади з файлу</button>
+                  <input type="file" id="translImportInput" accept=".json" style="display:none" onchange="importTranslations(this)">
+                </div>
+                <div id="translBackupMsg" style="font-size:12px;margin-top:6px"></div>
+              </div>
             </div>
 
             <div class="card">
@@ -1379,6 +1426,17 @@ body.modern-ui #modernUIBtn { border-color:var(--accent); color:#fff; background
                 <button class="btn btn-ghost btn-sm" onclick="atemCmd({type:'usk-type',keyer:1,keyType:1})">🟢 K2 → хромакей</button>
                 <button class="btn btn-ghost btn-sm" onclick="atemCmd({type:'usk-toggle',keyer:1})">K2 увімк/вимк</button>
               </div>
+              <div class="card-title" style="margin-top:10px;font-size:13px">🎛 Тонке налаштування (кеєр K1)</div>
+              <div style="font-size:11px;color:var(--text2);margin-bottom:6px">Спершу «🎯 Взяти зелений», далі підкрути повзунки, якщо по краях лишається зелень або зникає одяг.</div>
+              <button class="btn btn-ghost btn-sm btn-block" onclick="atemCmd({type:'chroma-sample',keyer:0})">🎯 Взяти зелений з центру кадру</button>
+              <div style="font-size:11px;margin-top:8px">Поріг переднього плану (одяг/людина)
+                <input type="range" min="0" max="100" value="50" style="width:100%" oninput="atemCmd({type:'chroma-adv',keyer:0,foregroundLevel:+this.value})"></div>
+              <div style="font-size:11px;margin-top:6px">Поріг фону (прибрати зелень)
+                <input type="range" min="0" max="100" value="50" style="width:100%" oninput="atemCmd({type:'chroma-adv',keyer:0,backgroundLevel:+this.value})"></div>
+              <div style="font-size:11px;margin-top:6px">Мʼякість країв
+                <input type="range" min="0" max="100" value="30" style="width:100%" oninput="atemCmd({type:'chroma-adv',keyer:0,keyEdge:+this.value})"></div>
+              <div style="font-size:11px;margin-top:6px">Прибрати зелений відблиск (спіл)
+                <input type="range" min="0" max="100" value="50" style="width:100%" oninput="atemCmd({type:'chroma-adv',keyer:0,spillSuppress:+this.value})"></div>
 
               <div class="card-title" style="margin-top:12px">🎞 Медіаплеєри / заставки</div>
               <div style="font-size:11px;color:var(--text2);margin-bottom:6px">Вивести заставку з медіаплеєра ATEM (відлік/титли) у прев'ю або одразу в ефір.</div>
@@ -3299,6 +3357,43 @@ function loadBibleTranslations() {
   refreshTranslationSelector();
 }
 
+// Експорт УСІХ імпортованих перекладів у один файл (щоб не втратити при оновленні).
+function exportTranslations() {
+  var msg = document.getElementById('translBackupMsg');
+  try {
+    var ids = Object.keys(bibleTranslations || {});
+    if (!ids.length) { if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'Немає імпортованих перекладів'; } return; }
+    var blob = new Blob([JSON.stringify(bibleTranslations)], { type: 'application/json' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'church_translations_' + new Date().toISOString().split('T')[0] + '.json';
+    a.click();
+    if (msg) { msg.style.color = 'var(--green)'; msg.textContent = '✓ Збережено ' + ids.length + ' перекладів. Тримай цей файл — після оновлення відновиш ним.'; }
+  } catch(e) { if (msg) { msg.style.color = 'var(--red)'; msg.textContent = '✗ ' + e.message; } }
+}
+// Відновлення перекладів із файлу (доливає до наявних).
+function importTranslations(input) {
+  var file = input.files[0];
+  if (!file) return;
+  var msg = document.getElementById('translBackupMsg');
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var data = JSON.parse(e.target.result);
+      if (!data || typeof data !== 'object') throw new Error('невірний формат файлу');
+      bibleTranslations = bibleTranslations || {};
+      var added = 0;
+      Object.keys(data).forEach(function(id) { bibleTranslations[id] = data[id]; added++; });
+      safeSet(BIBLE_TRANSLATIONS_KEY, JSON.stringify(bibleTranslations));
+      renderBibleTranslationsList();
+      refreshTranslationSelector();
+      if (msg) { msg.style.color = 'var(--green)'; msg.textContent = '✓ Відновлено ' + added + ' перекладів'; }
+    } catch(err) { if (msg) { msg.style.color = 'var(--red)'; msg.textContent = '✗ ' + err.message; } }
+    input.value = '';
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
 function refreshTranslationSelector() {
   // Якщо переклад ще не обрано, а імпортовані є — беремо перший
   var ids = Object.keys(bibleTranslations);
@@ -3945,7 +4040,7 @@ function deleteAnnounce(id) {
 
 function renderAnnounceList() {
   var el = document.getElementById('announceList');
-  if (!announcements.length) { el.innerHTML = '<p class="text-muted">Немає збережених оголошень</p>'; return; }
+  if (!announcements || !announcements.length) { el.innerHTML = '<p class="text-muted">Немає збережених оголошень</p>'; return; }
   el.innerHTML = '';
   announcements.forEach(function(a) {
     var s = ANN_STYLES[a.style] || ANN_STYLES.dark;
@@ -4043,7 +4138,7 @@ var _annSlideshowTimer = null;
 var _annSlideshowIdx = 0;
 function startAnnounceSlideshow() {
   stopAnnounceSlideshow();
-  if (!announcements.length) { notify('⚠️ Немає збережених оголошень для слайд-шоу'); return; }
+  if (!announcements || !announcements.length) { notify('⚠️ Немає збережених оголошень для слайд-шоу'); return; }
   var secInput = document.getElementById('annSlideshowSec');
   var sec = Math.max(3, parseInt(secInput && secInput.value, 10) || 10);
   _annSlideshowIdx = 0;
@@ -4145,7 +4240,7 @@ function renderBuiltinBgGrid() {
 
 function renderUserBgGrid() {
   var grid = document.getElementById('userBgGrid');
-  if (!userBgs.length) { grid.innerHTML = '<p class="text-muted">Завантажте фото зверху</p>'; return; }
+  if (!userBgs || !userBgs.length) { grid.innerHTML = '<p class="text-muted">Завантажте фото зверху</p>'; return; }
   grid.innerHTML = '';
   userBgs.forEach(function(bg) {
     var div = document.createElement('div');
@@ -4552,6 +4647,7 @@ function loadThemeBgImage(input) {
   var file = input.files[0];
   if (!file) return;
   loadImageAsDataURL(file, function(dataUrl) {
+    if (!theme || typeof theme !== 'object') theme = {};
     theme.bgImage = dataUrl;
     theme.bgType = 'image';
     updateThemePreview();
@@ -4572,6 +4668,8 @@ function onBgTypeChange() {
 }
 
 function onThemeChange() {
+  if (!theme || typeof theme !== 'object') theme = {};   // захист: theme завжди об'єкт
+  if (!document.getElementById('themeBgType')) return;    // елементів ще немає — виходимо
   theme.bgType = document.getElementById('themeBgType').value;
   theme.bgColor = document.getElementById('themeBgColor').value;
   theme.textColor = document.getElementById('themeTextColor').value;
@@ -4756,7 +4854,7 @@ if (window.electronAPI) {
 
   // Load saved theme
   window.electronAPI.getTheme().then(function(t) {
-    if (t) { theme = t; syncThemeUI(); updateThemePreview(); }
+    if (t && typeof t === 'object') { theme = Object.assign({}, theme, t); syncThemeUI(); updateThemePreview(); }
   });
 }
 
@@ -5156,23 +5254,38 @@ function restoreAllOld_UNUSED(input) {
   reader.onload = function(e) {
     try {
       var data = JSON.parse(e.target.result);
-      if (!data.version) throw new Error('Невідомий формат');
+      // Приймаємо БУДЬ-ЯКИЙ наш експорт: повний бекап {version,songs,…},
+      // експорт пісень {songs:[…]} або просто масив пісень.
+      if (Array.isArray(data)) data = { songs: data };
       var restored = [];
-      if (data.songs) { currentSongs = data.songs; saveSongs(currentSongs); restored.push('пісні (' + data.songs.length + ')'); }
+      if (data.songs && data.songs.length) {
+        currentSongs = data.songs.map(function(s){
+          return {
+            id: (s.id != null) ? s.id : (Date.now() + Math.random()),
+            title: s.title || s.name || '',
+            author: s.author || '',
+            verses: Array.isArray(s.verses) ? s.verses : String(s.verses || '').split(/\r?\n\s*\r?\n/)
+          };
+        }).filter(function(s){ return s.title && s.verses.length; });
+        saveSongs(currentSongs); restored.push('пісні (' + currentSongs.length + ')');
+      }
       if (data.announcements) { announcements = data.announcements; safeSet('church_announcements', JSON.stringify(announcements)); restored.push('оголошення'); }
       if (data.customSlides) { customSlides = data.customSlides; safeSet('church_custom_slides', JSON.stringify(customSlides)); restored.push('слайди'); }
-      if (data.theme) { theme = data.theme; syncThemeUI(); updateThemePreview(); if (window.electronAPI) window.electronAPI.setTheme(theme); restored.push('тема'); }
+      if (data.theme) { theme = data.theme; if (typeof syncThemeUI === 'function') syncThemeUI(); if (typeof updateThemePreview === 'function') updateThemePreview(); if (window.electronAPI) window.electronAPI.setTheme(theme); restored.push('тема'); }
       if (data.qrPresets) { safeSet('church_qr_presets', JSON.stringify(data.qrPresets)); restored.push('QR'); }
+      if (!restored.length) throw new Error('у файлі не знайдено даних для відновлення');
       msg.style.color = 'var(--green)';
-      msg.textContent = '✓ Відновлено: ' + restored.join(', ') + '. Збережено ' + (data.date || '').split('T')[0];
-      renderAllSongs(); renderAnnounceList(); renderCustomSlides();
+      msg.textContent = '✓ Відновлено: ' + restored.join(', ') + (data.date ? ('. Збережено ' + String(data.date).split('T')[0]) : '');
+      if (typeof renderAllSongs === 'function') renderAllSongs();
+      if (typeof renderAnnounceList === 'function') renderAnnounceList();
+      if (typeof renderCustomSlides === 'function') renderCustomSlides();
     } catch(err) {
       msg.style.color = 'var(--red)';
       msg.textContent = '✗ Помилка: ' + err.message;
     }
     input.value = '';
   };
-  reader.readAsText(file);
+  readTextCompatInto(reader, file);  // з резервним кодуванням
 }
 
 // ============================================================
@@ -5187,7 +5300,10 @@ function startSyncServer() {
   window.electronAPI.startSyncServer().then(function(result) {
     syncMode = 'server';
     var el = document.getElementById('syncStatus');
-    if (el) el.innerHTML = '✓ Сервер запущено<br><b style="color:var(--accent)">' + result.ip + ':' + result.port + '</b>';
+    var ips = (result.ips && result.ips.length) ? result.ips : [result.ip];
+    if (el) el.innerHTML = '✓ Сервер запущено. На 2-му ПК введи одну з цих адрес:<br>' +
+      ips.map(function(a){ return '<b style="color:var(--accent);font-size:15px">' + a + ':' + result.port + '</b>'; }).join('<br>') +
+      '<br><span style="color:var(--text2);font-size:12px">Якщо не під\'єднується — на цьому ПК дозволь застосунку зв\'язок у брандмауері Windows (спливне вікно — тисни «Дозволити»), обидва ПК в одній мережі (Wi-Fi/кабель).</span>';
     document.getElementById('syncServerCard').style.display = 'block';
     generateSyncQR('http://' + result.ip + ':' + result.port + '/sync');
   });
@@ -5641,7 +5757,28 @@ function importBibleAny(input) {
     msg.style.color = 'var(--red)';
     msg.textContent = '✗ Не вдалось прочитати файл';
   };
-  reader.readAsText(file, 'utf-8');
+  readTextCompatInto(reader, file);  // з резервним кодуванням
+}
+
+// Читання тексту з резервним кодуванням (windows-1251) — для кириличних файлів,
+// збережених не в UTF-8 (щоб імпорт не давав «кракозябри»). Мердж із доопрацювання.
+function readTextCompat(file, done) {
+  var r = new FileReader();
+  r.onload = function(e) {
+    var bytes = new Uint8Array(e.target.result), text = '';
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch (_) { try { text = new TextDecoder('windows-1251').decode(bytes); } catch (__) { text = ''; } }
+    done(text);
+  };
+  r.onerror = function() { done(null); };
+  r.readAsArrayBuffer(file);
+}
+// Адаптер: годує наявний FileReader.onload декодованим текстом (без переписування логіки)
+function readTextCompatInto(reader, file) {
+  readTextCompat(file, function(text) {
+    if (text == null) { if (reader.onerror) reader.onerror(); return; }
+    if (reader.onload) reader.onload({ target: { result: text } });
+  });
 }
 
 function importSongsAny(input) {
@@ -5705,7 +5842,7 @@ function importSongsAny(input) {
       finish();
     };
     reader.onerror = function() { failed++; finish(); };
-    reader.readAsText(file, 'utf-8');
+    readTextCompatInto(reader, file);  // з резервним кодуванням
   });
 }
 

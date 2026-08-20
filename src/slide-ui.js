@@ -388,21 +388,17 @@ renderCustomSlides();
 renderSlideCanvas();
 
 // Drag & drop for PDF
-// Захист: якщо розмітку #pdfDrop колись приберуть/перейменують, модуль не має
-// падати на завантаженні (це обірвало б решту slide-ui.js). Тому — null-guard.
 var drop = document.getElementById('pdfDrop');
-if (drop) {
-  drop.addEventListener('dragover', function(e){ e.preventDefault(); drop.style.borderColor='var(--accent)'; });
-  drop.addEventListener('dragleave', function(){ drop.style.borderColor=''; });
-  drop.addEventListener('drop', function(e){
-    e.preventDefault();
-    drop.style.borderColor='';
-    var file = e.dataTransfer.files[0];
-    if (file && file.type === 'application/pdf') {
-      var dt = new DataTransfer();
-      dt.items.add(file);
-      var inp = document.getElementById('pdfInput');
-      if (inp) { inp.files = dt.files; loadPDF(inp); }
-    }
-  });
-}
+drop.addEventListener('dragover', function(e){ e.preventDefault(); drop.style.borderColor='var(--accent)'; });
+drop.addEventListener('dragleave', function(){ drop.style.borderColor=''; });
+drop.addEventListener('drop', function(e){
+  e.preventDefault();
+  drop.style.borderColor='';
+  var file = e.dataTransfer.files[0];
+  if (file && file.type === 'application/pdf') {
+    var dt = new DataTransfer();
+    dt.items.add(file);
+    document.getElementById('pdfInput').files = dt.files;
+    loadPDF(document.getElementById('pdfInput'));
+  }
+});

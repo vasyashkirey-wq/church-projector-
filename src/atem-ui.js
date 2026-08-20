@@ -147,48 +147,55 @@ if (window.electronAPI && window.electronAPI.onAtemStatus) {
     setAtemStatus(data.connected, data.connected ? 'Підключено' : 'Відключено');
     if (data.connected) showAtemControls(true);
   });
-  window.electronAPI.onAtemState(function(state) {
-    var pgm = document.getElementById('atemPgm');
-    var pvw = document.getElementById('atemPvw');
-    if (pgm) pgm.textContent = state.program ? (atemInputLabels[state.program-1] || ('Вхід ' + state.program)) : '–';
-    if (pvw) pvw.textContent = state.preview ? (atemInputLabels[state.preview-1] || ('Вхід ' + state.preview)) : '–';
-    // Tally: запам'ятовуємо, який вхід в ефірі, і оновлюємо підсвітку камер
-    window._atemPgmInput = state.program || 0;
-    if (typeof ptzRenderTabs === 'function') ptzRenderTabs();
-    // Підтягуємо назви входів, задані на самому ATEM (KAZATEL/PREHLED/…)
-    if (state.inputs && Object.keys(state.inputs).length) {
-      var changed = false;
-      for (var k in state.inputs) { if (atemDeviceLabels[k] !== state.inputs[k]) { atemDeviceLabels[k] = state.inputs[k]; changed = true; } }
-      if (changed && typeof renderAtemInputs === 'function') renderAtemInputs();
-    }
-    // Жива підсвітка кнопок входів (як лампочки на пульті): PGM — червоний, PVW — зелений
-    for (var _i = 1; _i <= atemInputLabels.length; _i++) {
-      var _pg = document.getElementById('atemPgmBtn-' + _i);
-      if (_pg) { _pg.style.background = (state.program === _i) ? '#f56565' : ''; _pg.style.color = (state.program === _i) ? '#fff' : ''; }
-      var _pv = document.getElementById('atemPvwBtn-' + _i);
-      if (_pv) { _pv.style.background = (state.preview === _i) ? '#3ecf8e' : ''; _pv.style.color = (state.preview === _i) ? '#0a2a1a' : ''; }
-    }
-    var recStatus = document.getElementById('atemRecordStatus');
-    if (recStatus) recStatus.textContent = state.recording ? '⏺ Запис іде...' : '⏹ Запис зупинено';
-    // Підсвічуємо активні накладки/FTB червоним, показуємо стан трансляції
-    var ftbBtn = document.getElementById('atemFtbBtn');
-    if (ftbBtn) ftbBtn.style.background = state.ftb ? '#f56565' : '';
-    var uskBtn = document.getElementById('atemUskBtn');
-    if (uskBtn) uskBtn.style.background = (state.usks && state.usks[0]) ? '#f56565' : '';
-    var dskBtn = document.getElementById('atemDskBtn');
-    if (dskBtn) dskBtn.style.background = (state.dsks && state.dsks[0] && state.dsks[0].onAir) ? '#f56565' : '';
-    var streamStatus = document.getElementById('atemStreamStatus');
-    if (streamStatus) streamStatus.textContent = state.streaming ? '📡 Трансляція йде...' : '';
-    // Список макросів ATEM за назвою (клік — запуск)
-    var macroBox = document.getElementById('atemMacroList');
-    if (macroBox) {
-      if (state.macros && state.macros.length) {
-        macroBox.innerHTML = state.macros.map(function(mm){
-          return '<button class="btn btn-ghost btn-sm" style="margin:2px" onclick="atemCmd({type:\'macro-run\',index:' + mm.index + '})">▶ ' + (mm.name ? mm.name.replace(/[<>&]/g, '') : ('Макрос ' + (mm.index + 1))) + '</button>';
-        }).join('');
-      } else {
-        macroBox.innerHTML = '<span style="font-size:11px;color:var(--text2)">Немає збережених макросів на ATEM</span>';
+  window.electronAPI.onAtemState(function(rawState) {
+    window._lastAtemState = rawState;
+    window._atemPgmInput = rawState.program || 0;
+    // Throttle: перемальовуємо не частіше ~4 разів/сек, і НЕ чіпаємо DOM, поки
+    // курсор у полі вводу — щоб набір тексту не «викидувало» (важливо на Windows).
+    if (window._atemRenderPending) return;
+    window._atemRenderPending = true;
+    setTimeout(function() {
+      window._atemRenderPending = false;
+      var _ae = document.activeElement;
+      if (_ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA' || _ae.tagName === 'SELECT')) return;
+      var state = window._lastAtemState;
+      if (!state) return;
+      var pgm = document.getElementById('atemPgm');
+      var pvw = document.getElementById('atemPvw');
+      if (pgm) pgm.textContent = state.program ? (atemInputLabels[state.program-1] || ('Вхід ' + state.program)) : '–';
+      if (pvw) pvw.textContent = state.preview ? (atemInputLabels[state.preview-1] || ('Вхід ' + state.preview)) : '–';
+      if (typeof ptzRenderTabs === 'function') ptzRenderTabs();
+      if (state.inputs && Object.keys(state.inputs).length) {
+        var changed = false;
+        for (var k in state.inputs) { if (atemDeviceLabels[k] !== state.inputs[k]) { atemDeviceLabels[k] = state.inputs[k]; changed = true; } }
+        if (changed && typeof renderAtemInputs === 'function') renderAtemInputs();
       }
-    }
+      for (var _i = 1; _i <= atemInputLabels.length; _i++) {
+        var _pg = document.getElementById('atemPgmBtn-' + _i);
+        if (_pg) { _pg.style.background = (state.program === _i) ? '#f56565' : ''; _pg.style.color = (state.program === _i) ? '#fff' : ''; }
+        var _pv = document.getElementById('atemPvwBtn-' + _i);
+        if (_pv) { _pv.style.background = (state.preview === _i) ? '#3ecf8e' : ''; _pv.style.color = (state.preview === _i) ? '#0a2a1a' : ''; }
+      }
+      var recStatus = document.getElementById('atemRecordStatus');
+      if (recStatus) recStatus.textContent = state.recording ? '⏺ Запис іде...' : '⏹ Запис зупинено';
+      var ftbBtn = document.getElementById('atemFtbBtn');
+      if (ftbBtn) ftbBtn.style.background = state.ftb ? '#f56565' : '';
+      var uskBtn = document.getElementById('atemUskBtn');
+      if (uskBtn) uskBtn.style.background = (state.usks && state.usks[0]) ? '#f56565' : '';
+      var dskBtn = document.getElementById('atemDskBtn');
+      if (dskBtn) dskBtn.style.background = (state.dsks && state.dsks[0] && state.dsks[0].onAir) ? '#f56565' : '';
+      var streamStatus = document.getElementById('atemStreamStatus');
+      if (streamStatus) streamStatus.textContent = state.streaming ? '📡 Трансляція йде...' : '';
+      var macroBox = document.getElementById('atemMacroList');
+      if (macroBox) {
+        if (state.macros && state.macros.length) {
+          macroBox.innerHTML = state.macros.map(function(mm){
+            return '<button class="btn btn-ghost btn-sm" style="margin:2px" onclick="atemCmd({type:\'macro-run\',index:' + mm.index + '})">▶ ' + (mm.name ? mm.name.replace(/[<>&]/g, '') : ('Макрос ' + (mm.index + 1))) + '</button>';
+          }).join('');
+        } else {
+          macroBox.innerHTML = '<span style="font-size:11px;color:var(--text2)">Немає збережених макросів на ATEM</span>';
+        }
+      }
+    }, 250);
   });
 }

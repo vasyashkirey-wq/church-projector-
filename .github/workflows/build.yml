@@ -1,4 +1,4 @@
-name: Build Windows Installer
+name: Build Desktop Installers (Windows + macOS)
 
 # Запускається, коли ви пушите тег виду v2.0.1 (або вручну через кнопку Run workflow).
 on:
@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # потрібно, щоб викласти .exe у Releases
+  contents: write   # потрібно, щоб викласти .exe/.dmg у Releases
 
 jobs:
   build-win:
@@ -38,3 +38,30 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run publish-win
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install --omit=optional --no-audit --no-fund
+
+      - name: Run smoke tests
+        run: npm test
+
+      # Apple-акаунта (сертифіката Developer ID) поки немає, тому збірка
+      # непідписана: CSC_IDENTITY_AUTO_DISCOVERY=false вимикає спроби
+      # electron-builder знайти сертифікат і підписати застосунок під час
+      # збірки в CI. Як відкрити непідписаний .dmg на Mac — див. macOS-ЗАПУСК.md.
+      - name: Build & publish macOS app (.dmg + .zip)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run publish-mac
