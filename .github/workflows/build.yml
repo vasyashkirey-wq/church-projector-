@@ -24,25 +24,15 @@ jobs:
 
       # atem-connection (optionalDependencies) тягне нативний модуль
       # @julusian/freetype2, який electron-builder перекомпільовує під ABI
-      # Electron. Без явно виставленого VS-оточення node-gyp на актуальному
-      # windows-latest не завжди вміє знайти компілятор ("could not find any
-      # Visual Studio installation") — цей крок фіксує це раз і назавжди.
-      - name: Setup MSVC dev environment
-        uses: ilammy/msvc-dev-cmd@v1
-
-      # node-gyp, вбудований у npm, ще не вміє розпізнавати номер версії
-      # найновішої Visual Studio на цьому раннері ("unknown version" при
-      # парсингу) — навіть коли компілятор знайдено. Свіжий node-gyp це знає.
-      - name: Update node-gyp
-        run: |
-          npm install -g node-gyp@latest
-          npm config set node-gyp "$(npm root -g)\node-gyp\bin\node-gyp.js"
-
-      # Повний install: optionalDependencies (atem-connection, onvif) тут
-      # компілюються нормально. Якщо якийсь optional-модуль раптом не збереться,
-      # npm НЕ впаде (optional), тож інсталятор усе одно вийде.
+      # Electron. На поточному образі windows-latest node-gyp не може ні
+      # знайти, ні розпізнати версію встановленої Visual Studio (перевірено:
+      # ілammy/msvc-dev-cmd + свіжий node-gyp обидва не допомогли — 2026-08-20),
+      # тож інсталятор збирається БЕЗ optionalDependencies. Це означає, що
+      # керування ATEM-мікшером і ONVIF/PTZ-камерами не працюватиме в .exe,
+      # зібраному цим workflow, поки хтось не розбереться з нативною збіркою
+      # на Windows-раннері. npm НЕ впаде через це (пакети optional).
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm install --omit=optional --no-audit --no-fund
 
       - name: Run smoke tests
         run: npm test
