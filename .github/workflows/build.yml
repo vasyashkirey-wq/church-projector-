@@ -30,6 +30,14 @@ jobs:
       - name: Setup MSVC dev environment
         uses: ilammy/msvc-dev-cmd@v1
 
+      # node-gyp, вбудований у npm, ще не вміє розпізнавати номер версії
+      # найновішої Visual Studio на цьому раннері ("unknown version" при
+      # парсингу) — навіть коли компілятор знайдено. Свіжий node-gyp це знає.
+      - name: Update node-gyp
+        run: |
+          npm install -g node-gyp@latest
+          npm config set node-gyp "$(npm root -g)\node-gyp\bin\node-gyp.js"
+
       # Повний install: optionalDependencies (atem-connection, onvif) тут
       # компілюються нормально. Якщо якийсь optional-модуль раптом не збереться,
       # npm НЕ впаде (optional), тож інсталятор усе одно вийде.
