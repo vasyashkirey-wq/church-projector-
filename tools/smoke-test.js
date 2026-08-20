@@ -628,7 +628,7 @@ head('PTZ протокол');
   else bad('немає назв камер');
   if (/ipcMain\.handle\(\s*'ptz-snapshot'/.test(m) && /function ptzSnapshot/.test(SRC.extras) && /id="ptzSnapImg"/.test(SRC.index)) ok('живе прев\'ю з камери (знімок JPEG + автооновлення)');
   else bad('немає прев\'ю з камери');
-  if (/_atemPgmInput = state\.program/.test(SRC.extras) && /c\.atemInput === window\._atemPgmInput/.test(SRC.extras) && /id="ptzAtemInput"/.test(SRC.index)) ok('tally — підсвітка камери, що в ефірі ATEM (🔴)');
+  if (/_atemPgmInput = (raw)?[Ss]tate\.program/.test(SRC.extras) && /c\.atemInput === window\._atemPgmInput/.test(SRC.extras) && /id="ptzAtemInput"/.test(SRC.index)) ok('tally — підсвітка камери, що в ефірі ATEM (🔴)');
   else bad('немає tally');
   if (/function ptzPresetName/.test(SRC.extras) && /presetNames/.test(SRC.extras) && /pv2Prompt/.test(SRC.extras)) ok('назви пресетів камери (Кафедра/Хор замість 1-9, через pv2Prompt)');
   else bad('немає назв пресетів');
@@ -727,6 +727,9 @@ head('План служби');
   if (/function songOrder/.test(A) && /state\.chorusEach\[songKey\(song\)\]/.test(A) && /chorusEach\['ord_'/.test(A))
     ok('план служби враховує аранжування (songOrder застосовує chorusEach; кеш інвалідується)');
   else bad('план служби може ігнорувати аранжування');
+  if (/function toggleArrangeGlobal/.test(A) && /state\.arrangeGlobal/.test(A) && /\|\| state\.arrangeGlobal/.test(A) && /church_arrange_global/.test(A))
+    ok('глобальне аранжування: увімкнув раз — приспів після кожного для ВСІХ пісень');
+  else bad('немає глобального аранжування');
   if (/isActive\('service'\)[\s\S]{0,400}svcGoTo/.test(A)) ok('цифри 1-9 → пункт плану служби');
   else bad('немає хоткеїв плану');
 })();
@@ -810,6 +813,47 @@ head('Захист від відсутньої розмітки');
     if (!usesInput || guarded) ok('slide-ui: доступ до #pdfInput у drop-обробнику захищено');
     else bad('slide-ui: #pdfInput читається без перевірки на null у drop-обробнику');
   }
+})();
+
+// ── Виправлення (ввід / тема / відновлення) ─────────────────────────────────
+head('Виправлення багів');
+(function () {
+  const ix = SRC.index, ex = SRC.extras;
+  if (/_atemRenderPending/.test(ex) && /activeElement/.test(ex) && /INPUT.*TEXTAREA.*SELECT|TEXTAREA/.test(ex))
+    ok('onAtemState throttled + не чіпає DOM під час набору (фікс лагів/фокуса)');
+  else bad('onAtemState не захищено — можливі лаги й «викидування» вводу');
+  if (/body\.light-theme\s*\{[\s\S]{0,80}--bg/.test(ix) && /body\.light-theme \.badge\.accent/.test(ix) && /body\.light-theme input\[type="range"\]/.test(ix))
+    ok('світла тема доведена до куточків (badge/повзунки/скролбар/drop/скло)');
+  else bad('світла тема неповна');
+  if (/function onThemeChange\(\)\s*\{\s*if \(!theme/.test(ix) && /if \(!document\.getElementById\('themeBgType'\)\) return/.test(ix))
+    ok('тема захищена від undefined (немає крашу «Cannot set bgType»)');
+  else bad('onThemeChange не захищено від undefined theme');
+  if (/if \(!announcements \|\| !announcements\.length\)/.test(ix) && /if \(!userBgs \|\| !userBgs\.length\)/.test(ix))
+    ok("порожні оголошення/фони не крашать (.length захищено від undefined)");
+  else bad("порожні масиви можуть крашити на .length");
+  if (/function readTextCompat/.test(ix) && /windows-1251/.test(ix) && /readTextCompatInto/.test(ix))
+    ok("імпорт із резервним кодуванням windows-1251 (мердж доопрацювання)");
+  else bad("немає резервного кодування");
+  if (/function exportTranslations/.test(ix) && /function importTranslations/.test(ix) && /church_translations_/.test(ix))
+    ok("експорт/імпорт перекладів Біблії у файл (не втратити при оновленні)");
+  else bad("немає збереження перекладів у файл");
+  if (/Наступний пункт/.test(SRC.extras)) ok("велика кнопка «Наступний пункт» плану");
+  else bad("немає помітної кнопки наступного пункту");
+  if (/case 'chroma-adv'/.test(SRC.main) && /case 'chroma-sample'/.test(SRC.main) && /setUpstreamKeyerAdvancedChromaProperties/.test(SRC.main) && /type:'chroma-sample'/.test(ix))
+    ok("тонке налаштування хромакею (поріг/краї/спіл + семпл кольору)");
+  else bad("немає тонкого налаштування хромакею");
+  if (/allow="autoplay; encrypted-media/.test(SRC.extras) && /autoplayPolicy: 'no-user-gesture-required'/.test(SRC.main))
+    ok('YouTube: allow=encrypted-media + autoplayPolicy (фікс помилки 153)');
+  else bad('YouTube-embed без allow/autoplay — можлива помилка 153');
+  if (/if \(Array\.isArray\(data\)\) data = \{ songs: data \}/.test(ix) && /у файлі не знайдено даних/.test(ix))
+    ok('відновлення приймає будь-який наш експорт (бекап / пісні / масив)');
+  else bad('відновлення бекапу негнучке — round-trip може не працювати');
+  if (/function __applyFields/.test(SRC.formats) && /el\.tagName === 'IMG'/.test(SRC.formats) && /backgroundImage/.test(SRC.formats))
+    ok('HTML-графіка: лого/зображення підставляється (img.src або фон), не лише текст');
+  else bad('HTML-графіка: лого може не з\'являтись');
+  if (/function getAllLocalIPs/.test(SRC.main) && /VirtualBox|vEthernet/.test(SRC.main) && /result\.ips/.test(ix))
+    ok('синхронізація: обирає реальний LAN-IP (не віртуальний) + показує всі адреси');
+  else bad('синхронізація: може показувати не той IP');
 })();
 
 console.log('\n' + '─'.repeat(48));

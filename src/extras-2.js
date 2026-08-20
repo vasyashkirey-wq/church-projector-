@@ -860,10 +860,9 @@ function songKey(song) { return 'ord_' + (song && song.id != null ? song.id : (s
 function songOrder(song) {
   const saved = state.orders[songKey(song)];
   if (Array.isArray(saved) && saved.length) return saved.filter(i => song.verses[i] != null);
-  // Якщо ввімкнено «приспів після кожного куплета», але явний порядок ще не
-  // збережений — будуємо його на льоту, щоб аранжування працювало СКРІЗЬ
-  // (у вкладці пісні, у плані служби, в ефірі), навіть якщо пісню не відкривали.
-  if (state.chorusEach && state.chorusEach[songKey(song)] && typeof autoChorusIdx === 'function') {
+  // Приспів після кожного куплета — якщо ввімкнено для ЦІЄЇ пісні АБО глобально
+  // (для всіх пісень). Будуємо порядок на льоту, щоб працювало скрізь.
+  if (((state.chorusEach && state.chorusEach[songKey(song)]) || state.arrangeGlobal) && typeof autoChorusIdx === 'function') {
     const c = autoChorusIdx(song);
     if (c !== -1) {
       const order = [];
@@ -955,6 +954,19 @@ function applyChorusEach(song) {
 }
 
 // Перемикач біля пісні: увімкнув — сам збудує порядок, вимкнув — прибере.
+// Глобальне аранжування: «приспів після кожного куплета» для ВСІХ пісень одразу.
+function loadArrangeGlobal() {
+  try { state.arrangeGlobal = localStorage.getItem('church_arrange_global') === '1'; } catch (e) { state.arrangeGlobal = false; }
+}
+function toggleArrangeGlobal(on) {
+  state.arrangeGlobal = !!on;
+  try { localStorage.setItem('church_arrange_global', on ? '1' : '0'); } catch (e) {}
+  if (typeof svcInvalidate === 'function') svcInvalidate();   // план служби перебудує слайди
+  if (typeof renderTabInto === 'function' && typeof isActive === 'function' && isActive('song')) renderTabInto('song');
+  if (typeof renderSongOrderMini === 'function') renderSongOrderMini();
+  if (typeof notify === 'function') notify(on ? '🔁 Приспів після кожного — для ВСІХ пісень' : 'Глобальне аранжування вимкнено');
+}
+
 function toggleChorusEach(on) {
   const s = state.selectedSong;
   if (!s) return;

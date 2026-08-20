@@ -1266,7 +1266,7 @@ const url = $('#youtubeUrl')?.value?.trim() || '';
 if(!url) { notify('Введіть посилання'); return; }
 const vid = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})(?:[&?]|$)/);
 if(!vid) { notify('Невірне посилання'); return; }
-const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}iframe{width:100%;height:100%;border:none}</style></head><body><iframe src="https://www.youtube.com/embed/${vid[1]}?autoplay=1" allowfullscreen></iframe></body></html>`;
+const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}iframe{width:100%;height:100%;border:none}</style></head><body><iframe src="https://www.youtube-nocookie.com/embed/${vid[1]}?autoplay=1&playsinline=1&rel=0&modestbranding=1" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="origin"></iframe></body></html>`;
 doSendHTML(html, 'YouTube');
 const status = $('#youtubeStatus');
 if(status) status.textContent = '✓ Відправлено';

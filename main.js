@@ -150,6 +150,7 @@ function createOutputWindow(kind, callback) {
       webviewTag: true,
       webSecurity: false,
       allowRunningInsecureContent: true,
+      autoplayPolicy: 'no-user-gesture-required',
       preload: path.join(__dirname, 'src/projector-preload.js')
     }
   });
@@ -1231,7 +1232,7 @@ ipcMain.handle('start-sync-server', (event, opts) => {
   // просто повертаємо поточний стан (якщо явно не попросили новий PIN).
   if (syncServer) {
     if (opts && opts.pin) stationPin = opts.pin;
-    return { port: syncPort, ip: getLocalIP(), pin: stationPin };
+    return { port: syncPort, ip: getLocalIP(), ips: getAllLocalIPs().map(c => c.address), pin: stationPin };
   }
   stationPin = (opts && opts.pin) || '';
   // Без явно заданого PIN не лишаємо сервер відкритим для будь-кого в мережі —
@@ -1314,7 +1315,7 @@ ipcMain.handle('start-sync-server', (event, opts) => {
   });
 
   syncServer.listen(syncPort);
-  return { port: syncPort, ip: getLocalIP(), pin: stationPin };
+  return { port: syncPort, ip: getLocalIP(), ips: getAllLocalIPs().map(c => c.address), pin: stationPin };
 });
 
 ipcMain.handle('stop-sync-server', () => {
@@ -1390,14 +1391,24 @@ ipcMain.handle('get-local-ip', () => getLocalIP());
 // ============================================================
 // REMOTE CONTROL (HTTP + WebSocket)
 // ============================================================
-function getLocalIP() {
+function getAllLocalIPs() {
   const ifaces = os.networkInterfaces();
+  const skip = /(VirtualBox|VMware|vEthernet|Hyper-V|Loopback|WSL|Docker|VPN|TAP|Tailscale|ZeroTier|utun|llw|awdl|bridge)/i;
+  const out = [];
   for (const name of Object.keys(ifaces)) {
     for (const iface of ifaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+      if (iface.family !== 'IPv4' || iface.internal) continue;
+      out.push({ name, address: iface.address, virtual: skip.test(name) });
     }
   }
-  return '127.0.0.1';
+  return out;
+}
+function getLocalIP() {
+  const cands = getAllLocalIPs();
+  const isLan = a => /^192\.168\.|^10\.|^172\.(1[6-9]|2\d|3[01])\./.test(a);
+  const real = cands.filter(c => !c.virtual);
+  const pick = real.find(c => isLan(c.address)) || real[0] || cands.find(c => isLan(c.address)) || cands[0];
+  return pick ? pick.address : '127.0.0.1';
 }
 
 function broadcastToRemote(msg) {
@@ -1949,6 +1960,42 @@ ipcMain.handle('atem-command', async (event, cmd) => {
         const me = cmd.me || 0, keyer = cmd.keyer || 0;
         if (atemInstance.setUpstreamKeyerType)
           await atemInstance.setUpstreamKeyerType({ mixEffectKeyType: cmd.keyType }, me, keyer);
+        break;
+      }
+      case 'chroma-adv': {
+        // Тонке налаштування хромакею (поріг/краї/спіл). Спершу пробуємо advanced
+        // (ATEM Mini Extreme), інакше — базовий хромакей на старіших ATEM.
+        const me = cmd.me || 0, keyer = cmd.keyer || 0;
+        try {
+          if (atemInstance.setUpstreamKeyerAdvancedChromaProperties) {
+            const p = {};
+            if (cmd.foregroundLevel != null) p.foregroundLevel = cmd.foregroundLevel;
+            if (cmd.backgroundLevel != null) p.backgroundLevel = cmd.backgroundLevel;
+            if (cmd.keyEdge != null) p.keyEdge = cmd.keyEdge;
+            if (cmd.spillSuppress != null) p.spillSuppress = cmd.spillSuppress;
+            if (cmd.flareSuppress != null) p.flareSuppress = cmd.flareSuppress;
+            await atemInstance.setUpstreamKeyerAdvancedChromaProperties(p, me, keyer);
+          } else if (atemInstance.setUpstreamKeyerChromaSettings) {
+            const p = {};
+            if (cmd.foregroundLevel != null) p.gain = Math.round(cmd.foregroundLevel * 100);
+            if (cmd.keyEdge != null) p.lift = Math.round(cmd.keyEdge * 100);
+            await atemInstance.setUpstreamKeyerChromaSettings(p, me, keyer);
+          } else { return { ok: false, error: 'Ця версія ATEM не підтримує тонке налаштування хромакею' }; }
+        } catch (e) { return { ok: false, error: 'Хромакей: ' + e.message }; }
+        break;
+      }
+      case 'chroma-sample': {
+        // Взяти колір (зелений) із точки кадру. За замовчуванням — центр.
+        const me = cmd.me || 0, keyer = cmd.keyer || 0;
+        try {
+          if (atemInstance.setUpstreamKeyerAdvancedChromaSampleSettings) {
+            await atemInstance.setUpstreamKeyerAdvancedChromaSampleSettings(
+              { enableCursor: true, cursorX: (cmd.x != null ? cmd.x : 0), cursorY: (cmd.y != null ? cmd.y : 0), cursorSize: (cmd.size != null ? cmd.size : 0.5) }, me, keyer);
+            // деякі версії бібліотеки мають окрему дію «взяти семпл»
+            if (atemInstance.performUpstreamKeyerAdvancedChromaSample)
+              await atemInstance.performUpstreamKeyerAdvancedChromaSample(me, keyer);
+          } else { return { ok: false, error: 'Ця версія ATEM не підтримує семпл кольору з додатка' }; }
+        } catch (e) { return { ok: false, error: 'Семпл: ' + e.message }; }
         break;
       }
       case 'stream-start':
