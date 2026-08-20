@@ -22,6 +22,14 @@ jobs:
         with:
           node-version: '20'
 
+      # atem-connection (optionalDependencies) тягне нативний модуль
+      # @julusian/freetype2, який electron-builder перекомпільовує під ABI
+      # Electron. Без явно виставленого VS-оточення node-gyp на актуальному
+      # windows-latest не завжди вміє знайти компілятор ("could not find any
+      # Visual Studio installation") — цей крок фіксує це раз і назавжди.
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+
       # Повний install: optionalDependencies (atem-connection, onvif) тут
       # компілюються нормально. Якщо якийсь optional-модуль раптом не збереться,
       # npm НЕ впаде (optional), тож інсталятор усе одно вийде.
