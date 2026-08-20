@@ -264,7 +264,7 @@ function pv2PushToOutput(n, content) {
     let c;
     if (content && (content.rawText != null || content.html)) {
       const src = content.rawText != null ? content.rawText : content.html;
-      c = withSecondLang({ html: stripChords(String(src).replace(/\n/g, '<br>')), ref: content.ref || '' });
+      c = withSecondLang({ html: esc(stripChords(String(src))).replace(/\n/g, '<br>'), ref: content.ref || '' });
       c = { text: c.html, ref: c.ref };
     } else {
       c = pv2GraphicsContent();
@@ -1213,7 +1213,11 @@ function stripChords(text) {
 // Раніше ці дві функції працювали лише в маршрутах, а головний вихід
 // (проектор) отримував сирий рядок — з [Am] і без чеської.
 function hallText(text) {
-  let t = stripChords(String(text == null ? '' : text));
+  // esc(): текст завжди екрануємо перед показом у зал — інакше "<"/">" з
+  // імпортованих пісень/віршів чи довільний скрипт із мережевої команди
+  // (station sync) виконався б як HTML у вікні проектора (contextIsolation
+  // там вимкнено навмисно для webview/iframe-графіки).
+  let t = esc(stripChords(String(text == null ? '' : text)));
   if (state.secondLangMode === 'under') {
     // Ті самі мови, що й у виводі з графікою (друга + третя) — щоб зал бачив
     // однаково незалежно від того, як надіслано текст.

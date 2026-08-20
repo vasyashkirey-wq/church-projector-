@@ -2397,7 +2397,7 @@ function doSend(text, ref) {
     try {
       updateLivePreview(slideHTMLFor({ kind: 'text', rawText: text, html: htmlForProjector, ref: ref || '' }));
     } catch (e) {
-      updateLivePreview('<div style="background:#000;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:40px;box-sizing:border-box;"><div style="color:#fff;font-size:clamp(16px,3vw,30px);text-align:center;line-height:1.6;font-family:Georgia,serif;">' + htmlForProjector + '<br><span style=\'color:#c8a84b;font-size:0.75em\'>' + (ref||'') + '</span></div></div>');
+      updateLivePreview('<div style="background:#000;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:40px;box-sizing:border-box;"><div style="color:#fff;font-size:clamp(16px,3vw,30px);text-align:center;line-height:1.6;font-family:Georgia,serif;">' + htmlForProjector + '<br><span style=\'color:#c8a84b;font-size:0.75em\'>' + escHtml(ref||'') + '</span></div></div>');
     }
   } else {
     updateLivePreview('<div style="background:#000;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:40px;box-sizing:border-box;"><div style="color:#fff;font-size:clamp(16px,3vw,30px);text-align:center;line-height:1.6;font-family:Georgia,serif;">' + htmlForProjector + '<br><span style=\'color:#c8a84b;font-size:0.75em\'>' + (ref||'') + '</span></div></div>');
@@ -4011,7 +4011,7 @@ function getAnnounceHTML(ann) {
     '<div id="wrap">' +
     (ann.title ? '<div class="title">' + escHtml(ann.title) + '</div>' : '') +
     (ann.title && ann.body ? '<div class="divider"></div>' : '') +
-    (ann.body ? '<div class="body">' + ann.body.replace(/\n/g,'<br>') + '</div>' : '') +
+    (ann.body ? '<div class="body">' + escHtml(ann.body).replace(/\n/g,'<br>') + '</div>' : '') +
     (ann.datetime ? '<div class="datetime">📅 ' + escHtml(ann.datetime) + '</div>' : '') +
     '</div>' +
     '<script>setTimeout(function(){document.getElementById("wrap").classList.add("show");},100);<\/script>' +
@@ -4300,7 +4300,7 @@ function getTextWithBgHTML(text, ref) {
     '.txt{color:'+(theme.textColor||'#fff')+';font-size:'+(theme.fontSize||58)+'px;line-height:1.45;font-family:'+(theme.fontFamily||'Georgia,serif')+';text-shadow:0 2px 16px rgba(0,0,0,.9);}' +
     '</style></head><body>' +
     '<div class="bg"></div><div class="dim"></div>' +
-    '<div class="wrap" id="w"><div class="ref">'+(ref||'')+'</div><div class="txt">'+text.replace(/\n/g,'<br>')+'</div></div>' +
+    '<div class="wrap" id="w"><div class="ref">'+escHtml(ref||'')+'</div><div class="txt">'+text.replace(/\n/g,'<br>')+'</div></div>' +
     '<script>setTimeout(function(){document.getElementById("w").classList.add("show");},100);<\/script>' +
     '</body></html>';
 }
@@ -5187,7 +5187,8 @@ function startSyncServer() {
   window.electronAPI.startSyncServer().then(function(result) {
     syncMode = 'server';
     var el = document.getElementById('syncStatus');
-    if (el) el.innerHTML = '✓ Сервер запущено<br><b style="color:var(--accent)">' + result.ip + ':' + result.port + '</b>';
+    if (el) el.innerHTML = '✓ Сервер запущено<br><b style="color:var(--accent)">' + escHtml(result.ip) + ':' + escHtml(String(result.port)) + '</b>' +
+      (result.pin ? '<br>Пароль для 2-го ПК: <b style="color:var(--accent);font-size:15px;letter-spacing:1px">' + escHtml(result.pin) + '</b>' : '');
     document.getElementById('syncServerCard').style.display = 'block';
     generateSyncQR('http://' + result.ip + ':' + result.port + '/sync');
   });

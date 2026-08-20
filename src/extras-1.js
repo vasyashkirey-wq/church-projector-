@@ -816,19 +816,19 @@ function getGraphicsHTML(text, ref, bgAlpha) {
   if (template === 'quote') {
     bodyContentHTML = `
       <div class="text quoteText">${String(text || '').replace(/\n/g, '<br>')}</div>
-      ${ref ? `<div class="ref quoteRef">— ${ref}</div>` : ''}`;
+      ${ref ? `<div class="ref quoteRef">— ${esc(ref)}</div>` : ''}`;
   } else if (template === 'list') {
     const items = String(text || '').split('\n').map(l => l.trim()).filter(Boolean)
       .map(l => `<li>${l}</li>`).join('');
     bodyContentHTML = `
-      ${ref ? `<div class="ref">${ref}</div>` : ''}
+      ${ref ? `<div class="ref">${esc(ref)}</div>` : ''}
       <ul class="list">${items}</ul>`;
   } else {
     // 'verse' (за замовчуванням) і 'title' мають однакову структуру вірш+посилання,
     // «title» лише додає заголовок над нею
     bodyContentHTML = `
       ${titleHTML}
-      ${ref ? `<div class="ref">${ref}</div>` : ''}
+      ${ref ? `<div class="ref">${esc(ref)}</div>` : ''}
       ${s.decor === 'line' ? '<div class="line"></div>' : ''}
       <div class="text">${String(text || '').replace(/\n/g, '<br>')}</div>`;
   }
@@ -2110,13 +2110,13 @@ function pv2GraphicsContent() {
   // 1) Те, що зараз реально в залі (вірш, куплет, оголошення — байдуже)
   if (state.onAir && state.onAir.kind === 'text' && (state.onAir.rawText || state.onAir.html)) {
     const src = state.onAir.rawText != null ? state.onAir.rawText : state.onAir.html;
-    const c0 = withSecondLang({ html: stripChords(String(src).replace(/\n/g, '<br>')), ref: state.onAir.ref || '' });
+    const c0 = withSecondLang({ html: esc(stripChords(String(src))).replace(/\n/g, '<br>'), ref: state.onAir.ref || '' });
     return { text: c0.html, ref: c0.ref };
   }
   // 2) Підготовлене в прев'ю
   if (state.preview && state.preview.kind === 'text' && (state.preview.rawText || state.preview.html)) {
     const src = state.preview.rawText != null ? state.preview.rawText : state.preview.html;
-    const c1 = withSecondLang({ html: stripChords(String(src).replace(/\n/g, '<br>')), ref: state.preview.ref || '' });
+    const c1 = withSecondLang({ html: esc(stripChords(String(src))).replace(/\n/g, '<br>'), ref: state.preview.ref || '' });
     return { text: c1.html, ref: c1.ref };
   }
   // 3) Останнє надіслане
@@ -2127,7 +2127,7 @@ function pv2GraphicsContent() {
   // Далі — обраний куплет пісні (незалежно від того, яка вкладка відкрита)
   const s = state.selectedSong;
   if (s && s.verses && s.verses[state.selectedVerseIdx]) {
-    return { text: String(s.verses[state.selectedVerseIdx]).replace(/\n/g, '<br>'), ref: s.title || '' };
+    return { text: esc(String(s.verses[state.selectedVerseIdx])).replace(/\n/g, '<br>'), ref: s.title || '' };
   }
   try {
     const cur = getCurrentContent();

@@ -1227,8 +1227,16 @@ function broadcastToStations(msg, exceptWs) {
 }
 
 ipcMain.handle('start-sync-server', (event, opts) => {
+  // Сервер уже працює — не міняємо PIN під ногами у вже підключених станцій,
+  // просто повертаємо поточний стан (якщо явно не попросили новий PIN).
+  if (syncServer) {
+    if (opts && opts.pin) stationPin = opts.pin;
+    return { port: syncPort, ip: getLocalIP(), pin: stationPin };
+  }
   stationPin = (opts && opts.pin) || '';
-  if (syncServer) return { port: syncPort, ip: getLocalIP(), pin: stationPin };
+  // Без явно заданого PIN не лишаємо сервер відкритим для будь-кого в мережі —
+  // генеруємо власний PIN і показуємо його оператору.
+  if (!stationPin) stationPin = String(Math.floor(1000 + Math.random() * 9000));
 
   const http = require('http');
   syncServer = http.createServer((req, res) => {
@@ -1264,13 +1272,22 @@ ipcMain.handle('start-sync-server', (event, opts) => {
       }
       if (!ws._authed) return;
 
-      // Команда від клієнта → виконує ХОСТ (у нього вікна виводу)
+      // Команда від клієнта → виконує ХОСТ (у нього вікна виводу).
+      // Allow-list дій, синхронний зі switch у applyStationCommand (extras-3.js) —
+      // сервер не має пересилати те, що там і так впаде в default:return, і не
+      // пересилає надто великий/дивний payload (захист від засмічення хоста).
       if (msg.type === 'cmd') {
-        if (mainWin && !mainWin.isDestroyed()) {
-          mainWin.webContents.send('station-command', {
-            action: msg.action, payload: msg.payload,
-            from: ws._name || ('Станція ' + ws._id)
-          });
+        const allowedActions = ['send-text', 'send-html', 'stage', 'go-live', 'clear',
+          'blackout', 'next', 'prev', 'bookmark', 'plan-item', 'announce', 'gdd', 'alert', 'freeze'];
+        const payloadOk = msg.payload == null || (typeof msg.payload === 'object' && !Array.isArray(msg.payload));
+        if (typeof msg.action === 'string' && allowedActions.indexOf(msg.action) >= 0 &&
+            payloadOk && raw.length < 5 * 1024 * 1024) {
+          if (mainWin && !mainWin.isDestroyed()) {
+            mainWin.webContents.send('station-command', {
+              action: msg.action, payload: msg.payload,
+              from: ws._name || ('Станція ' + ws._id)
+            });
+          }
         }
       }
     });
@@ -1687,7 +1704,12 @@ function updateOnAir(data) {
   var el = document.getElementById('onAirText');
   var nb = document.getElementById('nextBox');
   if (!data || data.type === 'clear') { el.textContent = 'Нічого не виводиться'; nb.style.display = 'none'; }
-  else if (data.type === 'text') { el.innerHTML = (data.payload.html||'').replace(/<br>/g,' / '); nb.style.display = 'none'; }
+  else if (data.type === 'text') {
+    // <br> — єдиний тег, який тут очікується (перетворюємо на " / "); усе інше
+    // прибираємо, а не довіряємо innerHTML довільному вмісту з мережі.
+    el.innerHTML = (data.payload.html||'').replace(/<br\s*\/?>/gi,' / ').replace(/<[^>]+>/g,'');
+    nb.style.display = 'none';
+  }
   else if (data.type === 'html') { el.textContent = 'HTML / QR / Слайд'; nb.style.display = 'none'; }
 }
 function updateState(state) {
@@ -2452,5 +2474,11 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopRemoteServer();
+  // Раніше станційний WebSocket (4242) і OSC-сервер (UDP) не закривались тут
+  // явно — на macOS, де вікна можуть закритись без повного quit (activate
+  // повертає застосунок), вони лишались слухати мовчки й далі.
+  if (syncWss) { try { syncWss.close(); } catch (e) {} syncWss = null; }
+  if (syncServer) { try { syncServer.close(); } catch (e) {} syncServer = null; }
+  if (typeof stopOscServer === 'function') stopOscServer();
   if (process.platform !== 'darwin') app.quit();
 });

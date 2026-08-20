@@ -1,5 +1,12 @@
 const { ipcRenderer } = require('electron');
 
+// Посилання (ref) ніде вище по ланцюгу не екранується — тут це остання точка
+// перед innerHTML, тож екрануємо саме тут, щоб назва пісні/вірша з "<"/">"
+// (наприклад, з імпортованого файлу) не виконалась як HTML у зала.
+function escRef(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 let currentTheme = {
   bgColor: '#000000',
   bgType: 'color',
@@ -248,7 +255,7 @@ function showText(html, ref) {
 
   setTimeout(() => {
     body.innerHTML = html;
-    refEl.innerHTML = ref || '';
+    refEl.innerHTML = escRef(ref);
     // Розмір: або зафіксований на всю пісню, або підбирається під цей слайд
     body.style.fontSize = (lockedSize || currentTheme.fontSize || 58) + 'px';
     if (!lockedSize) fitTextToScreen();

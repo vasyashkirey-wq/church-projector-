@@ -309,7 +309,7 @@ function bibleGraphicsTo(targets, _fromGoLive) {
     return;
   }
 
-  var payload = { html: text.replace(/\n/g, '<br>'), ref: ref };
+  var payload = { html: esc(String(text || '')).replace(/\n/g, '<br>'), ref: ref };
   if (typeof withSecondLang === 'function') payload = withSecondLang(payload);   // 2-га і 3-тя мова
   // Якщо серед цілей є вихід із хромакеєм — робимо фон напівпрозорим
   // (керується повзунком «Прозорість фону для трансляції»).
