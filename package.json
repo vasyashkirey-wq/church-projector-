@@ -23,7 +23,8 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "artifactName": "${name}-${version}-${arch}.${ext}"
     },
     "win": {
       "target": [
