@@ -5375,6 +5375,17 @@ function toggleTheme() {
   if (btn) btn.textContent = isLight ? '🌙' : '☀️';
   try { localStorage.setItem('church_theme', isLight ? 'light' : 'dark'); } catch(e) {}
 }
+// Відновлюємо збережений вибір теми — інакше світла тема скидалась би на
+// темну при кожному перезапуску застосунку.
+(function() {
+  try {
+    if (localStorage.getItem('church_theme') === 'light') {
+      document.body.classList.add('light-theme');
+      var btn = document.getElementById('themeToggleBtn');
+      if (btn) btn.textContent = '🌙';
+    }
+  } catch(e) {}
+})();
 
 // Перемикач «Класичний / Сучасний вигляд» (лише панель оператора).
 function applyModernUI(on) {

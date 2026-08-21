@@ -54,7 +54,7 @@ function updateVerses() {
   if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
   if (!ch) return;
   currentBibleChapter = parseInt(ch);
-  var count = 30;
+  var count = 0;   // безпечний дефолт — як у updateChapters(): немає даних, немає фейкових варіантів
 
   var t = bibleTranslations[currentTranslationId];
   if (t && t.books[currentBibleBook] && t.books[currentBibleBook][currentBibleChapter]) {
