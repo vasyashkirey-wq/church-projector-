@@ -1,6 +1,6 @@
 {
   "name": "church-projector",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Церква Прага — Панель керування проектором",
   "main": "main.js",
   "scripts": {
@@ -23,7 +23,8 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "artifactName": "${name}-${version}-${arch}.${ext}"
     },
     "win": {
       "target": [
