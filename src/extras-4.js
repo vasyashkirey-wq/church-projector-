@@ -2100,7 +2100,7 @@ function pv2Init() {
   }
   const steps = [loadUiPrefs, loadProfiles, loadMasterVolume, loadBookmarks,
                  loadScheduler, loadAutoBackup, loadSongTrash, loadLang, loadPultCfg, loadMultiTrans, loadMultiTransStyle, loadOutputNames, startAutomationWatcher, loadLower, loadOutputBindings, loadOutputFailover, loadRoomProfiles, loadServiceProfiles, loadChangeLog, loadTrainingMode, loadRemoteUsers, loadStageOutputNum, refreshMonitors, loadStationCfg, loadLiveConfig, loadNamedThemes, loadSecondLang, loadAutoTimer, loadAutoFit,
-                 loadSplitCfg, loadOrders, loadSongSize, loadSongTags, loadService, loadLayers, applyTypo, initObsListener, loadRoutes, loadOutputBg, loadOutputChroma, loadLooks, loadProps, loadMacros, loadPartLabels, loadArrangeSets, loadMsgTemplates, loadSoundBin, loadGraphicsSettings, pv2SyncOutputStates, pv2RenderOutputsCard, loadPlaylistData, loadHotkeys, loadMidiMap, initMidi, loadOscMap, getCloudSyncFolder, loadStatistics, restoreFontChoice, loadStageNotes,
+                 loadSplitCfg, loadOrders, loadArrangeGlobal, loadSongSize, loadSongTags, loadService, loadLayers, applyTypo, initObsListener, loadRoutes, loadOutputBg, loadOutputChroma, loadLooks, loadProps, loadMacros, loadPartLabels, loadArrangeSets, loadMsgTemplates, loadSoundBin, loadGraphicsSettings, pv2SyncOutputStates, pv2RenderOutputsCard, loadPlaylistData, loadHotkeys, loadMidiMap, initMidi, loadOscMap, getCloudSyncFolder, loadStatistics, restoreFontChoice, loadStageNotes,
                  renderPlaylist, renderHotkeys, renderFontsList,
                  renderMediaList, updateH2RPreview, updateGraphicsPreview, updateTextPreview,
                  () => setPPTtemplate('classic'), updateStatistics,

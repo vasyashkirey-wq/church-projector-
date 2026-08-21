@@ -1,6 +1,6 @@
 {
   "name": "church-projector",
-  "version": "2.0.1",
+  "version": "2.2.0",
   "description": "Церква Прага — Панель керування проектором",
   "main": "main.js",
   "scripts": {
@@ -23,7 +23,8 @@
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "artifactName": "${name}-${version}-${arch}.${ext}"
     },
     "win": {
       "target": [
@@ -48,7 +49,7 @@
       {
         "provider": "github",
         "owner": "vasyashkirey-wq",
-        "repo": "church-projector"
+        "repo": "church-projector-"
       }
     ],
     "asarUnpack": [
@@ -67,7 +68,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/vasyashkirey-wq/church-projector.git"
+    "url": "https://github.com/vasyashkirey-wq/church-projector-.git"
   },
   "optionalDependencies": {
     "atem-connection": "^3.8.0",

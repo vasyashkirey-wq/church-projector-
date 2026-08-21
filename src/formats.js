@@ -849,8 +849,23 @@ function gddInject(html, data) {
     } catch(e) { console.error('GDD ' + fn + ':', e); }
     return false;
   }
+  function __applyFields(data) {
+    try {
+      Object.keys(data || {}).forEach(function(k) {
+        var val = data[k];
+        var els = document.querySelectorAll('[data-gdd="' + k + '"]');
+        Array.prototype.forEach.call(els, function(el) {
+          var looksImg = typeof val === 'string' && (val.indexOf('data:image') === 0 || /^https?:\\/\\//.test(val) || /\\.(png|jpe?g|gif|webp|svg)$/i.test(val));
+          if (el.tagName === 'IMG') { if (val) { el.src = val; el.style.display = ''; } }
+          else if (looksImg) { el.style.backgroundImage = 'url("' + val + '")'; el.style.backgroundSize = el.style.backgroundSize || 'contain'; el.style.backgroundRepeat = 'no-repeat'; el.style.backgroundPosition = el.style.backgroundPosition || 'center'; }
+          else { el.textContent = (val == null ? '' : val); }
+        });
+      });
+    } catch(e) { console.error('GDD applyFields:', e); }
+  }
   function __boot() {
     __call('update', __data);
+    __applyFields(__data);
     __call('play');
   }
   if (document.readyState === 'complete') setTimeout(__boot, 0);
@@ -860,7 +875,7 @@ function gddInject(html, data) {
   window.addEventListener('message', function(e) {
     var m = e && e.data;
     if (!m || !m.__gdd) return;
-    if (m.__gdd === 'update') { __data = m.data || {}; __call('update', __data); }
+    if (m.__gdd === 'update') { __data = m.data || {}; __call('update', __data); __applyFields(__data); }
     else if (m.__gdd === 'play') __call('play');
     else if (m.__gdd === 'stop') { if (!__call('stop')) __call('play'); } /* деякі графіки ховаються повторним play() */
   });

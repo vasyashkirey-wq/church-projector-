@@ -988,6 +988,10 @@ function renderSongTab() {
       <div class="card-sub">Домовились співати приспів двічі? Склади порядок один раз — далі просто гортаєш. Чипи можна <b>перетягувати мишкою</b>, щоб змінити порядок. Або увімкни перемикач нижче — приспів сам стане після кожного куплета.</div>
       <div style="margin-top:6px;min-height:30px">${orderChips || '<span style="font-size:11px;color:var(--text2)">Порожньо</span>'}</div>
       <div style="margin-top:6px;display:flex;gap:3px;flex-wrap:wrap">${addBtns}</div>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px 10px;background:linear-gradient(135deg,rgba(124,92,255,.14),rgba(79,155,255,.08));border:1px solid var(--accent);border-radius:7px;font-size:13px;cursor:pointer">
+        <input type="checkbox" style="width:16px;height:16px;cursor:pointer" ${state.arrangeGlobal ? 'checked' : ''} onchange="toggleArrangeGlobal(this.checked)">
+        <span>🌍 <b>Приспів після кожного — ДЛЯ ВСІХ пісень</b> (увімкни раз — діє скрізь)</span>
+      </label>
       <label style="display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;font-size:13px;cursor:pointer">
         <input type="checkbox" style="width:16px;height:16px;cursor:pointer" ${state.chorusEach[songKey(s)] ? 'checked' : ''} onchange="toggleChorusEach(this.checked)">
         <span>🔁 <b>Приспів після кожного куплета</b> — увімкни, і порядок збудується сам</span>
@@ -1303,7 +1307,8 @@ function svcSlidesCacheKey(item) {
   return JSON.stringify([item.kind, item.id, item.ref, item.title,
                          state.splitCfg.on, state.splitCfg.maxLines, state.splitCfg.maxChars,
                          item.id != null ? state.orders['ord_' + item.id] : null,
-                         item.id != null && state.chorusEach ? !!state.chorusEach['ord_' + item.id] : null]);
+                         item.id != null && state.chorusEach ? !!state.chorusEach['ord_' + item.id] : null,
+                         !!state.arrangeGlobal]);
 }
 function svcInvalidate() { _svcCache.clear(); }
 
@@ -1617,10 +1622,11 @@ function renderServiceTab() {
       <div class="card" style="border-color:var(--accent)">
         <div class="card-title">📅 План${sv.name ? ' — ' + esc(sv.name) : ''} (${sv.items.length})</div>
         <div class="card-sub">Тисни ▶ на пункті — і далі просто «Наступний». Після останнього слайда пісні план сам переходить до наступного пункту.</div>
-        <div style="display:flex;gap:4px;margin:8px 0">
-          <button class="btn btn-ghost btn-sm" onclick="svcPrev()">◀ Назад</button>
-          <button class="btn btn-primary btn-sm" style="flex:1" onclick="svcNext()">Наступний ▶</button>
+        <div style="display:flex;gap:6px;margin:10px 0;align-items:stretch">
+          <button class="btn btn-ghost" style="font-size:15px;padding:14px 16px" onclick="svcPrev()">◀</button>
+          <button class="btn btn-primary" style="flex:1;font-size:17px;font-weight:700;padding:14px" onclick="svcNext()">Наступний пункт ▶</button>
         </div>
+        <div style="text-align:center;font-size:12px;color:var(--text2);margin:-4px 0 8px">${sv.idx >= 0 && sv.items[sv.idx] ? ('Зараз: <b style=\"color:var(--accent)\">' + esc(sv.items[sv.idx].title || '') + '</b> · пункт ' + (sv.idx + 1) + '/' + sv.items.length) : 'Обери пункт, щоб почати'}</div>
         ${totalLabel}
         <div style="max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:5px">${items}</div>
       </div>
