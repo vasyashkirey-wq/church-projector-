@@ -1,4 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const crypto = require('crypto');
 const path = require('path');
 const http = require('http');
@@ -2273,76 +2273,8 @@ function initAutoUpdate() {
 ipcMain.handle('check-updates', () => { try { if (autoUpdater) autoUpdater.checkForUpdates(); } catch (e) {} return 'ok'; });
 ipcMain.handle('install-update', () => { try { if (autoUpdater) autoUpdater.quitAndInstall(); } catch (e) {} return 'ok'; });
 
-// ---- Меню застосунку ----------------------------------------------------
-// Головна причина існування цього меню — macOS. Без нього на Mac НЕ працюють
-// Cmd+C / Cmd+V / Cmd+X / Cmd+A у полях вводу (пісні, Біблія, оголошення,
-// PIN, назви виходів, налаштування), а також Cmd+Q / Cmd+M / Cmd+H.
-// На Windows редагування працює й без меню, тож там смуга просто прихована.
-function buildAppMenu() {
-  const isMac = process.platform === 'darwin';
-  const template = [];
-
-  // Меню з назвою застосунку — лише macOS (там воно обов'язкове).
-  if (isMac) {
-    template.push({
-      label: 'Церква Проектор',
-      submenu: [
-        { role: 'about', label: 'Про «Церква Проектор»' },
-        { type: 'separator' },
-        { role: 'hide', label: 'Сховати' },
-        { role: 'hideOthers', label: 'Сховати інші' },
-        { role: 'unhide', label: 'Показати все' },
-        { type: 'separator' },
-        { role: 'quit', label: 'Вийти' }
-      ]
-    });
-  }
-
-  // Редагування — саме цей блок вмикає Cmd/Ctrl + C, V, X, A, Z на macOS.
-  template.push({
-    label: 'Редагування',
-    submenu: [
-      { role: 'undo', label: 'Скасувати' },
-      { role: 'redo', label: 'Повторити' },
-      { type: 'separator' },
-      { role: 'cut', label: 'Вирізати' },
-      { role: 'copy', label: 'Копіювати' },
-      { role: 'paste', label: 'Вставити' },
-      ...(isMac
-        ? [{ role: 'pasteAndMatchStyle', label: 'Вставити як звичайний текст' },
-           { role: 'delete', label: 'Видалити' },
-           { role: 'selectAll', label: 'Вибрати все' }]
-        : [{ role: 'delete', label: 'Видалити' },
-           { type: 'separator' },
-           { role: 'selectAll', label: 'Вибрати все' }])
-    ]
-  });
-
-  // Вигляд — свідомо БЕЗ zoom-ролей (Cmd+=/-/0 зайняті власним масштабом UI
-  // у index.html) і БЕЗ Reload (випадковий Cmd+R скинув би панель під час служби).
-  template.push({
-    label: 'Вигляд',
-    submenu: [
-      { role: 'togglefullscreen', label: 'На весь екран' },
-      { type: 'separator' },
-      { role: 'toggleDevTools', label: 'Інструменти розробника' }
-    ]
-  });
-
-  // Вікно
-  template.push({
-    label: 'Вікно',
-    submenu: isMac
-      ? [{ role: 'minimize', label: 'Згорнути' },
-         { role: 'zoom', label: 'Масштаб' },
-         { type: 'separator' },
-         { role: 'front', label: 'Усі вікна вперед' }]
-      : [{ role: 'minimize', label: 'Згорнути' },
-         { role: 'close', label: 'Закрити' }]
-  });
-
-  return Menu.buildFromTemplate(template);
-}
+// ---- Меню застосунку (винесено в src/main/app-menu.js) ------------------
+const { applyAppMenu } = require('./src/main/app-menu');
 
 // ============================================================
 // ОДИН ЕКЗЕМПЛЯР
@@ -2380,7 +2312,7 @@ app.whenReady().then(() => {
       callback(true); // решта дозволів і так була відкрита для цього офлайн-застосунку
     });
   } catch (e) {}
-  Menu.setApplicationMenu(buildAppMenu());
+  applyAppMenu();
   initAutoUpdate();
   createMainWindow();
   loadCloudSyncFolder();  // завантажуємо налаштування папки синхронізації
