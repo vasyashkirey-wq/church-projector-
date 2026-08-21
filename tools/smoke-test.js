@@ -46,6 +46,16 @@ const SRC = {
   })(),
   formats: read('src/formats.js'),
   main: read('main.js'),
+  // Частини головного процесу, винесені з main.js у окремі модулі
+  // (src/main/*.js) — потрібні окремо, щоб перевірка IPC-парності бачила
+  // ipcMain.handle(...), зареєстровані НЕ в самому main.js.
+  mainModules: (function(){
+    var dir = path.join(ROOT, 'src', 'main');
+    if (!fs.existsSync(dir)) return '';
+    return fs.readdirSync(dir)
+      .filter(function(f){ return /\.js$/.test(f); })
+      .map(function(f){ return read('src/main/' + f); }).join('\n');
+  })(),
   projPreload: read('src/projector-preload.js'),
   projHtml: read('src/projector.html'),
   preload: read('src/preload.js'),
@@ -262,9 +272,10 @@ head('IPC-парність (preload ↔ main)');
   while ((m = re.exec(SRC.preload))) invokes.add(m[1]);
   const handled = new Set();
   const re2 = /ipcMain\.handle\(\s*['"]([^'"]+)['"]/g;
-  while ((m = re2.exec(SRC.main))) handled.add(m[1]);
+  const mainAll = SRC.main + '\n' + SRC.mainModules;
+  while ((m = re2.exec(mainAll))) handled.add(m[1]);
   const missing = [...invokes].filter(x => !handled.has(x)).sort();
-  if (!missing.length) ok('усі ' + invokes.size + ' IPC-виклики з preload мають обробник у main.js');
+  if (!missing.length) ok('усі ' + invokes.size + ' IPC-виклики з preload мають обробник у main.js (+ src/main/*.js)');
   else bad('IPC без обробника в main.js: ' + missing.join(', '));
 })();
 
