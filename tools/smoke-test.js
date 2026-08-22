@@ -617,6 +617,24 @@ head('Нові функції');
   if (/function applyArrangePreset/.test(SRC.extras) && /applyArrangePreset\(this\.value\)/.test(SRC.extras) && /'frame'|'last2'|'end'/.test(SRC.extras))
     ok('готові аранжування (приспів у кінці / рамка / останній куплет двічі / тільки куплети)');
   else bad('немає готових пресетів аранжування');
+
+  // Збірники пісень: поле при додаванні/редагуванні + фільтр-select у списку
+  // «Всі пісні в базі», що звужує пошук лише до обраного збірника.
+  const seBody = pz; // song-edit.js входить у SRC.extras
+  if (/id="newSongBook"/.test(ix)) ok('поле «Збірник» у формі додавання пісні');
+  else bad('немає поля збірника при додаванні пісні');
+  if (/id="songBookFilter"/.test(ix)) ok('фільтр-select збірників у списку «Всі пісні в базі»');
+  else bad('немає фільтра збірників у списку пісень');
+  if (/function renderSongBookOptions/.test(seBody)) ok('renderSongBookOptions наповнює фільтр + автодоповнення унікальними збірниками');
+  else bad('немає renderSongBookOptions');
+  const addBody = fnBody(seBody, 'addNewSong');
+  if (/songbook\s*:\s*songbook/.test(addBody) || /ex\.songbook\s*=\s*songbook/.test(addBody))
+    ok('addNewSong зберігає збірник (і при створенні, і при оновленні)');
+  else bad('addNewSong не зберігає поле збірника');
+  const renderAllBody = fnBody(seBody, 'renderAllSongs');
+  if (/s\.songbook \|\| ''\) === book/.test(renderAllBody))
+    ok('renderAllSongs фільтрує список за обраним збірником');
+  else bad('renderAllSongs не фільтрує за збірником');
 })();
 
 // ── План служби: осиротілі пункти-пісні (relink) ─────────────────────────────

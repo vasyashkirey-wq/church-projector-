@@ -101,6 +101,8 @@ function editSong(id) {
   editingSongId = id;
   document.getElementById('newSongTitle').value = s.title || '';
   document.getElementById('newSongAuthor').value = s.author || '';
+  var bookFld = document.getElementById('newSongBook');
+  if (bookFld) bookFld.value = s.songbook || '';
   // verses[] → сирий текст. Для пісень БЕЗ заголовків секцій з'єднуємо через
   // явний роздільник "---", а не подвійний порожній рядок: інакше секція,
   // де оператор сам залишив порожній рядок між строфами, після повторного
@@ -126,6 +128,8 @@ function editSong(id) {
 function addNewSong() {
   var title = document.getElementById('newSongTitle').value.trim();
   var author = document.getElementById('newSongAuthor').value.trim();
+  var bookFld = document.getElementById('newSongBook');
+  var songbook = bookFld ? bookFld.value.trim() : '';
   var raw = document.getElementById('newSongVerses').value.trim();
   if (!title) { showMsg('Введіть назву пісні', 'var(--red)'); return; }
   if (!raw) { showMsg('Введіть текст пісні', 'var(--red)'); return; }
@@ -138,7 +142,7 @@ function addNewSong() {
     var ex = currentSongs.find(function(x){ return x.id === editingSongId; });
     if (ex) {
       // Оновлюємо на місці — той самий id, тож аранжування й мітки частин лишаються
-      ex.title = title; ex.author = author; ex.verses = verses;
+      ex.title = title; ex.author = author; ex.songbook = songbook; ex.verses = verses;
       saveSongs(currentSongs);
       showMsg('✓ Пісню «' + title + '» оновлено (' + verses.length + ' секцій)', 'var(--green)');
       clearNewSong();
@@ -147,7 +151,7 @@ function addNewSong() {
     }
   }
   var newId = Date.now();
-  var song = { id: newId, title: title, author: author, verses: verses };
+  var song = { id: newId, title: title, author: author, songbook: songbook, verses: verses };
   currentSongs.push(song);
   saveSongs(currentSongs);
   showMsg('✓ Пісню "' + title + '" збережено (' + verses.length + ' секцій)', 'var(--green)');
@@ -158,6 +162,8 @@ function addNewSong() {
 function clearNewSong() {
   document.getElementById('newSongTitle').value = '';
   document.getElementById('newSongAuthor').value = '';
+  var bookFld = document.getElementById('newSongBook');
+  if (bookFld) bookFld.value = '';
   document.getElementById('newSongVerses').value = '';
   document.getElementById('versesPreview').style.display = 'none';
   document.getElementById('versesPreviewList').innerHTML = '';
@@ -181,7 +187,7 @@ function duplicateSong(id) {
   var s = currentSongs.find(function(x){ return x.id === id; });
   if (!s) return;
   // Копія з новим id — аранжування/мітки оригіналу не чіпаються (у копії свої)
-  var copy = { id: Date.now(), title: (s.title || 'Пісня') + ' (копія)', author: s.author || '', verses: (s.verses || []).slice() };
+  var copy = { id: Date.now(), title: (s.title || 'Пісня') + ' (копія)', author: s.author || '', songbook: s.songbook || '', verses: (s.verses || []).slice() };
   currentSongs.push(copy);
   saveSongs(currentSongs);
   renderAllSongs();
@@ -212,14 +218,45 @@ function setSongTag(id, key) {
   renderAllSongs();
 }
 
+// Наповнює фільтр-список збірників (select #songBookFilter) і datalist
+// автодоповнення (#songBookList) усіма унікальними збірниками, що вже є в
+// базі — щоб не набирати ту саму назву заново для кожної пісні. Зберігає
+// поточний вибір фільтра при перемальовці (інакше він скидався б на «Усі
+// збірники» щоразу після додавання/редагування пісні).
+function renderSongBookOptions() {
+  var books = [];
+  currentSongs.forEach(function(s) {
+    var b = (s.songbook || '').trim();
+    if (b && books.indexOf(b) === -1) books.push(b);
+  });
+  books.sort(function(a, b) { return a.localeCompare(b, 'uk'); });
+
+  var sel = document.getElementById('songBookFilter');
+  if (sel) {
+    var prev = sel.value;
+    sel.innerHTML = '<option value="">📚 Усі збірники</option>' +
+      books.map(function(b) { return '<option value="' + escHtml(b) + '">' + escHtml(b) + '</option>'; }).join('');
+    if (books.indexOf(prev) !== -1) sel.value = prev;
+  }
+
+  var dl = document.getElementById('songBookList');
+  if (dl) dl.innerHTML = books.map(function(b) { return '<option value="' + escHtml(b) + '">'; }).join('');
+}
+
 function renderAllSongs() {
+  renderSongBookOptions();
   var container = document.getElementById('allSongsList');
   container.innerHTML = '';
   var qEl = document.getElementById('songListSearch');
   var q = qEl ? qEl.value.toLowerCase().trim() : '';
-  var list = q ? currentSongs.filter(function(s){ return ((s.title || '') + ' ' + (s.author || '')).toLowerCase().indexOf(q) !== -1; }) : currentSongs;
+  var bookEl = document.getElementById('songBookFilter');
+  var book = bookEl ? bookEl.value : '';
+  var list = currentSongs;
+  if (book) list = list.filter(function(s) { return (s.songbook || '') === book; });
+  if (q) list = list.filter(function(s){ return ((s.title || '') + ' ' + (s.author || '') + ' ' + (s.songbook || '')).toLowerCase().indexOf(q) !== -1; });
   if (!list.length) {
-    container.innerHTML = '<p style="color:var(--text2);font-size:12px;padding:8px 0">' + (q ? 'Нічого не знайдено за «' + escHtml(q) + '»' : 'Ще немає пісень') + '</p>';
+    var emptyMsg = (q || book) ? 'Нічого не знайдено' + (book ? ' у збірнику «' + escHtml(book) + '»' : '') + (q ? ' за «' + escHtml(q) + '»' : '') : 'Ще немає пісень';
+    container.innerHTML = '<p style="color:var(--text2);font-size:12px;padding:8px 0">' + emptyMsg + '</p>';
     return;
   }
   list.forEach(function(s) {
@@ -232,6 +269,7 @@ function renderAllSongs() {
       SONG_TAGS.map(function(t){ return '<option value="' + t.key + '"' + (cur === t.key ? ' selected' : '') + '>' + t.label + '</option>'; }).join('') + '</select>';
     div.innerHTML = dot + '<span style="flex:1;font-size:13px"><b>' + escHtml(s.title) + '</b>' +
       (s.author ? ' <span style="color:var(--text2);font-size:11px">— ' + escHtml(s.author) + '</span>' : '') +
+      (s.songbook ? ' <span style="color:var(--accent);font-size:11px">📚 ' + escHtml(s.songbook) + '</span>' : '') +
       '<br><span style="color:var(--text2);font-size:11px">' + s.verses.length + ' куплет(ів)</span></span>' +
       tagSel +
       '<button class="btn btn-ghost btn-sm" onclick="selectSong(currentSongs.find(function(x){return x.id==='+s.id+'}));showTab(\'songs\')">Обрати</button>' +
@@ -240,9 +278,6 @@ function renderAllSongs() {
       '<button class="btn btn-danger btn-sm" onclick="deleteSong('+s.id+')">✕</button>';
     container.appendChild(div);
   });
-  if (!currentSongs.length) {
-    container.innerHTML = '<p class="text-muted">Пісень немає</p>';
-  }
 }
 
 function showMsg(msg, color) {

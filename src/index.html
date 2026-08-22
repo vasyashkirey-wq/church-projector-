@@ -634,8 +634,11 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
           <div class="card-title" id="addSongCardTitle">➕ Додати нову пісню</div>
           <label>Назва пісні *</label>
           <input type="text" id="newSongTitle" placeholder="Наприклад: Чудова Благодать">
-          <label>Автор / Джерело</label>
-          <input type="text" id="newSongAuthor" placeholder="Автор або збірник">
+          <label>Автор</label>
+          <input type="text" id="newSongAuthor" placeholder="Автор (необов'язково)">
+          <label>Збірник</label>
+          <input type="text" id="newSongBook" list="songBookList" placeholder="Наприклад: Пісні Відродження">
+          <datalist id="songBookList"></datalist>
           <label style="margin-bottom:4px">Вставте текст з сайту (holyChurch, або будь-який з мітками Куплет/Приспів/Бридж)</label>
           <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
             Розпізнає: «1 куплет:», «Приспів:», «Бридж:», «Інтро:», «Хор:», «Outro:» — або просто розділення через ---
@@ -655,6 +658,9 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
 
         <div class="card" style="max-width:680px; margin-top:14px">
           <div class="card-title">📋 Всі пісні в базі</div>
+          <select id="songBookFilter" onchange="renderAllSongs()" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-size:13px;margin-bottom:8px;outline:none">
+            <option value="">📚 Усі збірники</option>
+          </select>
           <input type="text" id="songListSearch" oninput="renderAllSongs()" placeholder="🔍 Знайти пісню за назвою…" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-size:13px;margin-bottom:8px;outline:none">
           <div id="allSongsList"></div>
         </div>
