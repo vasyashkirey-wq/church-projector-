@@ -5088,9 +5088,11 @@ function timerReset() {
   updateTimerButtons();
 }
 
-function timerSetTime() {
-  var val = document.getElementById('timerInput').value;
-  var secs = timerParseInput(val);
+// explicitSecs — необов'язково: якщо задано (напр. автостарт перед службою
+// рахує точну кількість секунд), беремо його напряму, а не значення поля
+// #timerInput. Без аргументу — стара поведінка (кнопки/ручне поле).
+function timerSetTime(explicitSecs) {
+  var secs = (explicitSecs != null) ? Math.round(explicitSecs) : timerParseInput(document.getElementById('timerInput').value);
   if (!secs || secs <= 0) return;
   timerState.setSeconds = secs;
   timerState.remaining = secs;

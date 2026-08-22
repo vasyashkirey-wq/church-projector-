@@ -9,7 +9,10 @@ var ptzSpeed = 12;
 function ptzSavePtzCams(){ try { localStorage.setItem('church_ptz_cams', JSON.stringify(ptzCams)); } catch(e){} }
 function ptzCfg(){ return ptzCams[ptzActive]; }
 function ptzDefaultPort(proto){ return proto === 'auto' ? 0 : proto === 'visca-tcp' ? 5678 : proto === 'onvif' ? 80 : proto === 'http-cgi' ? 80 : 52381; }
-function ptzSetField(f, v){ ptzCfg()[f] = v; if (f === 'protocol' && !ptzCfg().port) ptzCfg().port = ptzDefaultPort(v); ptzSavePtzCams(); }
+// Зміна протоколу МАЄ скидати порт на дефолтний для нового протоколу —
+// інакше стара камера (напр. 52381 від VISCA-UDP) лишається в полі port
+// і команди на новому протоколі (напр. HTTP-CGI, порт 80) тихо йдуть в нікуди.
+function ptzSetField(f, v){ ptzCfg()[f] = v; if (f === 'protocol') ptzCfg().port = ptzDefaultPort(v); ptzSavePtzCams(); }
 function ptzRenderTabs(){
   var t = document.getElementById('ptzCamTabs'); if (!t) return;
   t.innerHTML = ptzCams.map(function(c,i){

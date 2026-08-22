@@ -158,10 +158,19 @@ function fitTextToScreen() {
   const baseSize = (currentTheme && currentTheme.fontSize) || 58;
   const minSize = Math.max(20, Math.round(baseSize * 0.4)); // не дрібніше 40% від заданого
   const pad = (currentTheme && currentTheme.padding) || 80;
+  // applyTheme() додає +40px до top/bottom padding при позиції "зверху"/"знизу" —
+  // враховуємо це тут, інакше вважали б, що влазить, а насправді текст зрізало б.
+  const posExtra = (currentTheme && (currentTheme.textPosition === 'top' || currentTheme.textPosition === 'bottom')) ? 40 : 0;
+  // applyTheme() також ставить wrap.style.margin = safeArea% — за специфікацією CSS
+  // відсоткові margin (з усіх чотирьох боків, включно з top/bottom) рахуються від
+  // ШИРИНИ контейнера. Раніше це не враховувалось і безпечна зона "з'їдала" простір,
+  // який fitTextToScreen вважав доступним.
+  const safePct = (currentTheme && currentTheme.safeArea) || 0;
+  const safePx = window.innerWidth * (safePct / 100);
 
-  // Доступна висота: екран мінус відступи і рядок посилання
-  const avail = window.innerHeight - pad * 2 - (refEl ? refEl.offsetHeight + 20 : 0);
-  const availW = window.innerWidth - pad * 2;
+  // Доступна висота: екран мінус відступи, додатковий відступ позиції, безпечна зона і рядок посилання
+  const avail = window.innerHeight - pad * 2 - posExtra - safePx * 2 - (refEl ? refEl.offsetHeight + 20 : 0);
+  const availW = window.innerWidth - pad * 2 - safePx * 2;
 
   let size = baseSize;
   body.style.fontSize = size + 'px';

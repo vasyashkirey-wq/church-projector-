@@ -1236,6 +1236,9 @@ function svcAddSimple(kind, title) {
 }
 function svcRemove(i) {
   state.service.items.splice(i, 1);
+  // Видалення пункту ПЕРЕД поточним зсуває масив на 1 — покажчик має зсунутись
+  // теж, інакше він тихо "перестрибує" й показує сусідній пункт як поточний.
+  if (i < state.service.idx) state.service.idx--;
   if (state.service.idx >= state.service.items.length) state.service.idx = state.service.items.length - 1;
   saveService(); renderTabInto('service');
 }

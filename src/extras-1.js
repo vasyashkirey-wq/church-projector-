@@ -1349,7 +1349,7 @@ if(state.playlistIndex > 0) { state.playlistIndex--; sendPlaylistItem(state.play
 function playlistSendCurrent() { if(state.playlist.length && state.playlist[state.playlistIndex]) sendPlaylistItem(state.playlistIndex); }
 
 function pptNextPreview() {
-if(state.pptPreviewIndex < state.songs.length - 1) { state.pptPreviewIndex; renderPPTPreview(); }
+if(state.pptPreviewIndex < state.songs.length - 1) { state.pptPreviewIndex++; renderPPTPreview(); }
 }
 
 function pptPrevPreview() {

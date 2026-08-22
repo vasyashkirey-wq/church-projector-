@@ -156,8 +156,14 @@ if (window.electronAPI && window.electronAPI.onAtemStatus) {
     window._atemRenderPending = true;
     setTimeout(function() {
       window._atemRenderPending = false;
+      // Обмежуємо "не чіпати DOM під час набору" тільки панеллю ATEM —
+      // раніше перевірка була глобальною і будь-яке поле вводу деінде в програмі
+      // (пошук у Біблії, назва пісні тощо) заморожувало PGM/PVW, тальні індикатори
+      // і навіть тали PTZ (через ptzRenderTabs нижче), поки оператор просто друкував.
       var _ae = document.activeElement;
-      if (_ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA' || _ae.tagName === 'SELECT')) return;
+      var _atemPanel = document.getElementById('tab-content-atem');
+      if (_ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA' || _ae.tagName === 'SELECT') &&
+          _atemPanel && _atemPanel.contains(_ae)) return;
       var state = window._lastAtemState;
       if (!state) return;
       var pgm = document.getElementById('atemPgm');

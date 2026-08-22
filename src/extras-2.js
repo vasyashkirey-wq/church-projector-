@@ -512,6 +512,15 @@ function clearLive() {
   if (window.electronAPI && window.electronAPI.showLogo) window.electronAPI.showLogo(null);
   state.activePropName = null;
   state.logoOn = false;
+  // Скидаємо той самий "що зараз в ефірі" стан, що й clearProjector() —
+  // інакше наступне гортання (next-verse/prev-verse) думає, що вірш
+  // усе ще в ефірі, і тихо повертає його назад на щойно очищений екран.
+  lastLiveSource = null;
+  lastLiveGraphics = false;
+  lastLiveGraphicsTargets = [];
+  lastLivePlain = false;
+  lastLiveMulti = false;
+  try { state.multiLive = []; } catch (e) {}
   try { if (typeof renderTabInto === 'function') renderTabInto('layers'); } catch (e) {}
   state.onAir = null;
   updateLivePanels();

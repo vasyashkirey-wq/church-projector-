@@ -53,8 +53,12 @@ function createMainWindow() {
   });
   mainWin.loadFile(path.join(__dirname, 'src/index.html'));
   mainWin.on('closed', () => {
-    if (outputWins.projector && !outputWins.projector.isDestroyed()) outputWins.projector.close();
-    if (outputWins.stream && !outputWins.stream.isDestroyed()) outputWins.stream.close();
+    // Закриваємо УСІ вікна виводу (не лише projector/stream) — інакше out3/out4
+    // лишались відкритими без панелі керування, і другий запуск програми
+    // («вже запущено — фокусуємо») не міг створити нове головне вікно.
+    OUTPUT_KINDS.forEach(k => {
+      if (outputWins[k] && !outputWins[k].isDestroyed()) outputWins[k].close();
+    });
     stopRemoteServer();
     mainWin = null;
   });
@@ -192,6 +196,13 @@ function createOutputWindow(kind, callback) {
     if (callback) callback();
     if (pendingDisplay) {
       setTimeout(() => {
+        // Обидва виходи (проектор і трансляція) реєструють свій власний
+        // 'did-finish-load' і плюють на СПІЛЬНУ pendingDisplay: якщо вони
+        // завантажились близько в часі, обидва таймаути спрацьовують, і
+        // перший з них уже занулив pendingDisplay до того, як другий встиг
+        // прочитати — другий тоді розсилав усім вікнам display=null одразу
+        // після першого реального показу. Перевіряємо ще раз тут.
+        if (!pendingDisplay) return;
         broadcastDisplay(pendingDisplay);
         pendingDisplay = null;
       }, 200);
@@ -1092,6 +1103,14 @@ function startOscServer(mainWin) {
     // Якщо учимо адресу
     if (oscLearn) {
       oscMap[oscLearn] = addr;
+      // Записуємо на диск одразу — інакше вивчена прив'язка жила лише в пам'яті,
+      // а 'start-osc-server' (напр. при наступному запуску сервера чи програми)
+      // безумовно перечитує osc-map.json і тихо стирала б щойно вивчене.
+      try {
+        const fs = require('fs');
+        const cfgPath = path.join(app.getPath('userData'), 'osc-map.json');
+        fs.writeFileSync(cfgPath, JSON.stringify(oscMap), 'utf8');
+      } catch (e) {}
       if (mainWin && !mainWin.isDestroyed()) {
         mainWin.webContents.send('osc-learned', { action: oscLearn, address: addr });
       }
@@ -2292,6 +2311,12 @@ if (!gotSingleInstanceLock) {
       if (mainWin.isMinimized()) mainWin.restore();
       if (!mainWin.isVisible()) mainWin.show();
       mainWin.focus();
+    } else {
+      // mainWin може бути null тут не лише одразу після старту, а й якщо
+      // головне вікно закрилось (напр. через помилку) поки вихідне вікно
+      // (out3/out4 тощо) якимось чином лишилось живим — раніше другий запуск
+      // просто нічого не робив, і користувач лишався без панелі керування.
+      createMainWindow();
     }
   });
 }
