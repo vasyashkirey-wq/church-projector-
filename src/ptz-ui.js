@@ -128,7 +128,10 @@ function ptzCheckLinks(){
   box.innerHTML = '⏳ Перевіряю звʼязок…';
   var checks = ptzCams.map(function(c, i){
     if (!c.ip) return Promise.resolve('📷 Камера ' + (i + 1) + ': — (немає IP)');
-    var port = (c.protocol === 'visca-tcp') ? (c.port || 5678) : 80;   // веб-порт камери для перевірки
+    // Порт для перевірки — саме настроєний порт камери (з дефолтом під її
+    // протокол), а не завжди 80: ONVIF/HTTP-CGI на нестандартному порту
+    // раніше завжди перевірявся на 80, тож давав хибний "офлайн"/"онлайн".
+    var port = c.port || ptzDefaultPort(c.protocol);
     return window.electronAPI.ptzPing({ ip: c.ip, port: port })
       .then(function(r){ return '📷 Камера ' + (i + 1) + ' (' + c.ip + '): ' + (r && r.online ? '🟢 онлайн' : '🔴 офлайн'); })
       .catch(function(){ return '📷 Камера ' + (i + 1) + ' (' + c.ip + '): 🔴 офлайн'; });

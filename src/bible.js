@@ -384,7 +384,12 @@ function prevBibleVerse() {
   var size = r.to - r.from + 1;              // розмір блоку (1 = один вірш)
   if (r.from <= 1) return;
   var newFrom = Math.max(1, r.from - size);
-  var newTo = size > 1 ? (newFrom + size - 1) : 0;
+  // Якщо newFrom довелось притиснути до 1 (розмір блоку не вкладається
+  // рівно у відстань від початку глави), реальний доступний розмір може
+  // бути МЕНШИМ за size — обмежуємо newTo так, щоб він не заходив у вже
+  // показаний діапазон (r.from), інакше "◀ попередній" міг повторно
+  // показати вірш, який щойно був на екрані.
+  var newTo = size > 1 ? Math.min(newFrom + size - 1, r.from - 1) : 0;
   goToVerse(currentBibleBook, currentBibleChapter, newFrom, newTo > newFrom ? newTo : undefined);
 }
 

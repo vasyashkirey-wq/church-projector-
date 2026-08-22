@@ -88,7 +88,13 @@ let outputConfig = {
 function pickDisplay(excludeIds, preferredId) {
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
-  if (preferredId) {
+  // Явно обраний дисплей повертаємо одразу, АЛЕ тільки якщо він ще не
+  // зайнятий іншим відкритим виходом — інакше два різні виходи (напр.
+  // проектор і трансляція), явно прив'язані до того самого фізичного
+  // екрана, обидва йшли б повноекранно на нього й накладались один на
+  // одного, а count-based перевірка "crowded" нижче цього не ловить,
+  // бо вважає лише кількість відкритих виходів і моніторів.
+  if (preferredId && !excludeIds.includes(preferredId)) {
     const exact = displays.find(d => d.id === preferredId);
     if (exact) return exact;
   }
@@ -1762,8 +1768,15 @@ ipcMain.handle('atem-connect', async (event, ip) => {
     }
     atemInstance = new AtemClass();
     return await new Promise((resolve) => {
-      const timeout = setTimeout(() => resolve({ ok: false, error: 'Час підключення вийшов' }), 8000);
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve({ ok: false, error: 'Час підключення вийшов' });
+      }, 8000);
       atemInstance.on('connected', () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         atemConnected = true;
         atemState = atemInstance.state || {};
@@ -1775,6 +1788,16 @@ ipcMain.handle('atem-connect', async (event, ip) => {
         atemConnected = false;
         if (mainWin && !mainWin.isDestroyed())
           mainWin.webContents.send('atem-status', { connected: false });
+        // Якщо це прийшло ДО першого 'connected' (пристрій одразу відмовив —
+        // неправильна IP, з'єднання відхилено) — проміс інакше висів би усі
+        // 8с до таймауту й показував загальне «Час підключення вийшов»
+        // замість миттєвої точної помилки. Пізніший 'disconnected' (уже
+        // ПІСЛЯ успішного підключення, пристрій пропав) сюди не потрапляє —
+        // `settled` уже true, і цей блок нічого не робить.
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve({ ok: false, error: 'ATEM відхилив з’єднання' });
       });
       atemInstance.on('stateChanged', (state, paths) => {
         atemState = state;
