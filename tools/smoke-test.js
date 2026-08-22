@@ -107,13 +107,19 @@ head('Ізоляція ранньої ініціалізації (safeInit)');
     ok('buildBookAliasList викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
   else bad('buildBookAliasList викликається напряму — його падіння й далі зупинить усе, що йде після нього (напр. ANN_STYLES)');
 
-  // ANN_STYLES визначається одразу ПІСЛЯ loadBibleTranslations() в файлі —
-  // це найкоротший і найважливіший шлях, який мав постраждати від каскаду.
-  const idxLoad = ix.indexOf("safeInit(loadBibleTranslations, 'loadBibleTranslations')");
-  const idxAnn = idxLoad > -1 ? ix.indexOf('var ANN_STYLES = {', idxLoad) : -1;
-  if (idxLoad > -1 && idxAnn > -1 && (idxAnn - idxLoad) < 400)
-    ok('ANN_STYLES визначається одразу після (тепер захищеного) loadBibleTranslations — саме той ланцюжок, що ламався');
-  else bad('не вдалось підтвердити суміжність loadBibleTranslations → ANN_STYLES — перевір порядок вручну');
+  // ANN_STYLES реально падав у продакшені (звіт користувача, "Cannot read
+  // properties of undefined (reading 'dark')") навіть ПІСЛЯ того, як усі 5
+  // відомих ризикованих викликів загорнули в safeInit — бо сам ANN_STYLES
+  // стояв ПІСЛЯ них у файлі, і будь-який ще не знайдений ранній виняток
+  // так само лишав його undefined. Тепер ANN_STYLES визначається одразу
+  // ПІСЛЯ самої функції safeInit і ПЕРЕД усіма ризикованими викликами —
+  // йому вже нічого не може завадити отримати значення.
+  const idxSafeInitEnd = ix.indexOf('function safeInit(fn, label)');
+  const idxAnn = idxSafeInitEnd > -1 ? ix.indexOf('var ANN_STYLES = {', idxSafeInitEnd) : -1;
+  const idxFirstSafeInitCall = ix.indexOf("safeInit(function buildBookAliasList()");
+  if (idxSafeInitEnd > -1 && idxAnn > -1 && idxFirstSafeInitCall > -1 && idxAnn < idxFirstSafeInitCall)
+    ok('ANN_STYLES визначається одразу після safeInit і ДО всіх ризикованих викликів — недосяжний для каскадного падіння');
+  else bad('ANN_STYLES більше не стоїть перед усіма ризикованими викликами — каскадне падіння знову може лишити його undefined');
 
   // Конкретний незахищений DOM-доступ, знайдений у цьому ревʼю: якщо
   // #bibleTranslationsList відсутній у DOM (напр. вкладка ще не змонтована),

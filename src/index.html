@@ -1818,6 +1818,21 @@ function safeInit(fn, label) {
   }
 }
 
+// ANN_STYLES навмисно оголошено ТУТ, одразу після safeInit і перед усіма
+// подальшими top-level викликами — щоб він гарантовано отримав значення,
+// навіть якщо якийсь ще не захищений виклик далі в скрипті впаде і обірве
+// решту виконання. Це і був той самий об'єкт з "Cannot read properties of
+// undefined (reading 'dark')" (renderAnnounceList — src/index.html), що
+// падав у непов'язаній функції «Оголошення», хоча реальна причина була десь
+// раніше в скрипті.
+var ANN_STYLES = {
+  dark:   { bg: '#000000', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
+  blue:   { bg: 'linear-gradient(135deg,#0a1628,#1e3a5f)', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
+  purple: { bg: 'linear-gradient(135deg,#1a0a2e,#3d1155)', titleColor: '#c8a84b', bodyColor: '#ffffff', dateColor: '#8b92a8' },
+  gold:   { bg: 'linear-gradient(135deg,#1a0e00,#3d2a00)', titleColor: '#f0c040', bodyColor: '#fff8e0', dateColor: '#c8a84b' },
+  green:  { bg: 'linear-gradient(135deg,#0a2010,#1a4a25)', titleColor: '#3ecf8e', bodyColor: '#ffffff', dateColor: '#8b92a8' }
+};
+
 // ============================================================
 // БАЗА ПІСЕНЬ (вбудована)
 // ============================================================
@@ -4029,16 +4044,14 @@ safeInit(loadBibleTranslations, 'loadBibleTranslations');
 // ============================================================
 // ANNOUNCEMENTS
 // ============================================================
+// ANN_STYLES сам оголошується значно раніше (одразу після safeInit, на
+// початку скрипта) — саме тому, що це і був той самий об'єкт, який реально
+// падав у користувачів з "Cannot read properties of undefined (reading
+// 'dark')": якщо БУДЬ-ЯКИЙ ранній виклик (навіть той, що ще не загорнутий
+// у safeInit) кидав виняток, усе, що йшло ПІСЛЯ нього в цьому ж <script>,
+// зокрема оголошення ANN_STYLES тут, просто ніколи не виконувалось.
 var ANN_KEY = 'church_announcements';
 var announcements = [];
-
-var ANN_STYLES = {
-  dark:   { bg: '#000000', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
-  blue:   { bg: 'linear-gradient(135deg,#0a1628,#1e3a5f)', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
-  purple: { bg: 'linear-gradient(135deg,#1a0a2e,#3d1155)', titleColor: '#c8a84b', bodyColor: '#ffffff', dateColor: '#8b92a8' },
-  gold:   { bg: 'linear-gradient(135deg,#1a0e00,#3d2a00)', titleColor: '#f0c040', bodyColor: '#fff8e0', dateColor: '#c8a84b' },
-  green:  { bg: 'linear-gradient(135deg,#0a2010,#1a4a25)', titleColor: '#3ecf8e', bodyColor: '#ffffff', dateColor: '#8b92a8' }
-};
 
 function loadAnnouncements() {
   try { announcements = JSON.parse(bigStoreGet(ANN_KEY) || '[]'); } catch(e) { announcements = []; }
