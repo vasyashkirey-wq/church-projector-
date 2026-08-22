@@ -1875,8 +1875,13 @@ document.addEventListener('keydown', function(e) {
     // У режимі прев'ю стрілки гортають ПРЕВ'Ю, зал не змінюється,
     // доки не натиснеш «В ЕФІР» (пробіл).
     case 'next-verse':
-      // Пріоритет: служба за планом → Біблія в ефірі → пісня
+      // Пріоритет: служба за планом → PDF/слайд в ефірі → Біблія в ефірі → пісня
+      // PDF-гілка МАЄ стояти перед фолбеком на state.selectedSong нижче —
+      // інакше стара вибрана пісня (навіть якщо вона вже не в ефірі) тихо
+      // перехоплювала б Пробіл/Стрілку, і замість наступної сторінки PDF
+      // в ефір летіла пісня поверх щойно показаного PDF.
       if (state.service.idx >= 0) { svcNext(); if (staged) goLive(); }
+      else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide' && typeof nextSlide === 'function') { nextSlide(); }
       else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible' && typeof nextBibleVerse === 'function') { nextBibleVerse(); }
       else if (liveSongAdvance(1)) { /* аранжування/розбиття: songStep показав слайд — і в ефірі, і в прев'ю */ }
       else if (staged) { previewStep(1); }
@@ -1884,6 +1889,7 @@ document.addEventListener('keydown', function(e) {
       break;
     case 'prev-verse':
       if (state.service.idx >= 0) { svcPrev(); if (staged) goLive(); }
+      else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide' && typeof prevSlide === 'function') { prevSlide(); }
       else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible' && typeof prevBibleVerse === 'function') { prevBibleVerse(); }
       else if (liveSongAdvance(-1)) { /* аранжування/розбиття: songStep показав слайд — і в ефірі, і в прев'ю */ }
       else if (staged) { previewStep(-1); }

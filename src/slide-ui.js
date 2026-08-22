@@ -121,11 +121,17 @@ function selectPDFPage(num) {
 }
 
 function prevSlide() {
-  if (pdfPageNum > 1) selectPDFPage(pdfPageNum - 1);
+  if (pdfPageNum <= 1) return;
+  selectPDFPage(pdfPageNum - 1);
+  // PDF зараз в ефірі (востаннє відправлена сторінка — саме PDF) — гортання
+  // має одразу оновити те, що бачить зал, а не лише локальний прев'ю.
+  if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide') sendSlideToProjector();
 }
 
 function nextSlide() {
-  if (pdfPageNum < pdfPageCount) selectPDFPage(pdfPageNum + 1);
+  if (pdfPageNum >= pdfPageCount) return;
+  selectPDFPage(pdfPageNum + 1);
+  if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide') sendSlideToProjector();
 }
 
 function updateSlideCounter() {
@@ -142,6 +148,17 @@ function sendSlideToProjector() {
 }
 
 function sendImageToProjector(dataUrl, label) {
+  // ВАЖЛИВО: позначаємо PDF/слайд як те, що реально в ефірі — інакше
+  // lastLiveSource лишається тим, чим було до цього (напр. 'song' від
+  // раніше вибраної пісні), і наступне натискання Пробіл/Стрілка (яке
+  // мало б погортати PDF) замість цього викликає nextVerse()/nextBibleVerse()
+  // і в ефір летить пісня чи вірш ПОВЕРХ щойно показаного PDF. Той самий
+  // скид, що робить clearLive() для інших джерел.
+  lastLiveSource = 'slide';
+  lastLiveGraphics = false;
+  lastLivePlain = false;
+  lastLiveMulti = false;
+  try { if (typeof state !== 'undefined' && state) state.multiLive = []; } catch (e) {}
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
     'body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;}' +
     'img{max-width:100%;max-height:100vh;object-fit:contain;}' +

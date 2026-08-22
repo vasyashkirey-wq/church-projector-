@@ -447,7 +447,7 @@ function refreshLiveIndicator() {
     what = 'Кілька перекладів → ' + names.join(', ');
   } else {
     var src = (typeof lastLiveSource !== 'undefined') ? lastLiveSource : null;
-    icon = (oa.kind === 'htmlraw') ? '🖼' : (src === 'song' ? '🎵' : (src === 'bible' ? '📖' : '📺'));
+    icon = (oa.kind === 'htmlraw') ? '🖼' : (src === 'song' ? '🎵' : (src === 'bible' ? '📖' : (src === 'slide' ? '📄' : '📺')));
     var body = oa.rawText || oa.ref || String(oa.html || '').replace(/<[^>]*>/g, ' ');
     var snippet = String(body).replace(/\s+/g, ' ').trim();
     var label = oa.label || '';

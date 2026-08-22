@@ -507,6 +507,59 @@ head('Гарячі клавіші F1/F2/F5/Esc');
   else bad('гарячі клавіші можуть спрацювати під час набору тексту в полі — ризик випадково закрити вихід');
 })();
 
+// ── PDF/слайди в ефірі: гортання не має "витікати" в пісню/вірш ─────────────
+// РЕГРЕСІЯ З ЖИТТЯ (звіт користувача): надіслав сторінку PDF в ефір, натиснув
+// Пробіл/Стрілку очікуючи погортати PDF — а замість цього в ефір летіла
+// пісня чи вірш ПОВЕРХ щойно показаного PDF. Причина: sendImageToProjector
+// (спільна точка для PDF-сторінок і власних слайдів) НІКОЛИ не виставляла
+// lastLiveSource, тож усі три диспетчери next/prev (гарячі клавіші, пульт/
+// OSC, fallback-обробник) бачили стару 'song'/'bible' (або їх відсутність) і
+// падали на фолбек nextVerse()/nextBibleVerse().
+head('PDF/слайди: гортання лишається на PDF, не "перестрибує" на пісню');
+(function () {
+  const ix = SRC.index, ex = SRC.extras;
+  const sendImgBody = fnBody(ex, 'sendImageToProjector');
+  if (/lastLiveSource\s*=\s*'slide'/.test(sendImgBody))
+    ok("sendImageToProjector позначає lastLiveSource='slide' (PDF/слайд визнається джерелом в ефірі)");
+  else bad('sendImageToProjector не виставляє lastLiveSource — гортання PDF може перескочити на пісню/вірш');
+
+  const nextSlideBody = fnBody(ex, 'nextSlide');
+  const prevSlideBody = fnBody(ex, 'prevSlide');
+  if (/lastLiveSource === 'slide'[\s\S]{0,30}sendSlideToProjector\(\)/.test(nextSlideBody) &&
+      /lastLiveSource === 'slide'[\s\S]{0,30}sendSlideToProjector\(\)/.test(prevSlideBody))
+    ok('nextSlide/prevSlide оновлюють проектор, поки PDF в ефірі (не лише локальний прев\'ю)');
+  else bad('nextSlide/prevSlide не пушать нову сторінку в ефір — зал бачить застарілу сторінку');
+
+  // У кожному з трьох диспетчерів next/prev перевірка lastLiveSource==='slide'
+  // МАЄ стояти РАНІШЕ за фолбек на state.selectedSong/nextVerse — інакше
+  // стара вибрана пісня все одно перехопить команду першою.
+  function slideBeforeSongFallback(body, fallbackRe) {
+    const slideIdx = body.search(/lastLiveSource === 'slide'/);
+    const fallbackIdx = body.search(fallbackRe);
+    return slideIdx > -1 && fallbackIdx > -1 && slideIdx < fallbackIdx;
+  }
+  // initHotkeys оголошує slideLive = (lastLiveSource === 'slide') окремою
+  // змінною ПЕРЕД switch (як і bibleLive) — у самому тілі case перевірка
+  // виглядає як "slideLive &&", а не буквальне порівняння.
+  const hotkeyNext = (ix.match(/case ' ':[\s\S]{0,520}?break;/) || [''])[0];
+  const slideVarIdx = hotkeyNext.search(/slideLive\s*&&/);
+  const songFallbackIdx = hotkeyNext.search(/selectedSong\)\s*\{\s*nextVerse/);
+  if (/var slideLive = \(typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide'\)/.test(ix) &&
+      slideVarIdx > -1 && songFallbackIdx > -1 && slideVarIdx < songFallbackIdx)
+    ok('initHotkeys (fallback-обробник, Пробіл): PDF перевіряється до фолбеку на вибрану пісню');
+  else bad('initHotkeys: фолбек на вибрану пісню може перехопити Пробіл раніше за PDF');
+
+  const remoteSwitch = fnBody(ex, 'initRemoteListener');
+  if (slideBeforeSongFallback(remoteSwitch, /nextVerse === 'function'\)\s*\{\s*nextVerse/))
+    ok('пульт/OSC (initRemoteListener): PDF перевіряється до фолбеку на nextVerse');
+  else bad('пульт/OSC: фолбек на nextVerse може перехопити команду раніше за PDF');
+
+  const hotkeyHandlerBody = ex; // глобальний keydown-обробник extras-4.js — шукаємо весь файл
+  if (slideBeforeSongFallback(hotkeyHandlerBody, /state\.selectedSong\)\s*\{\s*nextVerse/))
+    ok('глобальні гарячі клавіші (extras-4.js): PDF перевіряється до фолбеку на вибрану пісню');
+  else bad('глобальні гарячі клавіші: фолбек на вибрану пісню може перехопити команду раніше за PDF');
+})();
+
 // ── Пісні: редагування + збережений розмір ──────────────────────────────────
 head('Пісні: редагування + розмір');
 (function () {
