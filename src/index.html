@@ -1784,6 +1784,41 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
 
 <script>
 // ============================================================
+// ЗАХИСТ ІНІЦІАЛІЗАЦІЇ: одна впала функція не має рвати весь скрипт
+// ------------------------------------------------------------
+// РЕГРЕСІЯ, яку це виправляє: цей файл — один суцільний <script> з десятками
+// послідовних top-level викликів (searchSongs(), initHotkeys(), ..., потім
+// var ANN_STYLES = {...} і решта). Якщо БУДЬ-ЯКИЙ із ранніх викликів кидає
+// виняток (напр. відсутній DOM-елемент), браузер одразу зупиняє виконання
+// ВСЬОГО скрипта — усе, що мало виконатись ПІСЛЯ (зокрема ANN_STYLES), просто
+// ніколи не отримує значення. Наслідок: непов'язана функція (Оголошення)
+// падає з "Cannot read properties of undefined (reading 'dark')", хоча сам
+// баг був десь зовсім в іншому місці, що виконалось раніше.
+// safeInit() ловить помилку кожного виклику окремо, лишає банер (як і
+// window.onerror нижче) і ДОЗВОЛЯЄ решті скрипта виконатись далі як звичайно.
+function safeInit(fn, label) {
+  try { fn(); }
+  catch (e) {
+    console.error('[init] ' + label + ' впала:', e);
+    try {
+      var box = document.getElementById('pv2ErrBox');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'pv2ErrBox';
+        box.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#7f1d1d;color:#fff;' +
+          'font:12px/1.4 monospace;padding:8px 12px;max-height:30vh;overflow:auto;border-top:2px solid #f56565;' +
+          'pointer-events:none';
+        document.body.appendChild(box);
+      }
+      box.textContent = '⚠ Ініціалізація «' + label + '» впала: ' + e.message;
+      box.style.display = 'block';
+      clearTimeout(box._t);
+      box._t = setTimeout(function () { if (box) box.style.display = 'none'; }, 6000);
+    } catch (e2) {}
+  }
+}
+
+// ============================================================
 // БАЗА ПІСЕНЬ (вбудована)
 // ============================================================
 var SONGS_KEY = 'church_songs_db';
@@ -2045,7 +2080,7 @@ var BOOK_ALIASES = {
 // Будуємо плоский список {alias, bookId} для швидкого пошуку,
 // плюс саму нормалізовану повну назву з BIBLE_BOOKS теж додаємо як аліас
 var BOOK_ALIAS_LIST = [];
-(function buildBookAliasList() {
+safeInit(function buildBookAliasList() {
   BIBLE_BOOKS.forEach(function(b) {
     var aliases = (BOOK_ALIASES[b.id] || []).slice();
     aliases.push(b.name);
@@ -2056,7 +2091,7 @@ var BOOK_ALIAS_LIST = [];
   // Сортуємо за довжиною аліасу спадно — щоб довші (точніші) варіанти
   // перевірялись першими і не "з'їдались" коротшими підрядками
   BOOK_ALIAS_LIST.sort(function(a, b) { return b.alias.length - a.alias.length; });
-})();
+}, 'buildBookAliasList');
 
 function fuzzyNormalizeRef(s) {
   return String(s).toLowerCase().replace(/['"«»"„"\.]/g, '').replace(/\s+/g, ' ').trim();
@@ -2812,8 +2847,8 @@ function escHtml(s) {
 // ============================================================
 // INIT
 // ============================================================
-searchSongs();
-initHotkeys();
+safeInit(searchSongs, 'searchSongs');
+safeInit(initHotkeys, 'initHotkeys');
 
 // Слайд-білдер + PDF — винесено в окремий модуль src/slide-ui.js
 
@@ -3339,7 +3374,7 @@ function doSendHTML(htmlContent, label) {
 // ============================================================
 // INIT QR PRESETS
 // ============================================================
-renderQRPresets();
+safeInit(renderQRPresets, "renderQRPresets");
 
 // ============================================================
 // BIBLE TRANSLATIONS
@@ -3988,7 +4023,7 @@ function getMultiTransHTML(ref, blocks, n) {
 // ============================================================
 // INIT TRANSLATIONS
 // ============================================================
-loadBibleTranslations();
+safeInit(loadBibleTranslations, 'loadBibleTranslations');
 
 // ============================================================
 // ANNOUNCEMENTS
