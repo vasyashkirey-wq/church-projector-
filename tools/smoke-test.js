@@ -33,7 +33,11 @@ const path = require('path');
 const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
-const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
+// Нормалізуємо CRLF → LF: на Windows-раннері git checkout конвертує рядки,
+// і будь-який regex у цьому файлі з буквальним \n (без \r?) там мовчки
+// переставав збігатись, хоча перевірюваний код був повністю коректний —
+// саме це завалило build-win на v2.2.3 (сам код не мав жодної проблеми).
+const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8').replace(/\r\n/g, '\n');
 const SRC = {
   index: read('src/index.html'),
   extras: (function(){
@@ -140,10 +144,16 @@ head('Ізоляція ранньої ініціалізації (safeInit)');
       ok(name + '() викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
     else bad(name + '() викликається напряму — його падіння й далі зупинить усе, що йде після нього');
   });
-  if (/safeInit\(function\(\) \{\s*\n\s*if \(window\.electronAPI\) \{\s*\n\s*window\.electronAPI\.getOutputConfig/.test(ix))
+  // indexOf замість regex із буквальним \n: на Windows-раннері git checkout
+  // конвертує LF → CRLF, і regex із голим \n (без \r?) там мовчки не збігався,
+  // хоча код був повністю коректний — це й завалило build-win на v2.2.3.
+  const idxGetOutputConfigWrap = ix.indexOf("safeInit(function() {\n  if (window.electronAPI) {\n    window.electronAPI.getOutputConfig");
+  if (idxGetOutputConfigWrap > -1)
     ok('getOutputConfig/onDisplaysChanged загорнуто в safeInit');
   else bad('getOutputConfig/onDisplaysChanged викликається напряму поза safeInit');
-  if (/safeInit\(function\(\) \{\nif \(window\.electronAPI\) \{\s*\n\s*window\.electronAPI\.onRemoteCommand/.test(ix))
+  const idxOnRemoteCmdCall = ix.indexOf('window.electronAPI.onRemoteCommand');
+  const idxOnRemoteCmdWrap = ix.lastIndexOf('safeInit(function() {', idxOnRemoteCmdCall > -1 ? idxOnRemoteCmdCall : 0);
+  if (idxOnRemoteCmdCall > -1 && idxOnRemoteCmdWrap > -1 && (idxOnRemoteCmdCall - idxOnRemoteCmdWrap) < 200)
     ok('onRemoteCommand/getTheme загорнуто в safeInit');
   else bad('onRemoteCommand/getTheme викликається напряму поза safeInit');
 
