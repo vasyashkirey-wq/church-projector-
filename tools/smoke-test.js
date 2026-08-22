@@ -121,6 +121,32 @@ head('Ізоляція ранньої ініціалізації (safeInit)');
     ok('ANN_STYLES визначається одразу після safeInit і ДО всіх ризикованих викликів — недосяжний для каскадного падіння');
   else bad('ANN_STYLES більше не стоїть перед усіма ризикованими викликами — каскадне падіння знову може лишити його undefined');
 
+  // ANN_KEY/announcements — той самий каскад, друга половина: користувач
+  // отримав ANN_STYLES-фікс, натиснув "Зберегти" оголошення й отримав НОВИЙ
+  // крах, бо announcements (var announcements = []) так само стояв ПІСЛЯ
+  // ризикованих викликів — announcements.push(...) у saveAnnounce() падав
+  // без жодного захисту, коли announcements лишався undefined.
+  const idxAnnKey = idxSafeInitEnd > -1 ? ix.indexOf('var ANN_KEY = ', idxSafeInitEnd) : -1;
+  const idxAnnArr = idxSafeInitEnd > -1 ? ix.indexOf('var announcements = [];', idxSafeInitEnd) : -1;
+  if (idxAnnKey > -1 && idxAnnArr > -1 && idxFirstSafeInitCall > -1 && idxAnnKey < idxFirstSafeInitCall && idxAnnArr < idxFirstSafeInitCall)
+    ok('ANN_KEY/announcements визначаються одразу після safeInit і ДО всіх ризикованих викликів');
+  else bad('ANN_KEY/announcements більше не стоять перед усіма ризикованими викликами — "Зберегти" оголошення знову може впасти');
+
+  // Решта прямих (не загорнутих у safeInit) top-level викликів, знайдених
+  // у тому ж скрипті при повторному аудиті — кожен з них теж міг обірвати
+  // все, що йде після нього, якщо електронний preload не дав очікуваний метод.
+  ['loadAnnouncements', 'initBgLibrary', 'refreshDisplays'].forEach(name => {
+    if (new RegExp('safeInit\\(' + name + ',').test(ix))
+      ok(name + '() викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+    else bad(name + '() викликається напряму — його падіння й далі зупинить усе, що йде після нього');
+  });
+  if (/safeInit\(function\(\) \{\s*\n\s*if \(window\.electronAPI\) \{\s*\n\s*window\.electronAPI\.getOutputConfig/.test(ix))
+    ok('getOutputConfig/onDisplaysChanged загорнуто в safeInit');
+  else bad('getOutputConfig/onDisplaysChanged викликається напряму поза safeInit');
+  if (/safeInit\(function\(\) \{\nif \(window\.electronAPI\) \{\s*\n\s*window\.electronAPI\.onRemoteCommand/.test(ix))
+    ok('onRemoteCommand/getTheme загорнуто в safeInit');
+  else bad('onRemoteCommand/getTheme викликається напряму поза safeInit');
+
   // Конкретний незахищений DOM-доступ, знайдений у цьому ревʼю: якщо
   // #bibleTranslationsList відсутній у DOM (напр. вкладка ще не змонтована),
   // .innerHTML на null кидав TypeError і рвав усе, що йде далі в скрипті.

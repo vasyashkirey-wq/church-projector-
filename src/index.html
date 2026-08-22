@@ -1818,13 +1818,18 @@ function safeInit(fn, label) {
   }
 }
 
-// ANN_STYLES навмисно оголошено ТУТ, одразу після safeInit і перед усіма
-// подальшими top-level викликами — щоб він гарантовано отримав значення,
-// навіть якщо якийсь ще не захищений виклик далі в скрипті впаде і обірве
-// решту виконання. Це і був той самий об'єкт з "Cannot read properties of
-// undefined (reading 'dark')" (renderAnnounceList — src/index.html), що
-// падав у непов'язаній функції «Оголошення», хоча реальна причина була десь
-// раніше в скрипті.
+// ANN_STYLES, ANN_KEY і announcements навмисно оголошено ТУТ, одразу після
+// safeInit і перед усіма подальшими top-level викликами — щоб вони
+// гарантовано отримали значення, навіть якщо якийсь ще не захищений виклик
+// далі в скрипті впаде і обірве решту виконання. Саме цей ланцюжок падав
+// у користувачів: спершу "Cannot read properties of undefined (reading
+// 'dark')" (ANN_STYLES, у renderAnnounceList), а тоді — при спробі
+// "Зберегти" оголошення — так само з announcements (`.push is not a
+// function` / "reading 'push'"), бо обидва стояли ПІСЛЯ ризикованих
+// викликів у файлі.
+var ANN_KEY = 'church_announcements';
+var announcements = [];
+
 var ANN_STYLES = {
   dark:   { bg: '#000000', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
   blue:   { bg: 'linear-gradient(135deg,#0a1628,#1e3a5f)', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
@@ -2470,12 +2475,18 @@ function syncMonitorMissingBanner() {
 }
 setInterval(syncSendTargetBanner, 1000);   // ловимо зміну, з якої б вкладки її не зробили
 
-if (window.electronAPI) {
-  window.electronAPI.onOutputClosed(function(kind) {
-    if (kind === 'projector') { projOpen = false; updateProjStatus(false); }
-    else if (kind === 'stream') { streamOpen = false; updateStreamStatus(false); }
-  });
-}
+// Загорнуто в safeInit разом з рештою ранньої ініціалізації — якщо
+// preload раптом не виставив onOutputClosed (напр. неузгоджена версія),
+// пряма помилка тут раніше рвала б увесь подальший скрипт (той самий
+// клас багу, що й з ANN_STYLES/announcements вище).
+safeInit(function() {
+  if (window.electronAPI) {
+    window.electronAPI.onOutputClosed(function(kind) {
+      if (kind === 'projector') { projOpen = false; updateProjStatus(false); }
+      else if (kind === 'stream') { streamOpen = false; updateStreamStatus(false); }
+    });
+  }
+}, 'onOutputClosed');
 
 function clearProjector() {
   updateLivePreview(null);
@@ -4044,14 +4055,15 @@ safeInit(loadBibleTranslations, 'loadBibleTranslations');
 // ============================================================
 // ANNOUNCEMENTS
 // ============================================================
-// ANN_STYLES сам оголошується значно раніше (одразу після safeInit, на
-// початку скрипта) — саме тому, що це і був той самий об'єкт, який реально
-// падав у користувачів з "Cannot read properties of undefined (reading
-// 'dark')": якщо БУДЬ-ЯКИЙ ранній виклик (навіть той, що ще не загорнутий
-// у safeInit) кидав виняток, усе, що йшло ПІСЛЯ нього в цьому ж <script>,
-// зокрема оголошення ANN_STYLES тут, просто ніколи не виконувалось.
-var ANN_KEY = 'church_announcements';
-var announcements = [];
+// ANN_STYLES, ANN_KEY та announcements самі оголошуються значно раніше
+// (одразу після safeInit, на початку скрипта) — саме тому, що вони й були
+// тим самим ланцюжком, який реально падав у користувачів: спочатку
+// "Cannot read properties of undefined (reading 'dark')" (ANN_STYLES), а
+// потім — тепер вже на самому "Зберегти" — "reading 'push'" (announcements
+// лишався undefined тим самим шляхом: `announcements.push(...)` у
+// saveAnnounce() падав без жодного захисту). Якщо БУДЬ-ЯКИЙ ранній виклик
+// (навіть той, що ще не загорнутий у safeInit) кидає виняток, усе, що йшло
+// ПІСЛЯ нього в цьому ж <script>, просто ніколи не виконувалось.
 
 function loadAnnouncements() {
   try { announcements = JSON.parse(bigStoreGet(ANN_KEY) || '[]'); } catch(e) { announcements = []; }
@@ -4227,7 +4239,7 @@ function copyAnnounceApiLink(id) {
   if (el) el.addEventListener('change', updateAnnPreview);
 });
 
-loadAnnouncements();
+safeInit(loadAnnouncements, 'loadAnnouncements');
 
 // ============================================================
 // BACKGROUND LIBRARY
@@ -4449,7 +4461,7 @@ function getTextWithBgHTML(text, ref) {
     '</body></html>';
 }
 
-initBgLibrary();
+safeInit(initBgLibrary, 'initBgLibrary');
 
 // ============================================================
 // MONITORS / DISPLAYS
@@ -4598,32 +4610,34 @@ function setStreamChroma(color) {
   });
 }
 
-if (window.electronAPI) {
-  window.electronAPI.getOutputConfig().then(function(cfg) {
-    outputConfig = cfg;
-    document.querySelectorAll('.chroma-swatch').forEach(function(s) {
-      s.classList.toggle('sel', s.getAttribute('data-color') === (cfg.streamChroma || 'none'));
-    });
-    // Підтягуємо справжні значення хромакею з головного процесу в облік «Виходів» —
-    // інакше після старту програми стан там завжди був би «вимкнено» незалежно
-    // від того, що реально стоїть на екранах.
-    if (cfg.chroma && typeof state !== 'undefined' && state && state.outputChroma) {
-      var map = { projector: 1, stream: 2, out3: 3, out4: 4 };
-      Object.keys(map).forEach(function(kind) {
-        if (cfg.chroma[kind]) state.outputChroma[map[kind]] = cfg.chroma[kind];
+safeInit(function() {
+  if (window.electronAPI) {
+    window.electronAPI.getOutputConfig().then(function(cfg) {
+      outputConfig = cfg;
+      document.querySelectorAll('.chroma-swatch').forEach(function(s) {
+        s.classList.toggle('sel', s.getAttribute('data-color') === (cfg.streamChroma || 'none'));
       });
-    }
-    populateDisplaySelects();
-    renderMonitorLayout();
-  });
-  window.electronAPI.onDisplaysChanged(function(list) {
-    displaysList = list;
-    renderMonitorLayout();
-    populateDisplaySelects();
-  });
-}
+      // Підтягуємо справжні значення хромакею з головного процесу в облік «Виходів» —
+      // інакше після старту програми стан там завжди був би «вимкнено» незалежно
+      // від того, що реально стоїть на екранах.
+      if (cfg.chroma && typeof state !== 'undefined' && state && state.outputChroma) {
+        var map = { projector: 1, stream: 2, out3: 3, out4: 4 };
+        Object.keys(map).forEach(function(kind) {
+          if (cfg.chroma[kind]) state.outputChroma[map[kind]] = cfg.chroma[kind];
+        });
+      }
+      populateDisplaySelects();
+      renderMonitorLayout();
+    });
+    window.electronAPI.onDisplaysChanged(function(list) {
+      displaysList = list;
+      renderMonitorLayout();
+      populateDisplaySelects();
+    });
+  }
+}, 'getOutputConfig/onDisplaysChanged');
 
-refreshDisplays();
+safeInit(refreshDisplays, 'refreshDisplays');
 
 // ============================================================
 // THEME SYSTEM
@@ -4876,6 +4890,7 @@ function generateRemoteQR(url) {
 }
 
 // Handle remote commands from phone
+safeInit(function() {
 if (window.electronAPI) {
   window.electronAPI.onRemoteCommand(function(cmd) {
     // extras.js реєструє СВІЙ обробник тих самих команд пульта (initRemoteListener) —
@@ -4906,6 +4921,7 @@ if (window.electronAPI) {
     if (t && typeof t === 'object') { theme = Object.assign({}, theme, t); syncThemeUI(); updateThemePreview(); }
   });
 }
+}, 'onRemoteCommand/getTheme');
 
 // ============================================================
 // ⌨️ ГАРЯЧІ КЛАВІШІ
