@@ -175,8 +175,13 @@ function playScene(i){
   var s = prodScenes[i]; if (!s) return;
   if (s.cam != null && s.preset != null && typeof ptzSendTo === 'function') ptzSendTo(s.cam, 'preset-recall', { n: s.preset });
   if (s.atem != null && window.electronAPI && window.electronAPI.atemCommand) {
-    atemCmd({ type: 'preview', input: s.atem });
-    setTimeout(function(){ atemCmd({ type: 'auto' }); }, 250);   // плавний перехід у ефір
+    // Чекаємо підтвердження зміни preview, а не фіксований таймер — інакше на
+    // повільному лінку 'auto' може спрацювати до фактичної зміни preview
+    // і в ефір піде попереднє джерело замість обраного сценою.
+    atemCmd({ type: 'preview', input: s.atem }).then(function(result) {
+      if (result && result.ok === false) return;
+      atemCmd({ type: 'auto' });   // плавний перехід у ефір
+    });
   }
   if (typeof notify === 'function') notify('🎬 ' + s.name);
 }

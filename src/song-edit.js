@@ -42,8 +42,15 @@ function parseSongVerses(raw) {
     });
     flushSection();
   } else {
-    // Режим fallback: ділимо по --- або по подвійних порожніх рядках
-    var blocks = text.split(/\n---\n|\n{2,}/);
+    // Режим fallback: якщо в тексті Є явні роздільники --- (саме їх вставляє
+    // editSong() при повторному відкритті пісні на редагування) — ділимо
+    // ЛИШЕ по них, ігноруючи порожні рядки всередині секції. Інакше секція
+    // з кількома строфами (де є власний порожній рядок посеред тексту) при
+    // збереженні тихо розбивалась би на дві — саме тому editSong() більше
+    // НЕ використовує подвійний перенос рядка як роздільник між секціями.
+    // Коли --- немає взагалі (щойно вставлений/новий текст) — ділимо, як і
+    // раніше, по подвійних порожніх рядках.
+    var blocks = /\n---\n/.test(text) ? text.split(/\n---\n/) : text.split(/\n{2,}/);
     blocks.forEach(function(b) {
       var body = b.trim();
       if (body) sections.push({ label: '', text: body });
@@ -94,8 +101,17 @@ function editSong(id) {
   editingSongId = id;
   document.getElementById('newSongTitle').value = s.title || '';
   document.getElementById('newSongAuthor').value = s.author || '';
-  // verses[] → сирий текст: секції через порожній рядок (парсер знову їх поділить)
-  document.getElementById('newSongVerses').value = (s.verses || []).join('\n\n');
+  // verses[] → сирий текст. Для пісень БЕЗ заголовків секцій з'єднуємо через
+  // явний роздільник "---", а не подвійний порожній рядок: інакше секція,
+  // де оператор сам залишив порожній рядок між строфами, після повторного
+  // збереження тихо розпадалась би на дві (parseSongVerses бачив би обидва
+  // порожні рядки — свій і роздільник — однаково). Для пісень ІЗ заголовками
+  // (кожна секція вже починається з "Приспів"/"1 куплет" і т.п.) роздільник
+  // між ними не важливий — парсер ділить по самих заголовках.
+  var vs = s.verses || [];
+  var hdrRe = /^(\d+\s*)?(куплет|приспів|бридж|bridge|intro|інтро|outro|хор|chorus|verse|refrain|pre-?chorus|розспів)\s*\d*\s*:?\s*$/i;
+  var looksHeadered = vs.some(function(v) { return hdrRe.test(String(v).split('\n')[0].trim()); });
+  document.getElementById('newSongVerses').value = vs.join(looksHeadered ? '\n\n' : '\n---\n');
   previewParsedVerses();
   var btn = document.getElementById('saveSongBtn');
   if (btn) btn.textContent = '💾 Оновити пісню';

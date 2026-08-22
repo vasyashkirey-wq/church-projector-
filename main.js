@@ -1369,9 +1369,18 @@ function actionAllowed(access, action) {
 }
 
 function startRemoteServer(pin, users) {
+  // Сервер уже працює — не змінюємо PIN/список користувачів під ногами у вже
+  // підключених клієнтів. Раніше будь-який виклик 'start-remote' (навіть
+  // службовий, що просто хотів дізнатись статус) беззастережно перезаписував
+  // remotePin — і виклик БЕЗ явного pin скидав його на '', що per findRemoteAccess
+  // відкриває пульт керування будь-кому в мережі без пароля просто посеред служіння.
+  // Дзеркалить той самий захист, що вже є у 'start-sync-server'.
+  if (httpServer) {
+    if (pin) remotePin = pin;
+    return { port: 3939, ip: getLocalIP(), pin: remotePin };
+  }
   remotePin = pin || '';
   if (Array.isArray(users)) remoteUsers = users;
-  if (httpServer) return { port: 3939, ip: getLocalIP(), pin: remotePin };
 
   httpServer = http.createServer((req, res) => {
     // ---- HTTP API для Stream Deck / Bitfocus Companion ----
@@ -2060,7 +2069,13 @@ async function ptzOnvif(cfg, action, p) {
       (err) => { if (err) rej(err); else { _onvifCams[key] = cam; res(cam); } });
   });
   const cam = await getCam();
-  const call = (m, arg) => new Promise((res, rej) => cam[m](arg, (e, r) => e ? rej(e) : res(r)));
+  // Якщо команда падає (камера перезавантажилась, Wi-Fi відпав тощо) —
+  // викидаємо мертве з'єднання з кешу. Раніше воно лишалось там назавжди,
+  // і всі наступні PTZ-команди для цієї камери мовчки продовжували битись
+  // у той самий непрацюючий об'єкт аж до перезапуску всієї програми.
+  const call = (m, arg) => new Promise((res, rej) => cam[m](arg, (e, r) => {
+    if (e) { delete _onvifCams[key]; rej(e); } else res(r);
+  }));
   const norm = (v) => Math.max(-1, Math.min(1, v));
   const sp = norm((p.panSpeed || 12) / 24);
   switch (action) {

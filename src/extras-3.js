@@ -1272,6 +1272,11 @@ function svcMove(i, delta) {
   const j = i + delta;
   if (j < 0 || j >= it.length) return;
   [it[i], it[j]] = [it[j], it[i]];
+  // Пункти помінялись місцями в масиві — якщо серед них був поточний
+  // (виділений) пункт, покажчик має піти за ним, інакше "поточним" тихо
+  // стає той пункт, що просто зайняв стару позицію.
+  if (state.service.idx === i) state.service.idx = j;
+  else if (state.service.idx === j) state.service.idx = i;
   saveService(); renderTabInto('service');
 }
 
@@ -1307,11 +1312,15 @@ function svcParseRange(ref) {
 // ---- Розкриття елемента у слайди ----
 const _svcCache = new Map();
 function svcSlidesCacheKey(item) {
+  // currentTranslationId МАЄ бути в ключі: інакше перегляд пункту-вірша,
+  // перемикання перекладу Біблії й повернення до того ж пункту показує
+  // застарілий (закешований на старому перекладі) текст.
   return JSON.stringify([item.kind, item.id, item.ref, item.title,
                          state.splitCfg.on, state.splitCfg.maxLines, state.splitCfg.maxChars,
                          item.id != null ? state.orders['ord_' + item.id] : null,
                          item.id != null && state.chorusEach ? !!state.chorusEach['ord_' + item.id] : null,
-                         !!state.arrangeGlobal]);
+                         !!state.arrangeGlobal,
+                         typeof currentTranslationId !== 'undefined' ? currentTranslationId : null]);
 }
 function svcInvalidate() { _svcCache.clear(); }
 

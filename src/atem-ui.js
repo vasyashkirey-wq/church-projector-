@@ -116,9 +116,13 @@ function renderAtemInputs() {
 }
 
 function atemCmd(cmd) {
-  if (!window.electronAPI) return;
-  window.electronAPI.atemCommand(cmd).then(function(result) {
+  if (!window.electronAPI) return Promise.resolve({ ok: false });
+  // Повертаємо проміс — виклики, яким важливо дочекатись підтвердження
+  // команди (напр. atemScene нижче), можуть на нього чекати замість
+  // довільного таймера.
+  return window.electronAPI.atemCommand(cmd).then(function(result) {
     if (!result.ok) showMsg('ATEM: ' + (result.error || 'помилка'), 'var(--red)');
+    return result;
   });
 }
 
@@ -137,8 +141,14 @@ function atemPip(corner, keyer) {
 function atemScene(scene) {
   var s = atemSceneMap[scene];
   if (!s) return;
-  atemCmd({ type: 'preview', input: s.input });
-  setTimeout(function() { atemCmd({ type: 'auto' }); }, 200);
+  // Чекаємо підтвердження, що preview дійсно змінився на пристрої, перш ніж
+  // давати 'auto' — раніше фіксований таймер 200мс на повільному/завантаженому
+  // лінку до ATEM міг спрацювати РАНІШЕ за фактичну зміну preview, і в ефір
+  // йшло попереднє джерело замість щойно обраного.
+  atemCmd({ type: 'preview', input: s.input }).then(function(result) {
+    if (result && result.ok === false) return; // команда не пройшла — auto теж не давати
+    atemCmd({ type: 'auto' });
+  });
 }
 
 // Listen for ATEM state updates
