@@ -79,6 +79,51 @@ function checkSyntax(label, code) {
   catch (e) { bad('синтаксис: ' + label + ' → ' + e.message); }
 }
 
+// ── Ізоляція ранньої ініціалізації (safeInit) ─────────────────────────────
+// РЕГРЕСІЯ, яку це виправляє: index.html — один суцільний <script> з
+// послідовними top-level викликами (searchSongs, initHotkeys, ...), а ПІСЛЯ
+// них — var ANN_STYLES = {...} та інші глобальні дані. Якщо БУДЬ-ЯКИЙ ранній
+// виклик кидає виняток, браузер зупиняє виконання ВСЬОГО скрипта — усе, що
+// мало виконатись після (зокрема ANN_STYLES), ніколи не отримує значення.
+// Наслідок: непов'язана фіча (Оголошення) падає з "Cannot read properties
+// of undefined (reading 'dark')", хоча реальний баг був десь раніше.
+head('Ізоляція ранньої ініціалізації (safeInit)');
+(function () {
+  const ix = SRC.index;
+  if (/function safeInit\(fn, label\)/.test(ix)) ok('safeInit() визначено на самому початку скрипта');
+  else bad('немає safeInit() — рання помилка й далі рве всю подальшу ініціалізацію (ANN_STYLES тощо)');
+
+  const safeInitBody = fnBody(ix, 'safeInit');
+  if (/try \{ fn\(\); \}/.test(safeInitBody) || /try\s*\{\s*fn\(\);\s*\}/.test(ix))
+    ok('safeInit огортає виклик у try/catch (одна помилка не рве решту)');
+  else bad('safeInit не ловить виняток — захист не працює');
+
+  ['searchSongs', 'initHotkeys', 'renderQRPresets', 'loadBibleTranslations'].forEach(name => {
+    if (new RegExp('safeInit\\(' + name + ',').test(ix))
+      ok(name + ' викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+    else bad(name + ' викликається напряму — його падіння й далі зупинить усе, що йде після нього (напр. ANN_STYLES)');
+  });
+  if (/safeInit\(function buildBookAliasList\(\)/.test(ix))
+    ok('buildBookAliasList викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+  else bad('buildBookAliasList викликається напряму — його падіння й далі зупинить усе, що йде після нього (напр. ANN_STYLES)');
+
+  // ANN_STYLES визначається одразу ПІСЛЯ loadBibleTranslations() в файлі —
+  // це найкоротший і найважливіший шлях, який мав постраждати від каскаду.
+  const idxLoad = ix.indexOf("safeInit(loadBibleTranslations, 'loadBibleTranslations')");
+  const idxAnn = idxLoad > -1 ? ix.indexOf('var ANN_STYLES = {', idxLoad) : -1;
+  if (idxLoad > -1 && idxAnn > -1 && (idxAnn - idxLoad) < 400)
+    ok('ANN_STYLES визначається одразу після (тепер захищеного) loadBibleTranslations — саме той ланцюжок, що ламався');
+  else bad('не вдалось підтвердити суміжність loadBibleTranslations → ANN_STYLES — перевір порядок вручну');
+
+  // Конкретний незахищений DOM-доступ, знайдений у цьому ревʼю: якщо
+  // #bibleTranslationsList відсутній у DOM (напр. вкладка ще не змонтована),
+  // .innerHTML на null кидав TypeError і рвав усе, що йде далі в скрипті.
+  const renderBody = fnBody(ix, 'renderBibleTranslationsList');
+  if (/if \(!el\) return;/.test(renderBody))
+    ok('renderBibleTranslationsList має null-guard на #bibleTranslationsList');
+  else bad('РЕГРЕСІЯ: renderBibleTranslationsList знову без null-guard — відсутній елемент знову зупинить увесь подальший скрипт');
+})();
+
 // ── 1. SYNTAX ────────────────────────────────────────────────────────────────
 head('1. Синтаксис');
 checkSyntax('main.js', SRC.main);

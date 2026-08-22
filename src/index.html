@@ -3767,6 +3767,7 @@ function searchBibleInTranslation(q) {
 
 function renderBibleTranslationsList() {
   var el = document.getElementById('bibleTranslationsList');
+  if (!el) return;   // елемента нема в DOM (напр. вкладка ще не змонтована) — тихо виходимо, а не рвемо скрипт
   var keys = Object.keys(bibleTranslations);
   if (!keys.length) { el.innerHTML = '<p class="text-muted">Тільки вбудований УКБ</p>'; return; }
   el.innerHTML = '';
