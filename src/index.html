@@ -4909,8 +4909,12 @@ if (window.electronAPI) {
     if (extrasHandlesRemote && overlapping.indexOf(cmd.action) >= 0) return;
 
     // Далі — запасний варіант (той самий порядок дій, що й раніше),
-    // на випадок якщо extras.js не завантажився.
-    if (cmd.action === 'next-verse') { nextVerse(); if (selectedSong) sendToProjector(); }
+    // на випадок якщо extras.js не завантажився. PDF в ефірі перевіряємо
+    // першим — так само, як у основному обробнику (extras-3.js), інакше
+    // ця запасна гілка так само надішле пісню/вірш поверх PDF.
+    if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && cmd.action === 'next-verse' && typeof nextSlide === 'function') { nextSlide(); }
+    else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && cmd.action === 'prev-verse' && typeof prevSlide === 'function') { prevSlide(); }
+    else if (cmd.action === 'next-verse') { nextVerse(); if (selectedSong) sendToProjector(); }
     else if (cmd.action === 'prev-verse') { prevVerse(); if (selectedSong) sendToProjector(); }
     else if (cmd.action === 'next-bible') nextBibleVerse();
     else if (cmd.action === 'prev-bible') prevBibleVerse();
@@ -4963,15 +4967,16 @@ function initHotkeys() {
       return;
     }
     var bibleLive = (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible');
-    // PDF/слайд в ефірі — перевіряємо ПЕРШИМ, ще до Біблії/пісні: інакше
+    // PDF в ефірі (не ручний слайд з «Редактора слайдів» — у того немає
+    // «наступного») — перевіряємо ПЕРШИМ, ще до Біблії/пісні: інакше
     // натискання Пробіл/Стрілка гортало б стару вибрану пісню чи вірш
     // ПОВЕРХ щойно показаної сторінки PDF, замість наступної сторінки.
-    var slideLive = (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide');
+    var pdfLive = (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf');
 
     switch(e.key) {
       case ' ':                        // Пробіл — наступний куплет / вірш
         e.preventDefault();
-        if (slideLive && typeof nextSlide === 'function') nextSlide();
+        if (pdfLive && typeof nextSlide === 'function') nextSlide();
         else if (bibleLive) nextBibleVerse();
         else if (typeof liveSongAdvance === 'function' && liveSongAdvance(1)) {}   // аранжування/розбиття
         else if (selectedSong) { nextVerse(); sendToProjector(); }   // так само, як стрілки — інакше пробіл не оновлював екран
@@ -4980,7 +4985,7 @@ function initHotkeys() {
       case 'ArrowRight':               // → наступний куплет / вірш
       case 'ArrowDown':
         e.preventDefault();
-        if (slideLive && typeof nextSlide === 'function') nextSlide();
+        if (pdfLive && typeof nextSlide === 'function') nextSlide();
         else if (bibleLive) nextBibleVerse();
         else if (typeof liveSongAdvance === 'function' && liveSongAdvance(1)) {}   // аранжування/розбиття
         else if (selectedSong) { nextVerse(); if(selectedSong) sendToProjector(); }
@@ -4989,7 +4994,7 @@ function initHotkeys() {
       case 'ArrowLeft':                // ← попередній куплет / вірш
       case 'ArrowUp':
         e.preventDefault();
-        if (slideLive && typeof prevSlide === 'function') prevSlide();
+        if (pdfLive && typeof prevSlide === 'function') prevSlide();
         else if (bibleLive) prevBibleVerse();
         else if (typeof liveSongAdvance === 'function' && liveSongAdvance(-1)) {}   // аранжування/розбиття
         else if (selectedSong) { prevVerse(); if(selectedSong) sendToProjector(); }
@@ -5344,6 +5349,7 @@ function restoreAllOld_UNUSED(input) {
             id: (s.id != null) ? s.id : (Date.now() + Math.random()),
             title: s.title || s.name || '',
             author: s.author || '',
+            songbook: s.songbook || '',
             verses: Array.isArray(s.verses) ? s.verses : String(s.verses || '').split(/\r?\n\s*\r?\n/)
           };
         }).filter(function(s){ return s.title && s.verses.length; });

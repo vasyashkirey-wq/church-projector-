@@ -123,15 +123,16 @@ function selectPDFPage(num) {
 function prevSlide() {
   if (pdfPageNum <= 1) return;
   selectPDFPage(pdfPageNum - 1);
-  // PDF зараз в ефірі (востаннє відправлена сторінка — саме PDF) — гортання
-  // має одразу оновити те, що бачить зал, а не лише локальний прев'ю.
-  if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide') sendSlideToProjector();
+  // PDF зараз в ефірі (востаннє відправлена сторінка — саме PDF, а не
+  // ручний слайд з "Редактора слайдів" — див. 'pdf' vs 'slide' нижче) —
+  // гортання має одразу оновити те, що бачить зал, а не лише прев'ю.
+  if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf') sendSlideToProjector();
 }
 
 function nextSlide() {
   if (pdfPageNum >= pdfPageCount) return;
   selectPDFPage(pdfPageNum + 1);
-  if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide') sendSlideToProjector();
+  if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf') sendSlideToProjector();
 }
 
 function updateSlideCounter() {
@@ -143,18 +144,19 @@ function sendSlideToProjector() {
   var offCanvas = document.createElement('canvas');
   renderPDFPage(pdfPageNum, offCanvas, function() {
     var dataUrl = offCanvas.toDataURL('image/jpeg', 0.9);
-    sendImageToProjector(dataUrl, 'PDF стор. ' + pdfPageNum);
+    sendImageToProjector(dataUrl, 'PDF стор. ' + pdfPageNum, 'pdf');
   });
 }
 
-function sendImageToProjector(dataUrl, label) {
-  // ВАЖЛИВО: позначаємо PDF/слайд як те, що реально в ефірі — інакше
-  // lastLiveSource лишається тим, чим було до цього (напр. 'song' від
-  // раніше вибраної пісні), і наступне натискання Пробіл/Стрілка (яке
-  // мало б погортати PDF) замість цього викликає nextVerse()/nextBibleVerse()
-  // і в ефір летить пісня чи вірш ПОВЕРХ щойно показаного PDF. Той самий
-  // скид, що робить clearLive() для інших джерел.
-  lastLiveSource = 'slide';
+// sourceTag розрізняє ДВІ різні речі, що йдуть через цю саму функцію:
+// PDF-сторінку ('pdf', гортається nextSlide/prevSlide) і ручний слайд з
+// "Редактора слайдів" ('slide' — за замовчуванням, у нього НЕМАЄ поняття
+// "наступний"). Раніше обидва позначались однаково як 'slide', тож
+// Пробіл/Стрілка під час показу РУЧНОГО слайда або нічого не робили
+// (якщо PDF цього сеансу взагалі не відкривали), або — гірше — тихо
+// підміняли слайд на СТАРУ сторінку раніше відкритого PDF.
+function sendImageToProjector(dataUrl, label, sourceTag) {
+  lastLiveSource = sourceTag || 'slide';
   lastLiveGraphics = false;
   lastLivePlain = false;
   lastLiveMulti = false;

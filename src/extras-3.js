@@ -207,7 +207,7 @@ function initRemoteListener() {
         // нижче — інакше стара вибрана пісня перехоплює команду з пульта, і
         // замість наступної сторінки PDF в ефір летить пісня поверх нього.
         if (state.service.idx >= 0) { svcNext(); if (staged) goLive(); }   // служба за планом
-        else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide' && typeof nextSlide === 'function') { nextSlide(); }
+        else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && typeof nextSlide === 'function') { nextSlide(); }
         else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible' && typeof nextBibleVerse === 'function') { nextBibleVerse(); }  // Біблія в ефірі → наступний вірш Біблії
         else if (state.selectedSong && (state.splitCfg.on || state.orders[songKey(state.selectedSong)])) { songStep(1); if (staged) goLive(); }
         else if (staged) { previewStep(1); goLive(); }
@@ -215,7 +215,7 @@ function initRemoteListener() {
         break;
       case 'prev-verse': case 'prev':
         if (state.service.idx >= 0) { svcPrev(); if (staged) goLive(); }
-        else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide' && typeof prevSlide === 'function') { prevSlide(); }
+        else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && typeof prevSlide === 'function') { prevSlide(); }
         else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible' && typeof prevBibleVerse === 'function') { prevBibleVerse(); }
         else if (state.selectedSong && (state.splitCfg.on || state.orders[songKey(state.selectedSong)])) { songStep(-1); if (staged) goLive(); }
         else if (staged) { previewStep(-1); goLive(); }

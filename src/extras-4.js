@@ -946,7 +946,16 @@ function restoreSong(i) {
   if (!t) return;
   if (typeof currentSongs !== 'undefined' && Array.isArray(currentSongs)) {
     currentSongs.push(t.song);
-    if (typeof saveSongs === 'function') saveSongs();
+    // БУВ виклик saveSongs() без аргументу: saveSongs(songs) робить
+    // JSON.stringify(songs), а bigStoreSet трактує undefined як '' —
+    // церковна база пісень (church_songs_db) записувалась ПОРОЖНЬОЮ.
+    // Сама сесія працювала б далі нормально (currentSongs у пам'яті вже
+    // мав пісню), але наступний запуск програми (loadSongs) бачив би
+    // порожній рядок, вважав би, що збереженого нема, і тихо скидав усю
+    // базу до кількох вбудованих пісень за замовчуванням — щойно
+    // оператор відновив пісню з кошика й закрив програму без жодної
+    // іншої зміни.
+    if (typeof saveSongs === 'function') saveSongs(currentSongs);
     if (typeof renderAllSongs === 'function') renderAllSongs();
   }
   state.songTrash.splice(i, 1);
@@ -1881,7 +1890,7 @@ document.addEventListener('keydown', function(e) {
       // перехоплювала б Пробіл/Стрілку, і замість наступної сторінки PDF
       // в ефір летіла пісня поверх щойно показаного PDF.
       if (state.service.idx >= 0) { svcNext(); if (staged) goLive(); }
-      else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide' && typeof nextSlide === 'function') { nextSlide(); }
+      else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && typeof nextSlide === 'function') { nextSlide(); }
       else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible' && typeof nextBibleVerse === 'function') { nextBibleVerse(); }
       else if (liveSongAdvance(1)) { /* аранжування/розбиття: songStep показав слайд — і в ефірі, і в прев'ю */ }
       else if (staged) { previewStep(1); }
@@ -1889,7 +1898,7 @@ document.addEventListener('keydown', function(e) {
       break;
     case 'prev-verse':
       if (state.service.idx >= 0) { svcPrev(); if (staged) goLive(); }
-      else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide' && typeof prevSlide === 'function') { prevSlide(); }
+      else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && typeof prevSlide === 'function') { prevSlide(); }
       else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible' && typeof prevBibleVerse === 'function') { prevBibleVerse(); }
       else if (liveSongAdvance(-1)) { /* аранжування/розбиття: songStep показав слайд — і в ефірі, і в прев'ю */ }
       else if (staged) { previewStep(-1); }

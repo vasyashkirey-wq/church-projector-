@@ -252,7 +252,11 @@ function renderAllSongs() {
   var bookEl = document.getElementById('songBookFilter');
   var book = bookEl ? bookEl.value : '';
   var list = currentSongs;
-  if (book) list = list.filter(function(s) { return (s.songbook || '') === book; });
+  // .trim() — узгоджено з renderSongBookOptions(), яка будує список
+  // варіантів фільтра з обрізаними назвами: без цього пісня з випадковим
+  // пробілом у songbook (напр. ручна правка JSON) відповідала б опції у
+  // списку, але ніколи не проходила б цей фільтр.
+  if (book) list = list.filter(function(s) { return (s.songbook || '').trim() === book; });
   if (q) list = list.filter(function(s){ return ((s.title || '') + ' ' + (s.author || '') + ' ' + (s.songbook || '')).toLowerCase().indexOf(q) !== -1; });
   if (!list.length) {
     var emptyMsg = (q || book) ? 'Нічого не знайдено' + (book ? ' у збірнику «' + escHtml(book) + '»' : '') + (q ? ' за «' + escHtml(q) + '»' : '') : 'Ще немає пісень';

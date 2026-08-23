@@ -515,36 +515,56 @@ head('Гарячі клавіші F1/F2/F5/Esc');
 // lastLiveSource, тож усі три диспетчери next/prev (гарячі клавіші, пульт/
 // OSC, fallback-обробник) бачили стару 'song'/'bible' (або їх відсутність) і
 // падали на фолбек nextVerse()/nextBibleVerse().
-head('PDF/слайди: гортання лишається на PDF, не "перестрибує" на пісню');
+//
+// ДРУГА ХВИЛЯ (знайдено повторним аудитом): перший фікс позначав і PDF-
+// сторінку, і РУЧНИЙ слайд з "Редактора слайдів" ОДНАКОВО як 'slide' — тож
+// nextSlide()/prevSlide() (які вміють гортати лише PDF) або нічого не робили
+// при показі ручного слайда (якщо PDF цього сеансу не відкривали), або
+// тихо підміняли його СТАРОЮ сторінкою раніше відкритого PDF. Тепер
+// sendImageToProjector приймає sourceTag: 'pdf' від sendSlideToProjector,
+// 'slide' (за замовчуванням) від sendCustomSlide/sendSavedSlide — і лише
+// 'pdf' гортається клавішами/пультом.
+head('PDF/слайди: гортання лишається на PDF, не "перестрибує" на пісню чи ручний слайд');
 (function () {
   const ix = SRC.index, ex = SRC.extras;
   const sendImgBody = fnBody(ex, 'sendImageToProjector');
-  if (/lastLiveSource\s*=\s*'slide'/.test(sendImgBody))
-    ok("sendImageToProjector позначає lastLiveSource='slide' (PDF/слайд визнається джерелом в ефірі)");
-  else bad('sendImageToProjector не виставляє lastLiveSource — гортання PDF може перескочити на пісню/вірш');
+  if (/lastLiveSource\s*=\s*sourceTag\s*\|\|\s*'slide'/.test(sendImgBody))
+    ok("sendImageToProjector позначає lastLiveSource=sourceTag (PDF/слайд визнається джерелом в ефірі, з розрізненням)");
+  else bad('sendImageToProjector не виставляє lastLiveSource через sourceTag — PDF і ручний слайд знову можуть плутатись');
+
+  const sendSlideBody = fnBody(ex, 'sendSlideToProjector');
+  if (/sendImageToProjector\([^)]*'pdf'\)/.test(sendSlideBody))
+    ok("sendSlideToProjector передає sourceTag='pdf' (PDF-сторінка відрізняється від ручного слайда)");
+  else bad("sendSlideToProjector не передає 'pdf' — знову зіллється з ручними слайдами Редактора слайдів");
+
+  const sendCustomBody = fnBody(ex, 'sendCustomSlide');
+  const sendSavedBody = fnBody(ex, 'sendSavedSlide');
+  if (!/'pdf'/.test(sendCustomBody) && !/'pdf'/.test(sendSavedBody))
+    ok("sendCustomSlide/sendSavedSlide НЕ позначають себе як 'pdf' (ручний слайд не гортається як PDF)");
+  else bad('sendCustomSlide/sendSavedSlide помилково позначають себе як PDF — regression Finding 1');
 
   const nextSlideBody = fnBody(ex, 'nextSlide');
   const prevSlideBody = fnBody(ex, 'prevSlide');
-  if (/lastLiveSource === 'slide'[\s\S]{0,30}sendSlideToProjector\(\)/.test(nextSlideBody) &&
-      /lastLiveSource === 'slide'[\s\S]{0,30}sendSlideToProjector\(\)/.test(prevSlideBody))
-    ok('nextSlide/prevSlide оновлюють проектор, поки PDF в ефірі (не лише локальний прев\'ю)');
+  if (/lastLiveSource === 'pdf'[\s\S]{0,30}sendSlideToProjector\(\)/.test(nextSlideBody) &&
+      /lastLiveSource === 'pdf'[\s\S]{0,30}sendSlideToProjector\(\)/.test(prevSlideBody))
+    ok('nextSlide/prevSlide оновлюють проектор, поки PDF (не ручний слайд) в ефірі (не лише локальний прев\'ю)');
   else bad('nextSlide/prevSlide не пушать нову сторінку в ефір — зал бачить застарілу сторінку');
 
-  // У кожному з трьох диспетчерів next/prev перевірка lastLiveSource==='slide'
+  // У кожному з диспетчерів next/prev перевірка lastLiveSource==='pdf'
   // МАЄ стояти РАНІШЕ за фолбек на state.selectedSong/nextVerse — інакше
   // стара вибрана пісня все одно перехопить команду першою.
   function slideBeforeSongFallback(body, fallbackRe) {
-    const slideIdx = body.search(/lastLiveSource === 'slide'/);
+    const slideIdx = body.search(/lastLiveSource === 'pdf'/);
     const fallbackIdx = body.search(fallbackRe);
     return slideIdx > -1 && fallbackIdx > -1 && slideIdx < fallbackIdx;
   }
-  // initHotkeys оголошує slideLive = (lastLiveSource === 'slide') окремою
+  // initHotkeys оголошує pdfLive = (lastLiveSource === 'pdf') окремою
   // змінною ПЕРЕД switch (як і bibleLive) — у самому тілі case перевірка
-  // виглядає як "slideLive &&", а не буквальне порівняння.
+  // виглядає як "pdfLive &&", а не буквальне порівняння.
   const hotkeyNext = (ix.match(/case ' ':[\s\S]{0,520}?break;/) || [''])[0];
-  const slideVarIdx = hotkeyNext.search(/slideLive\s*&&/);
+  const slideVarIdx = hotkeyNext.search(/pdfLive\s*&&/);
   const songFallbackIdx = hotkeyNext.search(/selectedSong\)\s*\{\s*nextVerse/);
-  if (/var slideLive = \(typeof lastLiveSource !== 'undefined' && lastLiveSource === 'slide'\)/.test(ix) &&
+  if (/var pdfLive = \(typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf'\)/.test(ix) &&
       slideVarIdx > -1 && songFallbackIdx > -1 && slideVarIdx < songFallbackIdx)
     ok('initHotkeys (fallback-обробник, Пробіл): PDF перевіряється до фолбеку на вибрану пісню');
   else bad('initHotkeys: фолбек на вибрану пісню може перехопити Пробіл раніше за PDF');
@@ -558,6 +578,31 @@ head('PDF/слайди: гортання лишається на PDF, не "пе
   if (slideBeforeSongFallback(hotkeyHandlerBody, /state\.selectedSong\)\s*\{\s*nextVerse/))
     ok('глобальні гарячі клавіші (extras-4.js): PDF перевіряється до фолбеку на вибрану пісню');
   else bad('глобальні гарячі клавіші: фолбек на вибрану пісню може перехопити команду раніше за PDF');
+
+  // Резервний onRemoteCommand у самому index.html (діє лише якщо extras.js
+  // не завантажився) — та сама діра, знайдена повторним аудитом окремо.
+  const fallbackRemote = (ix.match(/Далі — запасний варіант[\s\S]{0,700}/) || [''])[0];
+  if (slideBeforeSongFallback(fallbackRemote, /cmd\.action === 'next-verse'\)\s*\{\s*nextVerse/))
+    ok('index.html: резервний onRemoteCommand теж перевіряє PDF до фолбеку на nextVerse');
+  else bad('index.html: резервний onRemoteCommand (extras.js не завантажився) не захищений від PDF-регресії');
+})();
+
+// ── Кошик пісень: restoreSong не має стирати всю базу ────────────────────────
+// РЕГРЕСІЯ (виявлено повторним аудитом, попереджувала будь-які зміни цієї
+// сесії): restoreSong() викликав saveSongs() БЕЗ аргументу. saveSongs(songs)
+// робить JSON.stringify(songs) → undefined, а bigStoreSet трактує undefined
+// як '' — church_songs_db записувався ПОРОЖНІМ рядком. Поточна сесія й далі
+// працювала б нормально (currentSongs у пам'яті вже мав відновлену пісню),
+// але наступний запуск програми (loadSongs) бачив би порожній рядок,
+// вважав би що збереженого нема, і тихо скидав УСЮ базу пісень до кількох
+// вбудованих за замовчуванням — щойно оператор відновив пісню з кошика й
+// закрив програму без жодної іншої зміни.
+head('Кошик пісень: restoreSong зберігає ПОВНИЙ список (не стирає базу)');
+(function () {
+  const restoreBody = fnBody(SRC.extras, 'restoreSong');
+  if (/saveSongs\(currentSongs\)/.test(restoreBody))
+    ok('restoreSong викликає saveSongs(currentSongs) — з аргументом, база не затирається');
+  else bad('restoreSong викликає saveSongs без аргументу — наступний запуск програми стирає всю базу пісень');
 })();
 
 // ── Пісні: редагування + збережений розмір ──────────────────────────────────
@@ -685,9 +730,17 @@ head('Нові функції');
     ok('addNewSong зберігає збірник (і при створенні, і при оновленні)');
   else bad('addNewSong не зберігає поле збірника');
   const renderAllBody = fnBody(seBody, 'renderAllSongs');
-  if (/s\.songbook \|\| ''\) === book/.test(renderAllBody))
-    ok('renderAllSongs фільтрує список за обраним збірником');
-  else bad('renderAllSongs не фільтрує за збірником');
+  if (/s\.songbook \|\| ''\)\.trim\(\) === book/.test(renderAllBody))
+    ok('renderAllSongs фільтрує список за обраним збірником (з trim, узгоджено з renderSongBookOptions)');
+  else bad('renderAllSongs не фільтрує за збірником, або забув .trim() — можлива розбіжність із випадаючим списком');
+
+  // Легасі-вкладка "Backup" (restoreAllOld_UNUSED) реконструює пісні з нуля
+  // при відновленні бекапу — songbook МАЄ бути серед перенесених полів,
+  // інакше відновлення бекапу тихо стирає всі призначення збірників.
+  const restoreOldBody = fnBody(ix, 'restoreAllOld_UNUSED');
+  if (/songbook\s*:\s*s\.songbook/.test(restoreOldBody))
+    ok('restoreAllOld_UNUSED переносить songbook при відновленні бекапу');
+  else bad('restoreAllOld_UNUSED губить songbook при відновленні — призначення збірників зникнуть');
 })();
 
 // ── План служби: осиротілі пункти-пісні (relink) ─────────────────────────────
