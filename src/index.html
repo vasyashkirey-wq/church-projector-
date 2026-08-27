@@ -2587,13 +2587,22 @@ function sendToProjectorWin(text, ref) {
 
 function doSend(text, ref) {
   if (!window.electronAPI) return;
-  // esc(): текст завжди екрануємо перед показом у зал (так само, як hallText()
-  // робить для інших виходів) — інакше "<"/">" з імпортованих пісень (напр.
-  // буквальний "<br>" у джерелі замість справжнього переносу рядка) показався
-  // б як реальний HTML-тег на проекторі, а не як текст. Раніше цей шлях НЕ
-  // екранував — тому та сама пісня виглядала по-різному на проекторі й на
-  // виході з маршрутом "graphics" (де екранування вже було).
-  var htmlForProjector = escHtml(text).replace(/\n/g,'<br>');
+  // ВИПРАВЛЕННЯ (знайдено живим тестуванням, а не лише порівнянням коду з
+  // форком): раніше тут стояло escHtml(text) — здавалось правильним фіксом
+  // «doSend не екранує, на відміну від інших шляхів», за аналогією з форком.
+  // Але глобальний ідентифікатор doSend НАЗАВЖДИ переозначується двома
+  // обгортками з extras-2.js (hookOutputs) одразу після завантаження —
+  // РЕАЛЬНИЙ виклик doSend(...) з коду (sendToProjectorWin, goLive і т.д.)
+  // завжди йде через них, і саме ЗОВНІШНЯ обгортка викликає
+  // hallText(text) — яка ВЖЕ екранує — перш ніж дістатись аж сюди, до
+  // цієї, найглибшої (оригінальної) реалізації. Додавання escHtml() тут
+  // означало ПОВТОРНЕ екранування вже екранованого тексту: "<" ставало не
+  // "&lt;", а буквальним "&amp;lt;" — прямо на екрані проектора. Перевірено
+  // живим Playwright-тестом (перехоплення escHtml): той самий рядок
+  // проходив крізь escHtml ДВІЧІ поспіль. Форк має ТОЙ САМИЙ ланцюжок
+  // обгорток — той самий баг є і в його коді, просто без живого тестування
+  // з реальним відправленням на екран цього не було видно.
+  var htmlForProjector = text.replace(/\n/g,'<br>');
   // Прев'ю малюємо ТИМ САМИМ рендерером, що й зал — інакше воно показувало
   // чорно-білий варіант незалежно від теми, і не збігалося з екраном.
   if (typeof slideHTMLFor === 'function') {
@@ -2607,7 +2616,12 @@ function doSend(text, ref) {
   }
   window.electronAPI.sendToProjector('text', { html: htmlForProjector, ref: ref || '' });
   onAirText = text;
-  document.getElementById('sendPreview').innerHTML = '<b>На екрані:</b> ' + escHtml(text).replace(/\n/g,' / ');
+  // Той самий момент, що й вище з htmlForProjector: text сюди приходить УЖЕ
+  // екранованим (через hallText() у зовнішній обгортці doSend) — цей рядок
+  // теж екранував його ПОВТОРНО (передіснуючий баг, не мій — виявлено тим
+  // самим живим тестом). Впливало лише на текст статус-мітки «На екрані:»
+  // внизу панелі, не на сам проектор, але той самий клас багу.
+  document.getElementById('sendPreview').innerHTML = '<b>На екрані:</b> ' + text.replace(/\n/g,' / ');
   document.getElementById('onAirLabel').textContent = '● НА ЕКРАНІ';
   document.getElementById('onAirLabel').style.color = '#3ecf8e';
 }
@@ -4636,7 +4650,9 @@ doSend = function(text, ref) {
         updateLivePreview(bgHtml);
       });
       onAirText = text;
-      document.getElementById('sendPreview').innerHTML = '<b>На екрані:</b> ' + escHtml(text).replace(/\n/g,' / ');
+      // text сюди приходить уже екранованим через hallText() у зовнішній
+      // обгортці doSend (той самий клас багу, що й у самому doSend нижче).
+      document.getElementById('sendPreview').innerHTML = '<b>На екрані:</b> ' + text.replace(/\n/g,' / ');
       document.getElementById('onAirLabel').textContent = '● НА ЕКРАНІ';
       document.getElementById('onAirLabel').style.color = '#3ecf8e';
       return;

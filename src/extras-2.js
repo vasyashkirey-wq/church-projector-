@@ -721,7 +721,14 @@ function _updateLivePanels() {
       state.onAir = { kind: 'text', rawText: text, html: hallText(text).replace(/\n/g, '<br>'), ref: ref || '', label: ref || 'Текст' };
       // Запам'ятовуємо ЗАВЖДИ — інакше графіка й маршрути показували б куплет пісні,
       // хоча в залі вже вірш із Біблії чи оголошення.
-      pv2LastContent = { kind: 'text', rawText: text, html: String(text).replace(/\n/g, '<br>'), ref: ref || '' };
+      // ФІКС (живе тестування): тут раніше було String(text) — СИРИЙ, НЕ
+      // екранований текст. pv2LastContent.html іде напряму в pv2PushToOutput()
+      // на будь-який вихід із власним (не «дзеркало») маршрутом — вікна виводу
+      // мають contextIsolation:false (потрібен для webview-графіки), тож
+      // "<img src=x onerror=...>" у назві/тексті імпортованої пісні виконався
+      // б там як реальний HTML/скрипт. hallText() (як і в state.onAir поруч)
+      // екранує так само, як для «дзеркальних» виходів.
+      pv2LastContent = { kind: 'text', rawText: text, html: hallText(text).replace(/\n/g, '<br>'), ref: ref || '' };
       updateLivePanels();
       hostBroadcastState();   // інакше друга панель і пульти не бачать, що в залі
     };
