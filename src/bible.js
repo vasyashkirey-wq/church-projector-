@@ -269,6 +269,17 @@ function sendBibleWithGraphics(target) {
   bibleGraphicsTo([target]);
 }
 
+// Показати вірш «з графікою» одразу на КІЛЬКА виходів (напр. [1,2,3] —
+// проектор + трансляція + вихід 3), усі з тим самим оформленням, яким
+// зараз показує «Трансляція» — на відміну від sendBibleWithGraphics, що
+// приймає лише один вихід за раз.
+function sendBibleGraphicsMulti(targets) {
+  if (targets.indexOf(0) >= 0) lastLiveGraphicsTargets = [0];
+  else lastLiveGraphicsTargets = targets.slice();
+  lastLiveGraphicsTarget = targets[targets.length - 1];
+  bibleGraphicsTo(targets);
+}
+
 // Повторний вивід під час гортання — на всі екрани, де вірш уже показано
 function bibleReplayGraphics() {
   var list = (lastLiveGraphicsTargets && lastLiveGraphicsTargets.length)
@@ -312,14 +323,15 @@ function bibleGraphicsTo(targets, _fromGoLive) {
   var payload = { html: esc(String(text || '')).replace(/\n/g, '<br>'), ref: ref };
   if (typeof withSecondLang === 'function') payload = withSecondLang(payload);   // 2-га і 3-тя мова
   // Якщо серед цілей є вихід із хромакеєм — робимо фон напівпрозорим
-  // (керується повзунком «Прозорість фону для трансляції»).
+  // (керується повзунком прозорості фону саме ТОГО виходу, на який ідемо;
+  // прев'ю бере перший вихід із хромакеєм серед цілей як орієнтир —
+  // реальне надсилання нижче все одно рахує альфу для кожного окремо).
   var alpha;
   try {
-    var hasChroma = (targets || []).some(function(t) {
-      if (t === 0) return false;
-      return state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none';
+    var chromaTarget = (targets || []).find(function(t) {
+      return t !== 0 && state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none';
     });
-    if (hasChroma && typeof streamBgAlpha === 'function') alpha = streamBgAlpha();
+    if (chromaTarget != null && typeof outputBgAlpha === 'function') alpha = outputBgAlpha(chromaTarget);
   } catch (e) {}
   var html = getGraphicsHTML(payload.html, payload.ref, alpha);
 
@@ -347,8 +359,8 @@ function bibleGraphicsTo(targets, _fromGoLive) {
     // спільна, тож при виводі на обидва один із екранів отримував чужий фон.
     var aT;
     try {
-      if (t > 0 && state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none' && typeof streamBgAlpha === 'function') {
-        aT = streamBgAlpha();
+      if (t > 0 && state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none' && typeof outputBgAlpha === 'function') {
+        aT = outputBgAlpha(t);
       }
     } catch (e) {}
     var ht = getGraphicsHTML(payload.html, payload.ref, aT);

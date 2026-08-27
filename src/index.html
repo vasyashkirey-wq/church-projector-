@@ -584,6 +584,7 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
                 <button class="btn btn-primary" onclick="sendBibleWithGraphics(0)">🖋 З графікою — на всі</button>
                 <button class="btn btn-ghost btn-sm" onclick="sendBibleWithGraphics(1)">Проектор</button>
                 <button class="btn btn-ghost btn-sm" onclick="sendBibleWithGraphics(2)">Трансляція</button>
+                <button class="btn btn-ghost btn-sm" onclick="sendBibleGraphicsMulti([1,2,3,4])">Усі 4 виводи</button>
               </div>
               <label class="flex mt8" style="gap:6px;align-items:center;cursor:pointer;font-size:12px">
                 <input type="checkbox" id="bibStreamGfx" onchange="setStreamAlwaysGraphics(this.checked)">
@@ -960,10 +961,53 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
                 <option value="green">Зелений</option>
               </select>
               <div class="flex">
-                <button class="btn btn-success" onclick="sendAnnounce()">▶ На проектор</button>
+                <button class="btn btn-success" onclick="sendAnnounce()">▶ В ефір (усі відкриті виходи)</button>
                 <button class="btn btn-primary btn-sm" onclick="saveAnnounce()">💾 Зберегти</button>
                 <button class="btn btn-ghost btn-sm" onclick="clearAnnounceForm()">✕</button>
               </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">🔠 Розмір тексту — окремо для екранів</div>
+              <div class="grid2">
+                <div>
+                  <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">🖥 Проектор</div>
+                  <label style="font-size:11px;color:var(--text2)">Заголовок (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeTitle1" value="64" onchange="setAnnounceSize(1,'titleSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Текст (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeBody1" value="44" onchange="setAnnounceSize(1,'bodySize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Дата (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeDate1" value="32" onchange="setAnnounceSize(1,'dateSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">📡 Трансляція</div>
+                  <label style="font-size:11px;color:var(--text2)">Заголовок (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeTitle2" value="64" onchange="setAnnounceSize(2,'titleSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Текст (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeBody2" value="44" onchange="setAnnounceSize(2,'bodySize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Дата (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeDate2" value="32" onchange="setAnnounceSize(2,'dateSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">🖥 Вихід 3</div>
+                  <label style="font-size:11px;color:var(--text2)">Заголовок (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeTitle3" value="64" onchange="setAnnounceSize(3,'titleSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Текст (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeBody3" value="44" onchange="setAnnounceSize(3,'bodySize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Дата (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeDate3" value="32" onchange="setAnnounceSize(3,'dateSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">🖥 Вихід 4</div>
+                  <label style="font-size:11px;color:var(--text2)">Заголовок (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeTitle4" value="64" onchange="setAnnounceSize(4,'titleSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Текст (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeBody4" value="44" onchange="setAnnounceSize(4,'bodySize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Дата (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeDate4" value="32" onchange="setAnnounceSize(4,'dateSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px">
+                </div>
+              </div>
+              <p class="text-muted" style="margin-top:8px;font-size:11px">Розмір діє для нового й збережених оголошень, включно з автоматичним слайд-шоу.</p>
             </div>
 
             <div class="card">
@@ -4256,18 +4300,19 @@ function updateAnnPreview() {
   document.getElementById('annPreviewDate').textContent = dt ? '📅 ' + dt : '';
 }
 
-function getAnnounceHTML(ann) {
+function getAnnounceHTML(ann, outputN) {
   var s = ANN_STYLES[ann.style] || ANN_STYLES.dark;
   var bgStyle = s.bg.indexOf('gradient') > -1
     ? 'background:' + s.bg
     : 'background:' + s.bg;
+  var sizes = (state.announceSettings && state.announceSettings[outputN]) || { titleSize: 64, bodySize: 44, dateSize: 32 };
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
     'body{margin:0;' + bgStyle + ';min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;}' +
     '#wrap{text-align:center;padding:80px 120px;max-width:1600px;width:100%;opacity:0;transition:opacity .7s;}' +
     '#wrap.show{opacity:1;}' +
-    '.title{font-size:64px;font-weight:700;color:' + s.titleColor + ';margin-bottom:24px;text-shadow:0 2px 16px rgba(0,0,0,.5);line-height:1.2;}' +
-    '.body{font-size:44px;color:' + s.bodyColor + ';line-height:1.5;text-shadow:0 2px 12px rgba(0,0,0,.5);}' +
-    '.datetime{font-size:32px;color:' + s.dateColor + ';margin-top:28px;}' +
+    '.title{font-size:' + sizes.titleSize + 'px;font-weight:700;color:' + s.titleColor + ';margin-bottom:24px;text-shadow:0 2px 16px rgba(0,0,0,.5);line-height:1.2;}' +
+    '.body{font-size:' + sizes.bodySize + 'px;color:' + s.bodyColor + ';line-height:1.5;text-shadow:0 2px 12px rgba(0,0,0,.5);}' +
+    '.datetime{font-size:' + sizes.dateSize + 'px;color:' + s.dateColor + ';margin-top:28px;}' +
     '.divider{width:200px;height:2px;background:rgba(255,255,255,0.2);margin:24px auto;}' +
     '</style></head><body>' +
     '<div id="wrap">' +
@@ -4280,6 +4325,24 @@ function getAnnounceHTML(ann) {
     '</body></html>';
 }
 
+// Кожен вихід отримує ОКРЕМУ версію HTML зі своїм розміром тексту
+// (state.announceSettings[1..4]) — а не спільну копію на всі.
+function sendAnnounceToOutputs(ann, label) {
+  if (typeof sendHTMLToOutputN === 'function') {
+    sendHTMLToOutputN(1, getAnnounceHTML(ann, 1), label);
+    sendHTMLToOutputN(2, getAnnounceHTML(ann, 2), label);
+    // Вихід 3/4 — якщо відкриті, тепер теж зі своїм власним розміром
+    // (раніше отримували скопійований розмір проектора).
+    [3, 4].forEach(function(n) {
+      if (state.outputStates && state.outputStates[n] && state.outputStates[n].open) {
+        sendHTMLToOutputN(n, getAnnounceHTML(ann, n), label);
+      }
+    });
+  } else if (typeof sendHTMLToProjector === 'function') {
+    sendHTMLToProjector(getAnnounceHTML(ann, 1), label);   // фолбек на старий спосіб
+  }
+}
+
 function sendAnnounce() {
   var ann = {
     title: document.getElementById('annTitle').value.trim(),
@@ -4288,15 +4351,13 @@ function sendAnnounce() {
     style: document.getElementById('annStyle').value
   };
   if (!ann.title && !ann.body) { alert('Додайте заголовок або текст'); return; }
-  var html = getAnnounceHTML(ann);
-  sendHTMLToProjector(html, ann.title || 'Оголошення');
+  sendAnnounceToOutputs(ann, ann.title || 'Оголошення');
 }
 
 function sendSavedAnnounce(id) {
   var a = announcements.find(function(x){ return x.id === id; });
   if (!a) return;
-  var html = getAnnounceHTML(a);
-  sendHTMLToProjector(html, a.title || 'Оголошення');
+  sendAnnounceToOutputs(a, a.title || 'Оголошення');
 }
 
 // Автоматичне слайд-шоу оголошень по колу — для екрана у фойє перед службою,

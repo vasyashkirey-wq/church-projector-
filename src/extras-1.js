@@ -140,7 +140,9 @@ const STORAGE_KEYS = {
   hotkeyProfiles: 'church_hotkey_profiles',
   plugins: 'church_plugins',
   animations: 'church_animations',
-  fonts: 'church_fonts'
+  fonts: 'church_fonts',
+  scenePresets: 'church_scene_presets',
+  announceSettings: 'church_announce_settings'
 };
 
 const H2R_STYLES = {
@@ -415,6 +417,15 @@ var state = {
        strokeWidth:0,strokeColor:'#000000',scrim:0,safeArea:0,letterSpacing:0,lineHeight:1.4,fadeMs:600,bgType:'color',bgVideo:null,bgImage:null}
   },
   currentTextOutput: 1,
+  // Розмір тексту оголошень — ОКРЕМО для кожного з 4 виходів, незалежно від
+  // загальних textSettings (щоб зміна розміру пісні не зачіпала оголошення
+  // й навпаки).
+  announceSettings: {
+    1: { titleSize: 64, bodySize: 44, dateSize: 32 },
+    2: { titleSize: 64, bodySize: 44, dateSize: 32 },
+    3: { titleSize: 64, bodySize: 44, dateSize: 32 },
+    4: { titleSize: 64, bodySize: 44, dateSize: 32 }
+  },
   graphicsSettings: {
     refColor:'#c8a84b', textColor:'#ffffff', bgColor:'#0a0a1a', decor:'line',
     size: 58,               // розмір тексту в px (раніше було зашито 20px — не читалось на проекторі)
@@ -1693,18 +1704,34 @@ function setAutoContrast(on) {
 // Прозорість фону графіки, що йде на ТРАНСЛЯЦІЮ.
 // Менше значення — більше видно камеру під текстом.
 function setStreamOpacity(v) {
+  // Лишено для сумісності — наявні повзунки на вкладках Біблія/Пісні/Графіка
+  // й далі керують саме виходом 2 (трансляція) через цю функцію.
+  setOutputOpacity(2, v);
+  // streamOpacity (застаріле поле) теж оновлюємо — про всяк випадок, якщо
+  // щось у коді досі читає його напряму замість outputOpacity[2].
   const n = Math.max(0, Math.min(100, parseInt(v, 10) || 0));
   state.graphicsSettings.streamOpacity = n;
+}
+function setOutputOpacity(n, v) {
+  const val = Math.max(0, Math.min(100, parseInt(v, 10) || 0));
+  state.graphicsSettings.outputOpacity = state.graphicsSettings.outputOpacity || {1:62,2:62,3:62,4:62};
+  state.graphicsSettings.outputOpacity[n] = val;
   persistGraphicsSettings();
-  // Той самий повзунок видно і в «Біблії», і в «Піснях» — тримаємо обидва однаковими
-  ['streamOpacityLabel', 'songStreamOpacityLabel', 'gfxStreamOpacityLabel'].forEach(id => {
-    const lbl = document.getElementById(id);
-    if (lbl) lbl.textContent = n + '%';
-  });
-  ['streamOpacityRange', 'songStreamOpacityRange', 'graphicsStreamOpacity'].forEach(id => {
-    const rng = document.getElementById(id);
-    if (rng) rng.value = n;
-  });
+  // Той самий повзунок видно і в «Біблії», і в «Піснях» — тримаємо синхронними
+  // (лише для виходу 2, бо саме там ці старі повзунки й показуються).
+  if (n === 2) {
+    ['streamOpacityLabel', 'songStreamOpacityLabel', 'gfxStreamOpacityLabel'].forEach(id => {
+      const lbl = document.getElementById(id);
+      if (lbl) lbl.textContent = val + '%';
+    });
+    ['streamOpacityRange', 'songStreamOpacityRange', 'graphicsStreamOpacity'].forEach(id => {
+      const rng = document.getElementById(id);
+      if (rng) rng.value = val;
+    });
+  }
+  // Повзунок конкретного виходу у вкладці «Виходи» (якщо там зараз перебуваємо)
+  const routerLbl = document.getElementById('pv2OpacityLbl' + n);
+  if (routerLbl) routerLbl.textContent = val + '%';
   // якщо щось уже в ефірі — одразу перемальовуємо
   try {
     if (typeof lastLiveMulti !== 'undefined' && lastLiveMulti && typeof multiReplay === 'function') multiReplay();
@@ -1712,8 +1739,14 @@ function setStreamOpacity(v) {
   } catch (e) {}
 }
 function streamBgAlpha() {
-  const v = (state.graphicsSettings && typeof state.graphicsSettings.streamOpacity === 'number')
-    ? state.graphicsSettings.streamOpacity : 62;
+  // Лишено для сумісності з рештою коду, що ще може викликати без номера
+  // виходу — трансляція історично мала номер 2.
+  return outputBgAlpha(2);
+}
+function outputBgAlpha(n) {
+  const o = state.graphicsSettings && state.graphicsSettings.outputOpacity;
+  const v = (o && typeof o[n] === 'number') ? o[n]
+    : (state.graphicsSettings && typeof state.graphicsSettings.streamOpacity === 'number') ? state.graphicsSettings.streamOpacity : 62;
   return Math.max(0, Math.min(100, v)) / 100;
 }
 
@@ -2354,7 +2387,43 @@ function loadGraphicsSettings() {
   if (!s) return;
   if (typeof s._autoContrast === 'boolean') state.autoContrast = s._autoContrast;
   delete s._autoContrast;
+  // Міграція: у старих збережених налаштуваннях було лише ОДНЕ спільне
+  // streamOpacity — якщо outputOpacity ще немає, підхоплюємо звідти
+  // значення для всіх 4 виходів, щоб кастомна прозорість не загубилась.
+  if (typeof s.streamOpacity === 'number' && !s.outputOpacity) {
+    s.outputOpacity = {1: s.streamOpacity, 2: s.streamOpacity, 3: s.streamOpacity, 4: s.streamOpacity};
+  }
   Object.assign(state.graphicsSettings, s);
+}
+
+// Розмір тексту оголошень окремо для проектора/трансляції.
+function loadAnnounceSettings() {
+  const s = loadJSON(STORAGE_KEYS.announceSettings);
+  if (s) {
+    [1, 2, 3, 4].forEach(function(n) { if (s[n]) Object.assign(state.announceSettings[n], s[n]); });
+  }
+  if (typeof syncAnnounceSizeInputs === 'function') syncAnnounceSizeInputs();
+}
+function saveAnnounceSettings() {
+  saveJSON(STORAGE_KEYS.announceSettings, state.announceSettings);
+}
+function setAnnounceSize(n, field, value) {
+  var v = parseInt(value, 10);
+  if (!v || v < 10) v = state.announceSettings[n][field];   // биту/порожню зміну ігноруємо, лишаємо як було
+  state.announceSettings[n][field] = v;
+  saveAnnounceSettings();
+}
+function syncAnnounceSizeInputs() {
+  [1, 2, 3, 4].forEach(function(n) {
+    var s = state.announceSettings[n];
+    if (!s) return;
+    var t = document.getElementById('annSizeTitle' + n);
+    var b = document.getElementById('annSizeBody' + n);
+    var d = document.getElementById('annSizeDate' + n);
+    if (t) t.value = s.titleSize;
+    if (b) b.value = s.bodySize;
+    if (d) d.value = s.dateSize;
+  });
 }
 
 const redrawGraphicsFrame = rafDebounce(() => {
