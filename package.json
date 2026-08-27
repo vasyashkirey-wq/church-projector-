@@ -1,6 +1,6 @@
 {
   "name": "church-projector",
-  "version": "2.2.0",
+  "version": "2.3.1",
   "description": "Церква Прага — Панель керування проектором",
   "main": "main.js",
   "scripts": {
@@ -61,10 +61,11 @@
     "electron-builder": "^24.0.0"
   },
   "dependencies": {
-    "ws": "^8.16.0",
     "electron-updater": "^6.1.0",
     "ffmpeg-static": "^5.2.0",
-    "heic-convert": "^2.1.0"
+    "heic-convert": "^2.1.0",
+    "qrcode": "^1.5.4",
+    "ws": "^8.16.0"
   },
   "repository": {
     "type": "git",

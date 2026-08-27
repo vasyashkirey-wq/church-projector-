@@ -1,5 +1,12 @@
 const { ipcRenderer } = require('electron');
 
+// Посилання (ref) ніде вище по ланцюгу не екранується — тут це остання точка
+// перед innerHTML, тож екрануємо саме тут, щоб назва пісні/вірша з "<"/">"
+// (наприклад, з імпортованого файлу) не виконалась як HTML у зала.
+function escRef(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 let currentTheme = {
   bgColor: '#000000',
   bgType: 'color',
@@ -151,10 +158,19 @@ function fitTextToScreen() {
   const baseSize = (currentTheme && currentTheme.fontSize) || 58;
   const minSize = Math.max(20, Math.round(baseSize * 0.4)); // не дрібніше 40% від заданого
   const pad = (currentTheme && currentTheme.padding) || 80;
+  // applyTheme() додає +40px до top/bottom padding при позиції "зверху"/"знизу" —
+  // враховуємо це тут, інакше вважали б, що влазить, а насправді текст зрізало б.
+  const posExtra = (currentTheme && (currentTheme.textPosition === 'top' || currentTheme.textPosition === 'bottom')) ? 40 : 0;
+  // applyTheme() також ставить wrap.style.margin = safeArea% — за специфікацією CSS
+  // відсоткові margin (з усіх чотирьох боків, включно з top/bottom) рахуються від
+  // ШИРИНИ контейнера. Раніше це не враховувалось і безпечна зона "з'їдала" простір,
+  // який fitTextToScreen вважав доступним.
+  const safePct = (currentTheme && currentTheme.safeArea) || 0;
+  const safePx = window.innerWidth * (safePct / 100);
 
-  // Доступна висота: екран мінус відступи і рядок посилання
-  const avail = window.innerHeight - pad * 2 - (refEl ? refEl.offsetHeight + 20 : 0);
-  const availW = window.innerWidth - pad * 2;
+  // Доступна висота: екран мінус відступи, додатковий відступ позиції, безпечна зона і рядок посилання
+  const avail = window.innerHeight - pad * 2 - posExtra - safePx * 2 - (refEl ? refEl.offsetHeight + 20 : 0);
+  const availW = window.innerWidth - pad * 2 - safePx * 2;
 
   let size = baseSize;
   body.style.fontSize = size + 'px';
@@ -248,7 +264,7 @@ function showText(html, ref) {
 
   setTimeout(() => {
     body.innerHTML = html;
-    refEl.innerHTML = ref || '';
+    refEl.innerHTML = escRef(ref);
     // Розмір: або зафіксований на всю пісню, або підбирається під цей слайд
     body.style.fontSize = (lockedSize || currentTheme.fontSize || 58) + 'px';
     if (!lockedSize) fitTextToScreen();
@@ -604,6 +620,20 @@ ipcRenderer.on('show-logo', (event, dataUrl) => {
   if (!dataUrl) { layer.style.display = 'none'; return; }
   if (img) img.src = dataUrl;
   layer.style.display = 'flex';
+});
+
+// --- Постійний водяний знак: окремий незалежний шар. НІХТО інший (ані
+// 'display', ані показ логотипа) його не ховає — саме тому він і лишається
+// на екрані завжди, на відміну від логотипа, який автоприбирається нижче. ---
+ipcRenderer.on('watermark', (event, cfg) => {
+  const layer = document.getElementById('watermark-layer');
+  if (!layer) return;
+  if (!cfg || !cfg.on) { layer.style.display = 'none'; return; }
+  layer.textContent = cfg.text || '';
+  layer.className = cfg.position || 'top-left';
+  layer.style.fontSize = (cfg.size || 16) + 'px';
+  layer.style.color = cfg.color || '#ffffff';
+  layer.style.display = cfg.text ? 'block' : 'none';
 });
 
 // --- Заморозити кадр: знімаємо поточний вигляд і показуємо як картинку ---

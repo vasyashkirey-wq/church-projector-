@@ -264,7 +264,7 @@ function pv2PushToOutput(n, content) {
     let c;
     if (content && (content.rawText != null || content.html)) {
       const src = content.rawText != null ? content.rawText : content.html;
-      c = withSecondLang({ html: stripChords(String(src).replace(/\n/g, '<br>')), ref: content.ref || '' });
+      c = withSecondLang({ html: esc(stripChords(String(src))).replace(/\n/g, '<br>'), ref: content.ref || '' });
       c = { text: c.html, ref: c.ref };
     } else {
       c = pv2GraphicsContent();
@@ -447,7 +447,7 @@ function refreshLiveIndicator() {
     what = 'Кілька перекладів → ' + names.join(', ');
   } else {
     var src = (typeof lastLiveSource !== 'undefined') ? lastLiveSource : null;
-    icon = (oa.kind === 'htmlraw') ? '🖼' : (src === 'song' ? '🎵' : (src === 'bible' ? '📖' : '📺'));
+    icon = (oa.kind === 'htmlraw') ? '🖼' : (src === 'song' ? '🎵' : (src === 'bible' ? '📖' : (src === 'pdf' ? '📄' : (src === 'slide' ? '🖼' : '📺'))));
     var body = oa.rawText || oa.ref || String(oa.html || '').replace(/<[^>]*>/g, ' ');
     var snippet = String(body).replace(/\s+/g, ' ').trim();
     var label = oa.label || '';
@@ -512,6 +512,15 @@ function clearLive() {
   if (window.electronAPI && window.electronAPI.showLogo) window.electronAPI.showLogo(null);
   state.activePropName = null;
   state.logoOn = false;
+  // Скидаємо той самий "що зараз в ефірі" стан, що й clearProjector() —
+  // інакше наступне гортання (next-verse/prev-verse) думає, що вірш
+  // усе ще в ефірі, і тихо повертає його назад на щойно очищений екран.
+  lastLiveSource = null;
+  lastLiveGraphics = false;
+  lastLiveGraphicsTargets = [];
+  lastLivePlain = false;
+  lastLiveMulti = false;
+  try { state.multiLive = []; } catch (e) {}
   try { if (typeof renderTabInto === 'function') renderTabInto('layers'); } catch (e) {}
   state.onAir = null;
   updateLivePanels();
@@ -712,7 +721,14 @@ function _updateLivePanels() {
       state.onAir = { kind: 'text', rawText: text, html: hallText(text).replace(/\n/g, '<br>'), ref: ref || '', label: ref || 'Текст' };
       // Запам'ятовуємо ЗАВЖДИ — інакше графіка й маршрути показували б куплет пісні,
       // хоча в залі вже вірш із Біблії чи оголошення.
-      pv2LastContent = { kind: 'text', rawText: text, html: String(text).replace(/\n/g, '<br>'), ref: ref || '' };
+      // ФІКС (живе тестування): тут раніше було String(text) — СИРИЙ, НЕ
+      // екранований текст. pv2LastContent.html іде напряму в pv2PushToOutput()
+      // на будь-який вихід із власним (не «дзеркало») маршрутом — вікна виводу
+      // мають contextIsolation:false (потрібен для webview-графіки), тож
+      // "<img src=x onerror=...>" у назві/тексті імпортованої пісні виконався
+      // б там як реальний HTML/скрипт. hallText() (як і в state.onAir поруч)
+      // екранує так само, як для «дзеркальних» виходів.
+      pv2LastContent = { kind: 'text', rawText: text, html: hallText(text).replace(/\n/g, '<br>'), ref: ref || '' };
       updateLivePanels();
       hostBroadcastState();   // інакше друга панель і пульти не бачать, що в залі
     };
@@ -1225,7 +1241,11 @@ function stripChords(text) {
 // Раніше ці дві функції працювали лише в маршрутах, а головний вихід
 // (проектор) отримував сирий рядок — з [Am] і без чеської.
 function hallText(text) {
-  let t = stripChords(String(text == null ? '' : text));
+  // esc(): текст завжди екрануємо перед показом у зал — інакше "<"/">" з
+  // імпортованих пісень/віршів чи довільний скрипт із мережевої команди
+  // (station sync) виконався б як HTML у вікні проектора (contextIsolation
+  // там вимкнено навмисно для webview/iframe-графіки).
+  let t = esc(stripChords(String(text == null ? '' : text)));
   if (state.secondLangMode === 'under') {
     // Ті самі мови, що й у виводі з графікою (друга + третя) — щоб зал бачив
     // однаково незалежно від того, як надіслано текст.

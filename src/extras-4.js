@@ -946,7 +946,16 @@ function restoreSong(i) {
   if (!t) return;
   if (typeof currentSongs !== 'undefined' && Array.isArray(currentSongs)) {
     currentSongs.push(t.song);
-    if (typeof saveSongs === 'function') saveSongs();
+    // БУВ виклик saveSongs() без аргументу: saveSongs(songs) робить
+    // JSON.stringify(songs), а bigStoreSet трактує undefined як '' —
+    // церковна база пісень (church_songs_db) записувалась ПОРОЖНЬОЮ.
+    // Сама сесія працювала б далі нормально (currentSongs у пам'яті вже
+    // мав пісню), але наступний запуск програми (loadSongs) бачив би
+    // порожній рядок, вважав би, що збереженого нема, і тихо скидав усю
+    // базу до кількох вбудованих пісень за замовчуванням — щойно
+    // оператор відновив пісню з кошика й закрив програму без жодної
+    // іншої зміни.
+    if (typeof saveSongs === 'function') saveSongs(currentSongs);
     if (typeof renderAllSongs === 'function') renderAllSongs();
   }
   state.songTrash.splice(i, 1);
@@ -1301,6 +1310,34 @@ function sendMultiToBoth() {
   sendMultiToOutput(2, true);
 }
 
+// Те саме, що «Показати на обох», але для всіх чотирьох виводів одразу —
+// той самий захист прев'ю (multiOutputTarget-масив), щоб перший вихід не
+// стирався наступним при відправці.
+function sendMultiToAll4() {
+  if (typeof currentBibleBook === 'undefined' || !currentBibleBook) { notify('⚠️ Спочатку обери вірш'); return; }
+  const outputs = [1, 2, 3, 4];
+  const chosenByOutput = outputs.map(n => (state.multiTrans[n] || []).filter(Boolean));
+  if (!chosenByOutput.some(c => c.length)) { notify('⚠️ Не обрано жодного перекладу для жодного виходу'); return; }
+
+  if (!state.goingLive && state.liveMode === 'staged') {
+    const ref = currentBibleRef();
+    let previewBlocks = [], previewN = 1;
+    for (let i = 0; i < outputs.length; i++) {
+      if (chosenByOutput[i].length) { previewBlocks = multiBlocksFor(outputs[i], []); previewN = outputs[i]; break; }
+    }
+    stageContent({
+      kind: 'htmlraw',
+      html: getMultiTransHTML(ref, previewBlocks, previewN),
+      label: ref + ' — переклади на всі 4 виводи',
+      ref: ref,
+      multiOutputTarget: outputs.slice()
+    });
+    notify('📋 У прев\'ю (усі 4 виводи) — натисни «В ЕФІР»');
+    return;
+  }
+  outputs.forEach(n => sendMultiToOutput(n, true));
+}
+
 function sendMultiToOutput(n, fromGoLive) {
   if (typeof currentBibleBook === 'undefined' || !currentBibleBook) { notify('⚠️ Спочатку обери вірш'); return; }
   const chosen = (state.multiTrans[n] || []).filter(Boolean);
@@ -1417,6 +1454,7 @@ function renderMultiTransCard() {
     <div class="card-sub">Проектор і трансляція можуть показувати різні переклади того самого вірша, з окремим розміром шрифту й розташуванням для кожного. Вірш береться з вкладки «Біблія», стрілки гортають обидва екрани.</div>
     <div style="margin-top:8px">${rows}</div>
     <button class="btn btn-primary btn-sm btn-block" onclick="sendMultiToBoth()">📖 Показати на обох</button>
+    <button class="btn btn-ghost btn-sm btn-block" onclick="sendMultiToAll4()">📖 Показати на всіх 4</button>
   </div>`;
 }
 
@@ -1459,6 +1497,75 @@ function deleteRoomProfile(id) {
 function loadRoomProfiles() {
   const r = loadJSON(STORAGE_KEYS.live + '_rooms');
   if (Array.isArray(r)) state.roomProfiles = r;
+}
+
+// ---- Пресети сцени: на відміну від «Профілю» (один вихід за раз),
+// зберігає й застосовує режим+хромакей+фон одразу для ВСІХ 4 виходів
+// одним кліком — напр. «Служба з графікою» перемикає весь набір екранів
+// разом, а не по одному. Прив'язку монітора зберігаємо як fingerprint
+// (state.outputBind), а не старий displayId-індекс — так само, як уже
+// робить bindOutputToDisplay() у вкладці «Прив'язка екранів».
+function saveScenePreset() {
+  state.scenePresets = state.scenePresets || [];
+  pv2Prompt('Назва пресету сцени (напр. «Служба з графікою»):', '', function(name) {
+    if (!name) return;
+    const outputs = {};
+    for (let n = 1; n <= 4; n++) {
+      outputs[n] = {
+        route: state.outputRoutes[n] || 'mirror',
+        chroma: (state.outputChroma && state.outputChroma[n]) || 'none',
+        bg: (state.outputBg && state.outputBg[n]) || null,
+        opacity: (state.graphicsSettings && state.graphicsSettings.outputOpacity && state.graphicsSettings.outputOpacity[n]) || 62,
+        fingerprint: (state.outputBind && state.outputBind[OUT_KIND[n]]) || null
+      };
+    }
+    state.scenePresets.push({ id: 'scene_' + Date.now(), name: name, outputs: outputs });
+    saveJSON(STORAGE_KEYS.scenePresets, state.scenePresets);
+    renderTabInto('router');
+    notify('🎬 Сцену «' + name + '» збережено (усі 4 виходи)');
+  });
+}
+function applyScenePreset(id) {
+  const p = (state.scenePresets || []).find(x => x.id === id);
+  if (!p) return;
+  for (let n = 1; n <= 4; n++) {
+    const o = p.outputs[n];
+    if (!o) continue;
+    setOutputRoute(n, o.route);
+    if (typeof pv2SetChroma === 'function') pv2SetChroma(n, o.chroma);
+    if (typeof setOutputOpacity === 'function' && o.opacity != null) setOutputOpacity(n, o.opacity);
+    // Фон застосовуємо напряму (не через pv2ApplyOutputBg) — та функція
+    // читає значення з DOM-поля вкладки «Виходи», якого може не бути в
+    // DOM, якщо оператор зараз на іншій вкладці.
+    if (window.electronAPI && window.electronAPI.setOutputBg) {
+      window.electronAPI.setOutputBg(OUT_KIND[n], o.bg || null);
+    }
+    state.outputBg[n] = o.bg || null;
+    const swatchEl = $('#pv2BgSwatchR' + n);
+    if (swatchEl) swatchEl.style.background = o.bg || '#000';
+    const bgInputEl = $('#pv2BgCode' + n);
+    if (bgInputEl) bgInputEl.value = o.bg || '';
+    // Монітор — застосовуємо лише якщо пресет його явно задає (старі, збережені
+    // до цього фіксу сцени не мають fingerprint — не чіпаємо вже вибраний монітор).
+    if (o.fingerprint !== undefined && typeof bindOutputToDisplay === 'function') {
+      bindOutputToDisplay(n, o.fingerprint || null);
+    }
+  }
+  saveJSON(STORAGE_KEYS.bg, state.outputBg);
+  renderTabInto('router');
+  notify('🎬 Сцена «' + p.name + '» застосована на всі 4 виходи');
+}
+function deleteScenePreset(id) {
+  const p = (state.scenePresets || []).find(x => x.id === id);
+  if (!p || !confirm('Видалити сцену «' + p.name + '»?')) return;
+  state.scenePresets = state.scenePresets.filter(x => x.id !== id);
+  saveJSON(STORAGE_KEYS.scenePresets, state.scenePresets);
+  renderTabInto('router');
+  notify('🗑 Сцену видалено');
+}
+function loadScenePresets() {
+  const r = loadJSON(STORAGE_KEYS.scenePresets);
+  if (Array.isArray(r)) state.scenePresets = r;
 }
 
 // Який вихід позначено «екраном сцени» — таймер проповіді накладається саме
@@ -1791,6 +1898,14 @@ function renderRouterTab() {
         <button class="preset-btn" onclick="pv2SetChroma(${i},'#ff00ff')">🟪 Мадж.</button>
         <button class="preset-btn" style="color:var(--red)" onclick="pv2SetChroma(${i},'none')">Вимкнути</button>
       </div>
+      ${state.outputChroma[i] && state.outputChroma[i] !== 'none' ? `
+      <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+        <span style="font-size:12px;color:var(--text2);min-width:56px">Прозорість:</span>
+        <span style="font-size:11px;color:var(--text2)" id="pv2OpacityLbl${i}">${(state.graphicsSettings && state.graphicsSettings.outputOpacity && state.graphicsSettings.outputOpacity[i]) || 62}%</span>
+        <input type="range" min="0" max="100" value="${(state.graphicsSettings && state.graphicsSettings.outputOpacity && state.graphicsSettings.outputOpacity[i]) || 62}"
+               oninput="document.getElementById('pv2OpacityLbl${i}').textContent=this.value+'%'"
+               onchange="setOutputOpacity(${i}, this.value)" style="flex:1;min-width:120px">
+      </div>` : ''}
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
         <span style="font-size:12px;color:var(--text2);min-width:56px">🏠 Профіль:</span>
         <select id="pv2RoomSel${i}" style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">
@@ -1830,6 +1945,19 @@ function renderRouterTab() {
 
   return `<div class="card-title">🔀 Чотири виходи — різний контент на кожен екран</div>
     ${renderLooksCard()}
+    <div class="card" style="margin-bottom:10px">
+      <div class="card-title">🎬 Пресети сцени</div>
+      <div class="card-sub">Один клік — і режим показу, хромакей та фон застосовуються одразу на всі 4 виходи. Зручно перемикатись між типами зібрань (напр. «Служба з графікою» ↔ «Репетиція»).</div>
+      ${(state.scenePresets || []).length
+        ? '<div style="margin-top:6px">' + state.scenePresets.map(p =>
+            `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border)">
+              <span style="flex:1;font-size:13px">${esc(p.name)}</span>
+              <button class="btn btn-primary btn-sm" onclick="applyScenePreset('${p.id}')">▶ Застосувати</button>
+              <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteScenePreset('${p.id}')">✕</button>
+            </div>`).join('') + '</div>'
+        : '<div style="font-size:11px;color:var(--text2);margin-top:6px">Збережених сцен ще немає — нижче зафіксуй поточне налаштування всіх 4 виходів як сцену.</div>'}
+      <button class="btn btn-ghost btn-sm btn-block" style="margin-top:8px" onclick="saveScenePreset()">💾 Зберегти поточну сцену (усі 4 виходи)</button>
+    </div>
     <div class="card" style="margin-bottom:10px;border-color:var(--accent)">
       <div class="card-title">🎯 Куди надсилати: <span id="pv2TargetBadge" style="color:var(--accent)">${state.sendTarget === 'all' ? 'усі екрани' : OUT_NAME[state.sendTarget]}</span></div>
       <div class="card-sub">Обери один екран — і кнопки «Надіслати» з вкладок Пісні / Біблія / Оголошення підуть <b>лише туди</b>. Інші екрани залишать те, що на них зараз. Повернись на «Усі», щоб знову вести всі разом.</div>
@@ -1875,8 +2003,13 @@ document.addEventListener('keydown', function(e) {
     // У режимі прев'ю стрілки гортають ПРЕВ'Ю, зал не змінюється,
     // доки не натиснеш «В ЕФІР» (пробіл).
     case 'next-verse':
-      // Пріоритет: служба за планом → Біблія в ефірі → пісня
+      // Пріоритет: служба за планом → PDF/слайд в ефірі → Біблія в ефірі → пісня
+      // PDF-гілка МАЄ стояти перед фолбеком на state.selectedSong нижче —
+      // інакше стара вибрана пісня (навіть якщо вона вже не в ефірі) тихо
+      // перехоплювала б Пробіл/Стрілку, і замість наступної сторінки PDF
+      // в ефір летіла пісня поверх щойно показаного PDF.
       if (state.service.idx >= 0) { svcNext(); if (staged) goLive(); }
+      else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && typeof nextSlide === 'function') { nextSlide(); }
       else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible' && typeof nextBibleVerse === 'function') { nextBibleVerse(); }
       else if (liveSongAdvance(1)) { /* аранжування/розбиття: songStep показав слайд — і в ефірі, і в прев'ю */ }
       else if (staged) { previewStep(1); }
@@ -1884,6 +2017,7 @@ document.addEventListener('keydown', function(e) {
       break;
     case 'prev-verse':
       if (state.service.idx >= 0) { svcPrev(); if (staged) goLive(); }
+      else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && typeof prevSlide === 'function') { prevSlide(); }
       else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible' && typeof prevBibleVerse === 'function') { prevBibleVerse(); }
       else if (liveSongAdvance(-1)) { /* аранжування/розбиття: songStep показав слайд — і в ефірі, і в прев'ю */ }
       else if (staged) { previewStep(-1); }
@@ -2099,8 +2233,8 @@ function pv2Init() {
     if ($('#fontHeaders')) $('#fontHeaders').value = saved.headers || 'Georgia, serif';
   }
   const steps = [loadUiPrefs, loadProfiles, loadMasterVolume, loadBookmarks,
-                 loadScheduler, loadAutoBackup, loadSongTrash, loadLang, loadPultCfg, loadMultiTrans, loadMultiTransStyle, loadOutputNames, startAutomationWatcher, loadLower, loadOutputBindings, loadOutputFailover, loadRoomProfiles, loadServiceProfiles, loadChangeLog, loadTrainingMode, loadRemoteUsers, loadStageOutputNum, refreshMonitors, loadStationCfg, loadLiveConfig, loadNamedThemes, loadSecondLang, loadAutoTimer, loadAutoFit,
-                 loadSplitCfg, loadOrders, loadArrangeGlobal, loadSongSize, loadSongTags, loadService, loadLayers, applyTypo, initObsListener, loadRoutes, loadOutputBg, loadOutputChroma, loadLooks, loadProps, loadMacros, loadPartLabels, loadArrangeSets, loadMsgTemplates, loadSoundBin, loadGraphicsSettings, pv2SyncOutputStates, pv2RenderOutputsCard, loadPlaylistData, loadHotkeys, loadMidiMap, initMidi, loadOscMap, getCloudSyncFolder, loadStatistics, restoreFontChoice, loadStageNotes,
+                 loadScheduler, loadAutoBackup, loadSongTrash, loadLang, loadPultCfg, loadMultiTrans, loadMultiTransStyle, loadOutputNames, startAutomationWatcher, loadLower, loadOutputBindings, loadOutputFailover, loadRoomProfiles, loadScenePresets, loadServiceProfiles, loadChangeLog, loadTrainingMode, loadRemoteUsers, loadStageOutputNum, refreshMonitors, loadStationCfg, loadLiveConfig, loadNamedThemes, loadSecondLang, loadAutoTimer, loadAutoFit,
+                 loadSplitCfg, loadOrders, loadArrangeGlobal, loadSongSize, loadSongTags, loadService, loadLayers, applyTypo, initObsListener, loadRoutes, loadOutputBg, loadOutputChroma, loadLooks, loadProps, loadMacros, loadPartLabels, loadArrangeSets, loadMsgTemplates, loadSoundBin, loadGraphicsSettings, loadAnnounceSettings, renderServicePlanEmbed, pv2SyncOutputStates, pv2RenderOutputsCard, loadPlaylistData, loadHotkeys, loadMidiMap, initMidi, loadOscMap, getCloudSyncFolder, loadStatistics, restoreFontChoice, loadStageNotes,
                  renderPlaylist, renderHotkeys, renderFontsList,
                  renderMediaList, updateH2RPreview, updateGraphicsPreview, updateTextPreview,
                  () => setPPTtemplate('classic'), updateStatistics,

@@ -33,7 +33,11 @@ const path = require('path');
 const vm = require('vm');
 
 const ROOT = path.resolve(__dirname, '..');
-const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8');
+// Нормалізуємо CRLF → LF: на Windows-раннері git checkout конвертує рядки,
+// і будь-який regex у цьому файлі з буквальним \n (без \r?) там мовчки
+// переставав збігатись, хоча перевірюваний код був повністю коректний —
+// саме це завалило build-win на v2.2.3 (сам код не мав жодної проблеми).
+const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8').replace(/\r\n/g, '\n');
 const SRC = {
   index: read('src/index.html'),
   extras: (function(){
@@ -46,6 +50,16 @@ const SRC = {
   })(),
   formats: read('src/formats.js'),
   main: read('main.js'),
+  // Частини головного процесу, винесені з main.js у окремі модулі
+  // (src/main/*.js) — потрібні окремо, щоб перевірка IPC-парності бачила
+  // ipcMain.handle(...), зареєстровані НЕ в самому main.js.
+  mainModules: (function(){
+    var dir = path.join(ROOT, 'src', 'main');
+    if (!fs.existsSync(dir)) return '';
+    return fs.readdirSync(dir)
+      .filter(function(f){ return /\.js$/.test(f); })
+      .map(function(f){ return read('src/main/' + f); }).join('\n');
+  })(),
   projPreload: read('src/projector-preload.js'),
   projHtml: read('src/projector.html'),
   preload: read('src/preload.js'),
@@ -68,6 +82,89 @@ function checkSyntax(label, code) {
   try { new vm.Script(code); ok('синтаксис: ' + label); }
   catch (e) { bad('синтаксис: ' + label + ' → ' + e.message); }
 }
+
+// ── Ізоляція ранньої ініціалізації (safeInit) ─────────────────────────────
+// РЕГРЕСІЯ, яку це виправляє: index.html — один суцільний <script> з
+// послідовними top-level викликами (searchSongs, initHotkeys, ...), а ПІСЛЯ
+// них — var ANN_STYLES = {...} та інші глобальні дані. Якщо БУДЬ-ЯКИЙ ранній
+// виклик кидає виняток, браузер зупиняє виконання ВСЬОГО скрипта — усе, що
+// мало виконатись після (зокрема ANN_STYLES), ніколи не отримує значення.
+// Наслідок: непов'язана фіча (Оголошення) падає з "Cannot read properties
+// of undefined (reading 'dark')", хоча реальний баг був десь раніше.
+head('Ізоляція ранньої ініціалізації (safeInit)');
+(function () {
+  const ix = SRC.index;
+  if (/function safeInit\(fn, label\)/.test(ix)) ok('safeInit() визначено на самому початку скрипта');
+  else bad('немає safeInit() — рання помилка й далі рве всю подальшу ініціалізацію (ANN_STYLES тощо)');
+
+  const safeInitBody = fnBody(ix, 'safeInit');
+  if (/try \{ fn\(\); \}/.test(safeInitBody) || /try\s*\{\s*fn\(\);\s*\}/.test(ix))
+    ok('safeInit огортає виклик у try/catch (одна помилка не рве решту)');
+  else bad('safeInit не ловить виняток — захист не працює');
+
+  ['searchSongs', 'initHotkeys', 'renderQRPresets', 'loadBibleTranslations'].forEach(name => {
+    if (new RegExp('safeInit\\(' + name + ',').test(ix))
+      ok(name + ' викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+    else bad(name + ' викликається напряму — його падіння й далі зупинить усе, що йде після нього (напр. ANN_STYLES)');
+  });
+  if (/safeInit\(function buildBookAliasList\(\)/.test(ix))
+    ok('buildBookAliasList викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+  else bad('buildBookAliasList викликається напряму — його падіння й далі зупинить усе, що йде після нього (напр. ANN_STYLES)');
+
+  // ANN_STYLES реально падав у продакшені (звіт користувача, "Cannot read
+  // properties of undefined (reading 'dark')") навіть ПІСЛЯ того, як усі 5
+  // відомих ризикованих викликів загорнули в safeInit — бо сам ANN_STYLES
+  // стояв ПІСЛЯ них у файлі, і будь-який ще не знайдений ранній виняток
+  // так само лишав його undefined. Тепер ANN_STYLES визначається одразу
+  // ПІСЛЯ самої функції safeInit і ПЕРЕД усіма ризикованими викликами —
+  // йому вже нічого не може завадити отримати значення.
+  const idxSafeInitEnd = ix.indexOf('function safeInit(fn, label)');
+  const idxAnn = idxSafeInitEnd > -1 ? ix.indexOf('var ANN_STYLES = {', idxSafeInitEnd) : -1;
+  const idxFirstSafeInitCall = ix.indexOf("safeInit(function buildBookAliasList()");
+  if (idxSafeInitEnd > -1 && idxAnn > -1 && idxFirstSafeInitCall > -1 && idxAnn < idxFirstSafeInitCall)
+    ok('ANN_STYLES визначається одразу після safeInit і ДО всіх ризикованих викликів — недосяжний для каскадного падіння');
+  else bad('ANN_STYLES більше не стоїть перед усіма ризикованими викликами — каскадне падіння знову може лишити його undefined');
+
+  // ANN_KEY/announcements — той самий каскад, друга половина: користувач
+  // отримав ANN_STYLES-фікс, натиснув "Зберегти" оголошення й отримав НОВИЙ
+  // крах, бо announcements (var announcements = []) так само стояв ПІСЛЯ
+  // ризикованих викликів — announcements.push(...) у saveAnnounce() падав
+  // без жодного захисту, коли announcements лишався undefined.
+  const idxAnnKey = idxSafeInitEnd > -1 ? ix.indexOf('var ANN_KEY = ', idxSafeInitEnd) : -1;
+  const idxAnnArr = idxSafeInitEnd > -1 ? ix.indexOf('var announcements = [];', idxSafeInitEnd) : -1;
+  if (idxAnnKey > -1 && idxAnnArr > -1 && idxFirstSafeInitCall > -1 && idxAnnKey < idxFirstSafeInitCall && idxAnnArr < idxFirstSafeInitCall)
+    ok('ANN_KEY/announcements визначаються одразу після safeInit і ДО всіх ризикованих викликів');
+  else bad('ANN_KEY/announcements більше не стоять перед усіма ризикованими викликами — "Зберегти" оголошення знову може впасти');
+
+  // Решта прямих (не загорнутих у safeInit) top-level викликів, знайдених
+  // у тому ж скрипті при повторному аудиті — кожен з них теж міг обірвати
+  // все, що йде після нього, якщо електронний preload не дав очікуваний метод.
+  ['loadAnnouncements', 'initBgLibrary', 'refreshDisplays'].forEach(name => {
+    if (new RegExp('safeInit\\(' + name + ',').test(ix))
+      ok(name + '() викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+    else bad(name + '() викликається напряму — його падіння й далі зупинить усе, що йде після нього');
+  });
+  // indexOf замість regex із буквальним \n: на Windows-раннері git checkout
+  // конвертує LF → CRLF, і regex із голим \n (без \r?) там мовчки не збігався,
+  // хоча код був повністю коректний — це й завалило build-win на v2.2.3.
+  const idxGetOutputConfigWrap = ix.indexOf("safeInit(function() {\n  if (window.electronAPI) {\n    window.electronAPI.getOutputConfig");
+  if (idxGetOutputConfigWrap > -1)
+    ok('getOutputConfig/onDisplaysChanged загорнуто в safeInit');
+  else bad('getOutputConfig/onDisplaysChanged викликається напряму поза safeInit');
+  const idxOnRemoteCmdCall = ix.indexOf('window.electronAPI.onRemoteCommand');
+  const idxOnRemoteCmdWrap = ix.lastIndexOf('safeInit(function() {', idxOnRemoteCmdCall > -1 ? idxOnRemoteCmdCall : 0);
+  if (idxOnRemoteCmdCall > -1 && idxOnRemoteCmdWrap > -1 && (idxOnRemoteCmdCall - idxOnRemoteCmdWrap) < 200)
+    ok('onRemoteCommand/getTheme загорнуто в safeInit');
+  else bad('onRemoteCommand/getTheme викликається напряму поза safeInit');
+
+  // Конкретний незахищений DOM-доступ, знайдений у цьому ревʼю: якщо
+  // #bibleTranslationsList відсутній у DOM (напр. вкладка ще не змонтована),
+  // .innerHTML на null кидав TypeError і рвав усе, що йде далі в скрипті.
+  const renderBody = fnBody(ix, 'renderBibleTranslationsList');
+  if (/if \(!el\) return;/.test(renderBody))
+    ok('renderBibleTranslationsList має null-guard на #bibleTranslationsList');
+  else bad('РЕГРЕСІЯ: renderBibleTranslationsList знову без null-guard — відсутній елемент знову зупинить увесь подальший скрипт');
+})();
 
 // ── 1. SYNTAX ────────────────────────────────────────────────────────────────
 head('1. Синтаксис');
@@ -262,9 +359,10 @@ head('IPC-парність (preload ↔ main)');
   while ((m = re.exec(SRC.preload))) invokes.add(m[1]);
   const handled = new Set();
   const re2 = /ipcMain\.handle\(\s*['"]([^'"]+)['"]/g;
-  while ((m = re2.exec(SRC.main))) handled.add(m[1]);
+  const mainAll = SRC.main + '\n' + SRC.mainModules;
+  while ((m = re2.exec(mainAll))) handled.add(m[1]);
   const missing = [...invokes].filter(x => !handled.has(x)).sort();
-  if (!missing.length) ok('усі ' + invokes.size + ' IPC-виклики з preload мають обробник у main.js');
+  if (!missing.length) ok('усі ' + invokes.size + ' IPC-виклики з preload мають обробник у main.js (+ src/main/*.js)');
   else bad('IPC без обробника в main.js: ' + missing.join(', '));
 })();
 
@@ -409,6 +507,104 @@ head('Гарячі клавіші F1/F2/F5/Esc');
   else bad('гарячі клавіші можуть спрацювати під час набору тексту в полі — ризик випадково закрити вихід');
 })();
 
+// ── PDF/слайди в ефірі: гортання не має "витікати" в пісню/вірш ─────────────
+// РЕГРЕСІЯ З ЖИТТЯ (звіт користувача): надіслав сторінку PDF в ефір, натиснув
+// Пробіл/Стрілку очікуючи погортати PDF — а замість цього в ефір летіла
+// пісня чи вірш ПОВЕРХ щойно показаного PDF. Причина: sendImageToProjector
+// (спільна точка для PDF-сторінок і власних слайдів) НІКОЛИ не виставляла
+// lastLiveSource, тож усі три диспетчери next/prev (гарячі клавіші, пульт/
+// OSC, fallback-обробник) бачили стару 'song'/'bible' (або їх відсутність) і
+// падали на фолбек nextVerse()/nextBibleVerse().
+//
+// ДРУГА ХВИЛЯ (знайдено повторним аудитом): перший фікс позначав і PDF-
+// сторінку, і РУЧНИЙ слайд з "Редактора слайдів" ОДНАКОВО як 'slide' — тож
+// nextSlide()/prevSlide() (які вміють гортати лише PDF) або нічого не робили
+// при показі ручного слайда (якщо PDF цього сеансу не відкривали), або
+// тихо підміняли його СТАРОЮ сторінкою раніше відкритого PDF. Тепер
+// sendImageToProjector приймає sourceTag: 'pdf' від sendSlideToProjector,
+// 'slide' (за замовчуванням) від sendCustomSlide/sendSavedSlide — і лише
+// 'pdf' гортається клавішами/пультом.
+head('PDF/слайди: гортання лишається на PDF, не "перестрибує" на пісню чи ручний слайд');
+(function () {
+  const ix = SRC.index, ex = SRC.extras;
+  const sendImgBody = fnBody(ex, 'sendImageToProjector');
+  if (/lastLiveSource\s*=\s*sourceTag\s*\|\|\s*'slide'/.test(sendImgBody))
+    ok("sendImageToProjector позначає lastLiveSource=sourceTag (PDF/слайд визнається джерелом в ефірі, з розрізненням)");
+  else bad('sendImageToProjector не виставляє lastLiveSource через sourceTag — PDF і ручний слайд знову можуть плутатись');
+
+  const sendSlideBody = fnBody(ex, 'sendSlideToProjector');
+  if (/sendImageToProjector\([^)]*'pdf'\)/.test(sendSlideBody))
+    ok("sendSlideToProjector передає sourceTag='pdf' (PDF-сторінка відрізняється від ручного слайда)");
+  else bad("sendSlideToProjector не передає 'pdf' — знову зіллється з ручними слайдами Редактора слайдів");
+
+  const sendCustomBody = fnBody(ex, 'sendCustomSlide');
+  const sendSavedBody = fnBody(ex, 'sendSavedSlide');
+  if (!/'pdf'/.test(sendCustomBody) && !/'pdf'/.test(sendSavedBody))
+    ok("sendCustomSlide/sendSavedSlide НЕ позначають себе як 'pdf' (ручний слайд не гортається як PDF)");
+  else bad('sendCustomSlide/sendSavedSlide помилково позначають себе як PDF — regression Finding 1');
+
+  const nextSlideBody = fnBody(ex, 'nextSlide');
+  const prevSlideBody = fnBody(ex, 'prevSlide');
+  if (/lastLiveSource === 'pdf'[\s\S]{0,30}sendSlideToProjector\(\)/.test(nextSlideBody) &&
+      /lastLiveSource === 'pdf'[\s\S]{0,30}sendSlideToProjector\(\)/.test(prevSlideBody))
+    ok('nextSlide/prevSlide оновлюють проектор, поки PDF (не ручний слайд) в ефірі (не лише локальний прев\'ю)');
+  else bad('nextSlide/prevSlide не пушать нову сторінку в ефір — зал бачить застарілу сторінку');
+
+  // У кожному з диспетчерів next/prev перевірка lastLiveSource==='pdf'
+  // МАЄ стояти РАНІШЕ за фолбек на state.selectedSong/nextVerse — інакше
+  // стара вибрана пісня все одно перехопить команду першою.
+  function slideBeforeSongFallback(body, fallbackRe) {
+    const slideIdx = body.search(/lastLiveSource === 'pdf'/);
+    const fallbackIdx = body.search(fallbackRe);
+    return slideIdx > -1 && fallbackIdx > -1 && slideIdx < fallbackIdx;
+  }
+  // initHotkeys оголошує pdfLive = (lastLiveSource === 'pdf') окремою
+  // змінною ПЕРЕД switch (як і bibleLive) — у самому тілі case перевірка
+  // виглядає як "pdfLive &&", а не буквальне порівняння.
+  const hotkeyNext = (ix.match(/case ' ':[\s\S]{0,520}?break;/) || [''])[0];
+  const slideVarIdx = hotkeyNext.search(/pdfLive\s*&&/);
+  const songFallbackIdx = hotkeyNext.search(/selectedSong\)\s*\{\s*nextVerse/);
+  if (/var pdfLive = \(typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf'\)/.test(ix) &&
+      slideVarIdx > -1 && songFallbackIdx > -1 && slideVarIdx < songFallbackIdx)
+    ok('initHotkeys (fallback-обробник, Пробіл): PDF перевіряється до фолбеку на вибрану пісню');
+  else bad('initHotkeys: фолбек на вибрану пісню може перехопити Пробіл раніше за PDF');
+
+  const remoteSwitch = fnBody(ex, 'initRemoteListener');
+  if (slideBeforeSongFallback(remoteSwitch, /nextVerse === 'function'\)\s*\{\s*nextVerse/))
+    ok('пульт/OSC (initRemoteListener): PDF перевіряється до фолбеку на nextVerse');
+  else bad('пульт/OSC: фолбек на nextVerse може перехопити команду раніше за PDF');
+
+  const hotkeyHandlerBody = ex; // глобальний keydown-обробник extras-4.js — шукаємо весь файл
+  if (slideBeforeSongFallback(hotkeyHandlerBody, /state\.selectedSong\)\s*\{\s*nextVerse/))
+    ok('глобальні гарячі клавіші (extras-4.js): PDF перевіряється до фолбеку на вибрану пісню');
+  else bad('глобальні гарячі клавіші: фолбек на вибрану пісню може перехопити команду раніше за PDF');
+
+  // Резервний onRemoteCommand у самому index.html (діє лише якщо extras.js
+  // не завантажився) — та сама діра, знайдена повторним аудитом окремо.
+  const fallbackRemote = (ix.match(/Далі — запасний варіант[\s\S]{0,700}/) || [''])[0];
+  if (slideBeforeSongFallback(fallbackRemote, /cmd\.action === 'next-verse'\)\s*\{\s*nextVerse/))
+    ok('index.html: резервний onRemoteCommand теж перевіряє PDF до фолбеку на nextVerse');
+  else bad('index.html: резервний onRemoteCommand (extras.js не завантажився) не захищений від PDF-регресії');
+})();
+
+// ── Кошик пісень: restoreSong не має стирати всю базу ────────────────────────
+// РЕГРЕСІЯ (виявлено повторним аудитом, попереджувала будь-які зміни цієї
+// сесії): restoreSong() викликав saveSongs() БЕЗ аргументу. saveSongs(songs)
+// робить JSON.stringify(songs) → undefined, а bigStoreSet трактує undefined
+// як '' — church_songs_db записувався ПОРОЖНІМ рядком. Поточна сесія й далі
+// працювала б нормально (currentSongs у пам'яті вже мав відновлену пісню),
+// але наступний запуск програми (loadSongs) бачив би порожній рядок,
+// вважав би що збереженого нема, і тихо скидав УСЮ базу пісень до кількох
+// вбудованих за замовчуванням — щойно оператор відновив пісню з кошика й
+// закрив програму без жодної іншої зміни.
+head('Кошик пісень: restoreSong зберігає ПОВНИЙ список (не стирає базу)');
+(function () {
+  const restoreBody = fnBody(SRC.extras, 'restoreSong');
+  if (/saveSongs\(currentSongs\)/.test(restoreBody))
+    ok('restoreSong викликає saveSongs(currentSongs) — з аргументом, база не затирається');
+  else bad('restoreSong викликає saveSongs без аргументу — наступний запуск програми стирає всю базу пісень');
+})();
+
 // ── Пісні: редагування + збережений розмір ──────────────────────────────────
 head('Пісні: редагування + розмір');
 (function () {
@@ -519,6 +715,32 @@ head('Нові функції');
   if (/function applyArrangePreset/.test(SRC.extras) && /applyArrangePreset\(this\.value\)/.test(SRC.extras) && /'frame'|'last2'|'end'/.test(SRC.extras))
     ok('готові аранжування (приспів у кінці / рамка / останній куплет двічі / тільки куплети)');
   else bad('немає готових пресетів аранжування');
+
+  // Збірники пісень: поле при додаванні/редагуванні + фільтр-select у списку
+  // «Всі пісні в базі», що звужує пошук лише до обраного збірника.
+  const seBody = pz; // song-edit.js входить у SRC.extras
+  if (/id="newSongBook"/.test(ix)) ok('поле «Збірник» у формі додавання пісні');
+  else bad('немає поля збірника при додаванні пісні');
+  if (/id="songBookFilter"/.test(ix)) ok('фільтр-select збірників у списку «Всі пісні в базі»');
+  else bad('немає фільтра збірників у списку пісень');
+  if (/function renderSongBookOptions/.test(seBody)) ok('renderSongBookOptions наповнює фільтр + автодоповнення унікальними збірниками');
+  else bad('немає renderSongBookOptions');
+  const addBody = fnBody(seBody, 'addNewSong');
+  if (/songbook\s*:\s*songbook/.test(addBody) || /ex\.songbook\s*=\s*songbook/.test(addBody))
+    ok('addNewSong зберігає збірник (і при створенні, і при оновленні)');
+  else bad('addNewSong не зберігає поле збірника');
+  const renderAllBody = fnBody(seBody, 'renderAllSongs');
+  if (/s\.songbook \|\| ''\)\.trim\(\) === book/.test(renderAllBody))
+    ok('renderAllSongs фільтрує список за обраним збірником (з trim, узгоджено з renderSongBookOptions)');
+  else bad('renderAllSongs не фільтрує за збірником, або забув .trim() — можлива розбіжність із випадаючим списком');
+
+  // Легасі-вкладка "Backup" (restoreAllOld_UNUSED) реконструює пісні з нуля
+  // при відновленні бекапу — songbook МАЄ бути серед перенесених полів,
+  // інакше відновлення бекапу тихо стирає всі призначення збірників.
+  const restoreOldBody = fnBody(ix, 'restoreAllOld_UNUSED');
+  if (/songbook\s*:\s*s\.songbook/.test(restoreOldBody))
+    ok('restoreAllOld_UNUSED переносить songbook при відновленні бекапу');
+  else bad('restoreAllOld_UNUSED губить songbook при відновленні — призначення збірників зникнуть');
 })();
 
 // ── План служби: осиротілі пункти-пісні (relink) ─────────────────────────────
@@ -789,6 +1011,32 @@ head('Модульна структура');
   else bad('bible.js: override searchBible загублено');
 })();
 
+// ── Захист від відсутньої розмітки (крихкість на завантаженні модуля) ─────────
+// Модулі — звичайні <script> у спільній області. Якщо на верхньому рівні звернутись
+// до getElementById(...).addEventListener без перевірки на null, а розмітку колись
+// приберуть/перейменують — модуль впаде на старті й обірве решту свого коду.
+head('Захист від відсутньої розмітки');
+(function () {
+  const s = SRC.extras;
+  // 1) PDF-dropzone у slide-ui.js має бути під null-guard
+  const i = s.indexOf("getElementById('pdfDrop')");
+  if (i < 0) {
+    ok('pdfDrop: блок не знайдено (пропущено — можливо, прибрано навмисно)');
+  } else {
+    const win = s.slice(i, i + 220);
+    if (/if\s*\(\s*drop\s*\)/.test(win)) ok('slide-ui: dropzone #pdfDrop під null-guard (if (drop))');
+    else bad('slide-ui: #pdfDrop використовується без перевірки на null — впаде на старті, якщо розмітку прибрати');
+  }
+  // 2) pdfInput усередині drop-обробника теж має бути під перевіркою
+  if (i >= 0) {
+    const win2 = s.slice(i, i + 600);
+    const usesInput = /getElementById\('pdfInput'\)/.test(win2);
+    const guarded = /if\s*\(\s*inp\s*\)/.test(win2) || !/getElementById\('pdfInput'\)\s*\.\s*files/.test(win2);
+    if (!usesInput || guarded) ok('slide-ui: доступ до #pdfInput у drop-обробнику захищено');
+    else bad('slide-ui: #pdfInput читається без перевірки на null у drop-обробнику');
+  }
+})();
+
 // ── Виправлення (ввід / тема / відновлення) ─────────────────────────────────
 head('Виправлення багів');
 (function () {
@@ -829,6 +1077,7 @@ head('Виправлення багів');
     ok('синхронізація: обирає реальний LAN-IP (не віртуальний) + показує всі адреси');
   else bad('синхронізація: може показувати не той IP');
 })();
+
 
 console.log('\n' + '─'.repeat(48));
 if (failures === 0) {

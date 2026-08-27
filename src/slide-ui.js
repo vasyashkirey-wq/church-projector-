@@ -121,11 +121,18 @@ function selectPDFPage(num) {
 }
 
 function prevSlide() {
-  if (pdfPageNum > 1) selectPDFPage(pdfPageNum - 1);
+  if (pdfPageNum <= 1) return;
+  selectPDFPage(pdfPageNum - 1);
+  // PDF зараз в ефірі (востаннє відправлена сторінка — саме PDF, а не
+  // ручний слайд з "Редактора слайдів" — див. 'pdf' vs 'slide' нижче) —
+  // гортання має одразу оновити те, що бачить зал, а не лише прев'ю.
+  if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf') sendSlideToProjector();
 }
 
 function nextSlide() {
-  if (pdfPageNum < pdfPageCount) selectPDFPage(pdfPageNum + 1);
+  if (pdfPageNum >= pdfPageCount) return;
+  selectPDFPage(pdfPageNum + 1);
+  if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf') sendSlideToProjector();
 }
 
 function updateSlideCounter() {
@@ -137,11 +144,23 @@ function sendSlideToProjector() {
   var offCanvas = document.createElement('canvas');
   renderPDFPage(pdfPageNum, offCanvas, function() {
     var dataUrl = offCanvas.toDataURL('image/jpeg', 0.9);
-    sendImageToProjector(dataUrl, 'PDF стор. ' + pdfPageNum);
+    sendImageToProjector(dataUrl, 'PDF стор. ' + pdfPageNum, 'pdf');
   });
 }
 
-function sendImageToProjector(dataUrl, label) {
+// sourceTag розрізняє ДВІ різні речі, що йдуть через цю саму функцію:
+// PDF-сторінку ('pdf', гортається nextSlide/prevSlide) і ручний слайд з
+// "Редактора слайдів" ('slide' — за замовчуванням, у нього НЕМАЄ поняття
+// "наступний"). Раніше обидва позначались однаково як 'slide', тож
+// Пробіл/Стрілка під час показу РУЧНОГО слайда або нічого не робили
+// (якщо PDF цього сеансу взагалі не відкривали), або — гірше — тихо
+// підміняли слайд на СТАРУ сторінку раніше відкритого PDF.
+function sendImageToProjector(dataUrl, label, sourceTag) {
+  lastLiveSource = sourceTag || 'slide';
+  lastLiveGraphics = false;
+  lastLivePlain = false;
+  lastLiveMulti = false;
+  try { if (typeof state !== 'undefined' && state) state.multiLive = []; } catch (e) {}
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
     'body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;}' +
     'img{max-width:100%;max-height:100vh;object-fit:contain;}' +
@@ -388,17 +407,21 @@ renderCustomSlides();
 renderSlideCanvas();
 
 // Drag & drop for PDF
+// Захист: якщо розмітку #pdfDrop колись приберуть/перейменують, модуль не має
+// падати на завантаженні (це обірвало б решту slide-ui.js). Тому — null-guard.
 var drop = document.getElementById('pdfDrop');
-drop.addEventListener('dragover', function(e){ e.preventDefault(); drop.style.borderColor='var(--accent)'; });
-drop.addEventListener('dragleave', function(){ drop.style.borderColor=''; });
-drop.addEventListener('drop', function(e){
-  e.preventDefault();
-  drop.style.borderColor='';
-  var file = e.dataTransfer.files[0];
-  if (file && file.type === 'application/pdf') {
-    var dt = new DataTransfer();
-    dt.items.add(file);
-    document.getElementById('pdfInput').files = dt.files;
-    loadPDF(document.getElementById('pdfInput'));
-  }
-});
+if (drop) {
+  drop.addEventListener('dragover', function(e){ e.preventDefault(); drop.style.borderColor='var(--accent)'; });
+  drop.addEventListener('dragleave', function(){ drop.style.borderColor=''; });
+  drop.addEventListener('drop', function(e){
+    e.preventDefault();
+    drop.style.borderColor='';
+    var file = e.dataTransfer.files[0];
+    if (file && file.type === 'application/pdf') {
+      var dt = new DataTransfer();
+      dt.items.add(file);
+      var inp = document.getElementById('pdfInput');
+      if (inp) { inp.files = dt.files; loadPDF(inp); }
+    }
+  });
+}

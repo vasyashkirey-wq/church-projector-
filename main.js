@@ -1,5 +1,4 @@
-const { app, BrowserWindow, screen, ipcMain, Menu } = require('electron');
-const zlib = require('zlib');
+const { app, BrowserWindow, screen, ipcMain } = require('electron');
 const crypto = require('crypto');
 const path = require('path');
 const http = require('http');
@@ -54,8 +53,12 @@ function createMainWindow() {
   });
   mainWin.loadFile(path.join(__dirname, 'src/index.html'));
   mainWin.on('closed', () => {
-    if (outputWins.projector && !outputWins.projector.isDestroyed()) outputWins.projector.close();
-    if (outputWins.stream && !outputWins.stream.isDestroyed()) outputWins.stream.close();
+    // Закриваємо УСІ вікна виводу (не лише projector/stream) — інакше out3/out4
+    // лишались відкритими без панелі керування, і другий запуск програми
+    // («вже запущено — фокусуємо») не міг створити нове головне вікно.
+    OUTPUT_KINDS.forEach(k => {
+      if (outputWins[k] && !outputWins[k].isDestroyed()) outputWins[k].close();
+    });
     stopRemoteServer();
     mainWin = null;
   });
@@ -85,7 +88,13 @@ let outputConfig = {
 function pickDisplay(excludeIds, preferredId) {
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
-  if (preferredId) {
+  // Явно обраний дисплей повертаємо одразу, АЛЕ тільки якщо він ще не
+  // зайнятий іншим відкритим виходом — інакше два різні виходи (напр.
+  // проектор і трансляція), явно прив'язані до того самого фізичного
+  // екрана, обидва йшли б повноекранно на нього й накладались один на
+  // одного, а count-based перевірка "crowded" нижче цього не ловить,
+  // бо вважає лише кількість відкритих виходів і моніторів.
+  if (preferredId && !excludeIds.includes(preferredId)) {
     const exact = displays.find(d => d.id === preferredId);
     if (exact) return exact;
   }
@@ -193,6 +202,13 @@ function createOutputWindow(kind, callback) {
     if (callback) callback();
     if (pendingDisplay) {
       setTimeout(() => {
+        // Обидва виходи (проектор і трансляція) реєструють свій власний
+        // 'did-finish-load' і плюють на СПІЛЬНУ pendingDisplay: якщо вони
+        // завантажились близько в часі, обидва таймаути спрацьовують, і
+        // перший з них уже занулив pendingDisplay до того, як другий встиг
+        // прочитати — другий тоді розсилав усім вікнам display=null одразу
+        // після першого реального показу. Перевіряємо ще раз тут.
+        if (!pendingDisplay) return;
         broadcastDisplay(pendingDisplay);
         pendingDisplay = null;
       }, 200);
@@ -274,103 +290,10 @@ function broadcastTheme(theme) {
 
 
 // ============================================================
-// PPTX / DOCX — витяг тексту без сторонніх бібліотек.
-// Обидва формати — це ZIP з XML усередині. Читаємо central directory,
-// розпаковуємо потрібні записи через zlib.inflateRaw.
+// PPTX / DOCX — витяг тексту (винесено в src/main/office-extract.js,
+// самодостатній модуль без залежності від стану головного процесу)
 // ============================================================
-function zipEntries(buf) {
-  const entries = {};
-  // End of central directory: сигнатура 0x06054b50 з кінця файлу
-  let eocd = -1;
-  for (let i = buf.length - 22; i >= 0 && i > buf.length - 66000; i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
-  }
-  if (eocd < 0) throw new Error('Це не ZIP-архів (пошкоджений файл?)');
-
-  const total = buf.readUInt16LE(eocd + 10);
-  let p = buf.readUInt32LE(eocd + 16); // зміщення central directory
-
-  for (let i = 0; i < total; i++) {
-    if (buf.readUInt32LE(p) !== 0x02014b50) break;
-    const method   = buf.readUInt16LE(p + 10);
-    const compSize = buf.readUInt32LE(p + 20);
-    const nameLen  = buf.readUInt16LE(p + 28);
-    const extraLen = buf.readUInt16LE(p + 30);
-    const cmtLen   = buf.readUInt16LE(p + 32);
-    const localOff = buf.readUInt32LE(p + 42);
-    const name     = buf.toString('utf8', p + 46, p + 46 + nameLen);
-
-    // Локальний заголовок: довжини name/extra тут можуть відрізнятись
-    const lNameLen  = buf.readUInt16LE(localOff + 26);
-    const lExtraLen = buf.readUInt16LE(localOff + 28);
-    const dataStart = localOff + 30 + lNameLen + lExtraLen;
-    const raw = buf.slice(dataStart, dataStart + compSize);
-
-    entries[name] = () => {
-      if (method === 0) return raw;                 // без стиснення
-      if (method === 8) return zlib.inflateRawSync(raw); // deflate
-      throw new Error('Непідтримане стиснення в ZIP: ' + method);
-    };
-    p += 46 + nameLen + extraLen + cmtLen;
-  }
-  return entries;
-}
-
-function xmlText(xml, tag) {
-  const out = [];
-  const re = new RegExp('<' + tag + '\\b[^>]*>([\\s\\S]*?)</' + tag + '>', 'g');
-  let m;
-  while ((m = re.exec(xml))) {
-    const t = m[1]
-      .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
-      .replace(/&#(\d+);/g, (x, d) => String.fromCharCode(+d))
-      .replace(/&amp;/g, '&');
-    out.push(t);
-  }
-  return out;
-}
-
-// Повертає масив «слайдів»: [{title, lines:[…]}]
-ipcMain.handle('parse-office', (event, { filePath, ext }) => {
-  try {
-  const fsx = require('fs');
-  const buf = fsx.readFileSync(filePath);
-  const entries = zipEntries(buf);
-
-  if (ext === 'pptx' || ext === 'potx') {
-    const names = Object.keys(entries)
-      .filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n))
-      .sort((a, b) => {
-        const na = parseInt(a.match(/slide(\d+)/)[1], 10);
-        const nb = parseInt(b.match(/slide(\d+)/)[1], 10);
-        return na - nb;
-      });
-    const slides = names.map((n, i) => {
-      const xml = entries[n]().toString('utf8');
-      // <a:p> — абзац, <a:t> — текстовий run усередині нього
-      const paras = xml.split(/<a:p>/).slice(1).map(p => xmlText(p, 'a:t').join('').trim()).filter(Boolean);
-      return { title: paras[0] || ('Слайд ' + (i + 1)), lines: paras };
-    });
-    return { ok: true, kind: 'pptx', slides: slides.filter(s => s.lines.length) };
-  }
-
-  if (ext === 'docx' || ext === 'dotx') {
-    const key = entries['word/document.xml'] ? 'word/document.xml' : null;
-    if (!key) throw new Error('У DOCX не знайдено word/document.xml');
-    const xml = entries[key]().toString('utf8');
-    const paras = xml.split(/<w:p[ >]/).slice(1)
-      .map(p => xmlText(p, 'w:t').join('').trim())
-      .filter(Boolean);
-    // Порожній рядок у Word = межа блоку; групуємо абзаци в «слайди» по 1 абзацу
-    return { ok: true, kind: 'docx', slides: paras.map((p, i) => ({ title: 'Абзац ' + (i + 1), lines: [p] })) };
-  }
-
-  throw new Error('Непідтримане розширення: ' + ext);
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  }
-});
+require('./src/main/office-extract').register(ipcMain);
 
 // ============================================================
 // КОНВЕРТАЦІЯ МЕДІА (FFmpeg + heic-convert)
@@ -456,6 +379,29 @@ ipcMain.handle('convert-media', async (event, { filePath }) => {
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) };
   }
+});
+
+// ============================================================
+// QR-КОД (npm qrcode) — генерується в головному процесі й повертається
+// як data URI. Чистий JS, без компіляції, тож завжди доступний. На відміну
+// від попереднього способу (браузерна qrcodejs з CDN), працює ПОВНІСТЮ
+// офлайн одразу з першого запуску — не треба жодного разу мати інтернет,
+// щоб закешувати скрипт.
+// ============================================================
+ipcMain.handle('qrcode-generate', async (event, { text, size }) => {
+  try {
+    if (!text) return { ok: false, error: 'Порожній текст' };
+    let QRCodeLib;
+    try { QRCodeLib = require('qrcode'); }
+    catch (e) { return { ok: false, error: 'Немає qrcode — виконай `npm install`' }; }
+    const dataUrl = await QRCodeLib.toDataURL(text, {
+      width: size || 300,
+      margin: 1,
+      errorCorrectionLevel: 'H',   // висока корекція — витримує логотип по центру
+      color: { dark: '#000000', light: '#ffffff' }
+    });
+    return { ok: true, dataUrl };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
 });
 
 // Читає файл із диска й повертає data URI (для картинок, які треба покласти на
@@ -794,16 +740,34 @@ ipcMain.on('data-read-sync', (event, key) => {
     event.returnValue = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null;
   } catch (e) { event.returnValue = null; }
 });
-ipcMain.on('data-write-sync', (event, { key, content }) => {
+// ФІКС: раніше запис/видалення були fs.writeFileSync/unlinkSync на каналі
+// sendSync — це БЛОКУВАЛО весь застосунок (рендерер чекає, а сам головний
+// процес теж синхронно пише на диск, тож і вивід на проектор/трансляцію
+// теж завмирав на цей час). З базою 3300+ пісень кожне збереження — це
+// кілька мегабайт, тож підвисання були відчутні, особливо на Windows.
+// Тепер пишемо асинхронно (fs.writeFile) на окремому "async"-каналі, куди
+// рендерер лише «стукає» (send, не sendSync) — не чекаючи відповіді.
+ipcMain.on('data-write-async', (event, { key, content }) => {
   try {
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(dataFile(key), String(content == null ? '' : content), 'utf8');
-    event.returnValue = true;
-  } catch (e) { logError('data-write', e); event.returnValue = false; }
+    pendingDataWrites++;
+    fs.writeFile(dataFile(key), String(content == null ? '' : content), 'utf8', (err) => {
+      pendingDataWrites--;
+      if (err) logError('data-write-async', err);
+      maybeFinishQuit();
+    });
+  } catch (e) { logError('data-write-async', e); }
 });
-ipcMain.on('data-delete-sync', (event, key) => {
-  try { const f = dataFile(key); if (fs.existsSync(f)) fs.unlinkSync(f); event.returnValue = true; }
-  catch (e) { event.returnValue = false; }
+ipcMain.on('data-delete-async', (event, key) => {
+  try {
+    const f = dataFile(key);
+    pendingDataWrites++;
+    fs.unlink(f, (err) => {
+      pendingDataWrites--;
+      if (err && err.code !== 'ENOENT') logError('data-delete-async', err);
+      maybeFinishQuit();
+    });
+  } catch (e) { logError('data-delete-async', e); }
 });
 ipcMain.handle('open-data-folder', () => {
   try {
@@ -1046,6 +1010,11 @@ ipcMain.handle('set-fit-group', (event, { slides, kind }) => { sendToOutputs('se
 ipcMain.handle('set-locked-size', (event, { size, kind }) => { sendToOutputs('set-locked-size', size, kind); return 'ok'; });
 ipcMain.handle('set-bg-video', (event, { cfg, kind }) => { sendToOutputs('set-bg-video', cfg, kind); return 'ok'; });
 ipcMain.handle('show-logo',    (event, { dataUrl, kind }) => { sendToOutputs('show-logo', dataUrl, kind); return 'ok'; });
+// Постійний водяний знак — окремий, незалежний шар: на відміну від логотипа
+// його НЕ торкається логіка автоприбирання при новому контенті (проектор-preload
+// має для нього окремий, ніколи не чіпаний слухач), тож він лишається поверх
+// усього, поки оператор не вимкне явно.
+ipcMain.handle('show-watermark', (event, { cfg, kind }) => { sendToOutputs('watermark', cfg, kind); return 'ok'; });
 ipcMain.handle('freeze-output',(event, { on, kind }) => { sendToOutputs('freeze', !!on, kind); return 'ok'; });
 ipcMain.handle('send-alert',   (event, { cfg, kind }) => { sendToOutputs('alert', cfg, kind); return 'ok'; });
 
@@ -1186,6 +1155,14 @@ function startOscServer(mainWin) {
     // Якщо учимо адресу
     if (oscLearn) {
       oscMap[oscLearn] = addr;
+      // Записуємо на диск одразу — інакше вивчена прив'язка жила лише в пам'яті,
+      // а 'start-osc-server' (напр. при наступному запуску сервера чи програми)
+      // безумовно перечитує osc-map.json і тихо стирала б щойно вивчене.
+      try {
+        const fs = require('fs');
+        const cfgPath = path.join(app.getPath('userData'), 'osc-map.json');
+        fs.writeFileSync(cfgPath, JSON.stringify(oscMap), 'utf8');
+      } catch (e) {}
       if (mainWin && !mainWin.isDestroyed()) {
         mainWin.webContents.send('osc-learned', { action: oscLearn, address: addr });
       }
@@ -1228,8 +1205,16 @@ function broadcastToStations(msg, exceptWs) {
 }
 
 ipcMain.handle('start-sync-server', (event, opts) => {
+  // Сервер уже працює — не міняємо PIN під ногами у вже підключених станцій,
+  // просто повертаємо поточний стан (якщо явно не попросили новий PIN).
+  if (syncServer) {
+    if (opts && opts.pin) stationPin = opts.pin;
+    return { port: syncPort, ip: getLocalIP(), ips: getAllLocalIPs().map(c => c.address), pin: stationPin };
+  }
   stationPin = (opts && opts.pin) || '';
-  if (syncServer) return { port: syncPort, ip: getLocalIP(), pin: stationPin };
+  // Без явно заданого PIN не лишаємо сервер відкритим для будь-кого в мережі —
+  // генеруємо власний PIN і показуємо його оператору.
+  if (!stationPin) stationPin = String(Math.floor(1000 + Math.random() * 9000));
 
   const http = require('http');
   syncServer = http.createServer((req, res) => {
@@ -1265,13 +1250,22 @@ ipcMain.handle('start-sync-server', (event, opts) => {
       }
       if (!ws._authed) return;
 
-      // Команда від клієнта → виконує ХОСТ (у нього вікна виводу)
+      // Команда від клієнта → виконує ХОСТ (у нього вікна виводу).
+      // Allow-list дій, синхронний зі switch у applyStationCommand (extras-3.js) —
+      // сервер не має пересилати те, що там і так впаде в default:return, і не
+      // пересилає надто великий/дивний payload (захист від засмічення хоста).
       if (msg.type === 'cmd') {
-        if (mainWin && !mainWin.isDestroyed()) {
-          mainWin.webContents.send('station-command', {
-            action: msg.action, payload: msg.payload,
-            from: ws._name || ('Станція ' + ws._id)
-          });
+        const allowedActions = ['send-text', 'send-html', 'stage', 'go-live', 'clear',
+          'blackout', 'next', 'prev', 'bookmark', 'plan-item', 'announce', 'gdd', 'alert', 'freeze'];
+        const payloadOk = msg.payload == null || (typeof msg.payload === 'object' && !Array.isArray(msg.payload));
+        if (typeof msg.action === 'string' && allowedActions.indexOf(msg.action) >= 0 &&
+            payloadOk && raw.length < 5 * 1024 * 1024) {
+          if (mainWin && !mainWin.isDestroyed()) {
+            mainWin.webContents.send('station-command', {
+              action: msg.action, payload: msg.payload,
+              from: ws._name || ('Станція ' + ws._id)
+            });
+          }
         }
       }
     });
@@ -1427,9 +1421,18 @@ function actionAllowed(access, action) {
 }
 
 function startRemoteServer(pin, users) {
+  // Сервер уже працює — не змінюємо PIN/список користувачів під ногами у вже
+  // підключених клієнтів. Раніше будь-який виклик 'start-remote' (навіть
+  // службовий, що просто хотів дізнатись статус) беззастережно перезаписував
+  // remotePin — і виклик БЕЗ явного pin скидав його на '', що per findRemoteAccess
+  // відкриває пульт керування будь-кому в мережі без пароля просто посеред служіння.
+  // Дзеркалить той самий захист, що вже є у 'start-sync-server'.
+  if (httpServer) {
+    if (pin) remotePin = pin;
+    return { port: 3939, ip: getLocalIP(), pin: remotePin };
+  }
   remotePin = pin || '';
   if (Array.isArray(users)) remoteUsers = users;
-  if (httpServer) return { port: 3939, ip: getLocalIP(), pin: remotePin };
 
   httpServer = http.createServer((req, res) => {
     // ---- HTTP API для Stream Deck / Bitfocus Companion ----
@@ -1698,7 +1701,12 @@ function updateOnAir(data) {
   var el = document.getElementById('onAirText');
   var nb = document.getElementById('nextBox');
   if (!data || data.type === 'clear') { el.textContent = 'Нічого не виводиться'; nb.style.display = 'none'; }
-  else if (data.type === 'text') { el.innerHTML = (data.payload.html||'').replace(/<br>/g,' / '); nb.style.display = 'none'; }
+  else if (data.type === 'text') {
+    // <br> — єдиний тег, який тут очікується (перетворюємо на " / "); усе інше
+    // прибираємо, а не довіряємо innerHTML довільному вмісту з мережі.
+    el.innerHTML = (data.payload.html||'').replace(/<br\s*\/?>/gi,' / ').replace(/<[^>]+>/g,'');
+    nb.style.display = 'none';
+  }
   else if (data.type === 'html') { el.textContent = 'HTML / QR / Слайд'; nb.style.display = 'none'; }
 }
 function updateState(state) {
@@ -1806,8 +1814,15 @@ ipcMain.handle('atem-connect', async (event, ip) => {
     }
     atemInstance = new AtemClass();
     return await new Promise((resolve) => {
-      const timeout = setTimeout(() => resolve({ ok: false, error: 'Час підключення вийшов' }), 8000);
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve({ ok: false, error: 'Час підключення вийшов' });
+      }, 8000);
       atemInstance.on('connected', () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         atemConnected = true;
         atemState = atemInstance.state || {};
@@ -1819,6 +1834,16 @@ ipcMain.handle('atem-connect', async (event, ip) => {
         atemConnected = false;
         if (mainWin && !mainWin.isDestroyed())
           mainWin.webContents.send('atem-status', { connected: false });
+        // Якщо це прийшло ДО першого 'connected' (пристрій одразу відмовив —
+        // неправильна IP, з'єднання відхилено) — проміс інакше висів би усі
+        // 8с до таймауту й показував загальне «Час підключення вийшов»
+        // замість миттєвої точної помилки. Пізніший 'disconnected' (уже
+        // ПІСЛЯ успішного підключення, пристрій пропав) сюди не потрапляє —
+        // `settled` уже true, і цей блок нічого не робить.
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve({ ok: false, error: 'ATEM відхилив з’єднання' });
       });
       atemInstance.on('stateChanged', (state, paths) => {
         atemState = state;
@@ -2113,7 +2138,13 @@ async function ptzOnvif(cfg, action, p) {
       (err) => { if (err) rej(err); else { _onvifCams[key] = cam; res(cam); } });
   });
   const cam = await getCam();
-  const call = (m, arg) => new Promise((res, rej) => cam[m](arg, (e, r) => e ? rej(e) : res(r)));
+  // Якщо команда падає (камера перезавантажилась, Wi-Fi відпав тощо) —
+  // викидаємо мертве з'єднання з кешу. Раніше воно лишалось там назавжди,
+  // і всі наступні PTZ-команди для цієї камери мовчки продовжували битись
+  // у той самий непрацюючий об'єкт аж до перезапуску всієї програми.
+  const call = (m, arg) => new Promise((res, rej) => cam[m](arg, (e, r) => {
+    if (e) { delete _onvifCams[key]; rej(e); } else res(r);
+  }));
   const norm = (v) => Math.max(-1, Math.min(1, v));
   const sp = norm((p.panSpeed || 12) / 24);
   switch (action) {
@@ -2297,7 +2328,28 @@ ipcMain.handle('ptz-discover', async () => {
 // APP INIT
 // ============================================================
 // Тимчасові HTML-оверлеї накопичувались у temp і ніколи не видалялись
-app.on('before-quit', () => {
+// Лічильник незавершених асинхронних записів на диск (data-write-async /
+// data-delete-async). Потрібен, щоб застосунок НЕ закрився раніше, ніж
+// запис справді дійде до диска — інакше зміни, зроблені прямо перед
+// закриттям (напр. імпорт перекладів і одразу вихід), могли б загубитись.
+let pendingDataWrites = 0;
+let quitPending = false;
+function maybeFinishQuit() {
+  if (quitPending && pendingDataWrites === 0) {
+    quitPending = false;
+    app.quit();
+  }
+}
+
+app.on('before-quit', (event) => {
+  if (pendingDataWrites > 0 && !quitPending) {
+    // Даємо записам шанс дописатись — але не тримаємо застосунок відкритим
+    // вічно, якщо диск раптом "завис" (запобіжний тайм-аут).
+    event.preventDefault();
+    quitPending = true;
+    setTimeout(() => { if (quitPending) { quitPending = false; app.quit(); } }, 3000);
+    return;
+  }
   // Прибираємо всі тимчасові оверлеї, які створили за сеанс
   overlayFiles.forEach(f => { try { fs.unlinkSync(f); } catch (e) {} });
   overlayFiles.length = 0;
@@ -2345,76 +2397,8 @@ function initAutoUpdate() {
 ipcMain.handle('check-updates', () => { try { if (autoUpdater) autoUpdater.checkForUpdates(); } catch (e) {} return 'ok'; });
 ipcMain.handle('install-update', () => { try { if (autoUpdater) autoUpdater.quitAndInstall(); } catch (e) {} return 'ok'; });
 
-// ---- Меню застосунку ----------------------------------------------------
-// Головна причина існування цього меню — macOS. Без нього на Mac НЕ працюють
-// Cmd+C / Cmd+V / Cmd+X / Cmd+A у полях вводу (пісні, Біблія, оголошення,
-// PIN, назви виходів, налаштування), а також Cmd+Q / Cmd+M / Cmd+H.
-// На Windows редагування працює й без меню, тож там смуга просто прихована.
-function buildAppMenu() {
-  const isMac = process.platform === 'darwin';
-  const template = [];
-
-  // Меню з назвою застосунку — лише macOS (там воно обов'язкове).
-  if (isMac) {
-    template.push({
-      label: 'Церква Проектор',
-      submenu: [
-        { role: 'about', label: 'Про «Церква Проектор»' },
-        { type: 'separator' },
-        { role: 'hide', label: 'Сховати' },
-        { role: 'hideOthers', label: 'Сховати інші' },
-        { role: 'unhide', label: 'Показати все' },
-        { type: 'separator' },
-        { role: 'quit', label: 'Вийти' }
-      ]
-    });
-  }
-
-  // Редагування — саме цей блок вмикає Cmd/Ctrl + C, V, X, A, Z на macOS.
-  template.push({
-    label: 'Редагування',
-    submenu: [
-      { role: 'undo', label: 'Скасувати' },
-      { role: 'redo', label: 'Повторити' },
-      { type: 'separator' },
-      { role: 'cut', label: 'Вирізати' },
-      { role: 'copy', label: 'Копіювати' },
-      { role: 'paste', label: 'Вставити' },
-      ...(isMac
-        ? [{ role: 'pasteAndMatchStyle', label: 'Вставити як звичайний текст' },
-           { role: 'delete', label: 'Видалити' },
-           { role: 'selectAll', label: 'Вибрати все' }]
-        : [{ role: 'delete', label: 'Видалити' },
-           { type: 'separator' },
-           { role: 'selectAll', label: 'Вибрати все' }])
-    ]
-  });
-
-  // Вигляд — свідомо БЕЗ zoom-ролей (Cmd+=/-/0 зайняті власним масштабом UI
-  // у index.html) і БЕЗ Reload (випадковий Cmd+R скинув би панель під час служби).
-  template.push({
-    label: 'Вигляд',
-    submenu: [
-      { role: 'togglefullscreen', label: 'На весь екран' },
-      { type: 'separator' },
-      { role: 'toggleDevTools', label: 'Інструменти розробника' }
-    ]
-  });
-
-  // Вікно
-  template.push({
-    label: 'Вікно',
-    submenu: isMac
-      ? [{ role: 'minimize', label: 'Згорнути' },
-         { role: 'zoom', label: 'Масштаб' },
-         { type: 'separator' },
-         { role: 'front', label: 'Усі вікна вперед' }]
-      : [{ role: 'minimize', label: 'Згорнути' },
-         { role: 'close', label: 'Закрити' }]
-  });
-
-  return Menu.buildFromTemplate(template);
-}
+// ---- Меню застосунку (винесено в src/main/app-menu.js) ------------------
+const { applyAppMenu } = require('./src/main/app-menu');
 
 // ============================================================
 // ОДИН ЕКЗЕМПЛЯР
@@ -2432,6 +2416,12 @@ if (!gotSingleInstanceLock) {
       if (mainWin.isMinimized()) mainWin.restore();
       if (!mainWin.isVisible()) mainWin.show();
       mainWin.focus();
+    } else {
+      // mainWin може бути null тут не лише одразу після старту, а й якщо
+      // головне вікно закрилось (напр. через помилку) поки вихідне вікно
+      // (out3/out4 тощо) якимось чином лишилось живим — раніше другий запуск
+      // просто нічого не робив, і користувач лишався без панелі керування.
+      createMainWindow();
     }
   });
 }
@@ -2452,7 +2442,7 @@ app.whenReady().then(() => {
       callback(true); // решта дозволів і так була відкрита для цього офлайн-застосунку
     });
   } catch (e) {}
-  Menu.setApplicationMenu(buildAppMenu());
+  applyAppMenu();
   initAutoUpdate();
   createMainWindow();
   loadCloudSyncFolder();  // завантажуємо налаштування папки синхронізації
@@ -2499,5 +2489,11 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopRemoteServer();
+  // Раніше станційний WebSocket (4242) і OSC-сервер (UDP) не закривались тут
+  // явно — на macOS, де вікна можуть закритись без повного quit (activate
+  // повертає застосунок), вони лишались слухати мовчки й далі.
+  if (syncWss) { try { syncWss.close(); } catch (e) {} syncWss = null; }
+  if (syncServer) { try { syncServer.close(); } catch (e) {} syncServer = null; }
+  if (typeof stopOscServer === 'function') stopOscServer();
   if (process.platform !== 'darwin') app.quit();
 });

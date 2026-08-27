@@ -501,6 +501,11 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
             </div>
           </div>
         </div>
+
+        <!-- Перенесено з вкладки «Служба → План служби» — щоб не перемикатись
+             між вкладками під час підбору пісень для служби. Той самий
+             renderServiceTab(), що й раніше, просто показаний тут теж. -->
+        <div id="servicePlanEmbed"></div>
       </div>
 
       <!-- BIBLE TAB -->
@@ -584,6 +589,7 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
                 <button class="btn btn-primary" onclick="sendBibleWithGraphics(0)">🖋 З графікою — на всі</button>
                 <button class="btn btn-ghost btn-sm" onclick="sendBibleWithGraphics(1)">Проектор</button>
                 <button class="btn btn-ghost btn-sm" onclick="sendBibleWithGraphics(2)">Трансляція</button>
+                <button class="btn btn-ghost btn-sm" onclick="sendBibleGraphicsMulti([1,2,3,4])">Усі 4 виводи</button>
               </div>
               <label class="flex mt8" style="gap:6px;align-items:center;cursor:pointer;font-size:12px">
                 <input type="checkbox" id="bibStreamGfx" onchange="setStreamAlwaysGraphics(this.checked)">
@@ -634,8 +640,11 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
           <div class="card-title" id="addSongCardTitle">➕ Додати нову пісню</div>
           <label>Назва пісні *</label>
           <input type="text" id="newSongTitle" placeholder="Наприклад: Чудова Благодать">
-          <label>Автор / Джерело</label>
-          <input type="text" id="newSongAuthor" placeholder="Автор або збірник">
+          <label>Автор</label>
+          <input type="text" id="newSongAuthor" placeholder="Автор (необов'язково)">
+          <label>Збірник</label>
+          <input type="text" id="newSongBook" list="songBookList" placeholder="Наприклад: Пісні Відродження">
+          <datalist id="songBookList"></datalist>
           <label style="margin-bottom:4px">Вставте текст з сайту (holyChurch, або будь-який з мітками Куплет/Приспів/Бридж)</label>
           <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
             Розпізнає: «1 куплет:», «Приспів:», «Бридж:», «Інтро:», «Хор:», «Outro:» — або просто розділення через ---
@@ -655,7 +664,17 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
 
         <div class="card" style="max-width:680px; margin-top:14px">
           <div class="card-title">📋 Всі пісні в базі</div>
-          <input type="text" id="songListSearch" oninput="renderAllSongs()" placeholder="🔍 Знайти пісню за назвою…" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-size:13px;margin-bottom:8px;outline:none">
+          <select id="songBookFilter" onchange="renderAllSongs()" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-size:13px;margin-bottom:8px;outline:none">
+            <option value="">📚 Усі збірники</option>
+          </select>
+          <input type="text" id="songListSearch" oninput="debounceSearch('songListSearch', renderAllSongs)" placeholder="🔍 Знайти пісню за назвою…" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:8px 12px;color:var(--text);font-size:13px;margin-bottom:8px;outline:none">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--text2)">
+            <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+              <input type="checkbox" id="songSelectAllBox" onchange="toggleSelectAllSongs(this.checked)">
+              Обрати всі (у поточному списку)
+            </label>
+            <button class="btn btn-danger btn-sm" id="songBulkDeleteBtn" style="display:none;margin-left:auto" onclick="deleteSelectedSongs()">🗑 Видалити обрані (<span id="songSelectedCount">0</span>)</button>
+          </div>
           <div id="allSongsList"></div>
         </div>
       </div>
@@ -914,6 +933,13 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
               <div class="card-title" style="margin-top:14px">📄 Шаблон JSON для пісень</div>
               <button class="btn btn-ghost btn-sm" onclick="downloadSongsTemplate()">⬇ Завантажити шаблон</button>
             </div>
+
+            <div class="card">
+              <div class="card-title">🧹 Виправити биті переноси рядків</div>
+              <p class="text-muted" style="margin-bottom:8px;line-height:1.6">Деякі старі імпорти зберігають перенос рядка як буквальний текст «&lt;br&gt;» замість справжнього переносу — тоді на екрані видно сам напис «&lt;br&gt;». Ця кнопка знайде такі пісні й замінить «&lt;br&gt;» на нормальний перенос рядка.</p>
+              <button class="btn btn-ghost btn-sm" onclick="fixBrokenBrTags()">🧹 Перевірити й виправити пісні</button>
+              <div id="fixBrMsg" class="mt8"></div>
+            </div>
           </div>
 
         </div>
@@ -940,10 +966,53 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
                 <option value="green">Зелений</option>
               </select>
               <div class="flex">
-                <button class="btn btn-success" onclick="sendAnnounce()">▶ На проектор</button>
+                <button class="btn btn-success" onclick="sendAnnounce()">▶ В ефір (усі відкриті виходи)</button>
                 <button class="btn btn-primary btn-sm" onclick="saveAnnounce()">💾 Зберегти</button>
                 <button class="btn btn-ghost btn-sm" onclick="clearAnnounceForm()">✕</button>
               </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">🔠 Розмір тексту — окремо для екранів</div>
+              <div class="grid2">
+                <div>
+                  <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">🖥 Проектор</div>
+                  <label style="font-size:11px;color:var(--text2)">Заголовок (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeTitle1" value="64" onchange="setAnnounceSize(1,'titleSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Текст (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeBody1" value="44" onchange="setAnnounceSize(1,'bodySize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Дата (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeDate1" value="32" onchange="setAnnounceSize(1,'dateSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">📡 Трансляція</div>
+                  <label style="font-size:11px;color:var(--text2)">Заголовок (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeTitle2" value="64" onchange="setAnnounceSize(2,'titleSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Текст (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeBody2" value="44" onchange="setAnnounceSize(2,'bodySize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Дата (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeDate2" value="32" onchange="setAnnounceSize(2,'dateSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">🖥 Вихід 3</div>
+                  <label style="font-size:11px;color:var(--text2)">Заголовок (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeTitle3" value="64" onchange="setAnnounceSize(3,'titleSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Текст (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeBody3" value="44" onchange="setAnnounceSize(3,'bodySize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Дата (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeDate3" value="32" onchange="setAnnounceSize(3,'dateSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px">🖥 Вихід 4</div>
+                  <label style="font-size:11px;color:var(--text2)">Заголовок (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeTitle4" value="64" onchange="setAnnounceSize(4,'titleSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Текст (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeBody4" value="44" onchange="setAnnounceSize(4,'bodySize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px;margin-bottom:6px">
+                  <label style="font-size:11px;color:var(--text2)">Дата (px)</label>
+                  <input type="number" min="10" max="200" id="annSizeDate4" value="32" onchange="setAnnounceSize(4,'dateSize',this.value)" style="width:100%;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:12px">
+                </div>
+              </div>
+              <p class="text-muted" style="margin-top:8px;font-size:11px">Розмір діє для нового й збережених оголошень, включно з автоматичним слайд-шоу.</p>
             </div>
 
             <div class="card">
@@ -1784,6 +1853,61 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
 
 <script>
 // ============================================================
+// ЗАХИСТ ІНІЦІАЛІЗАЦІЇ: одна впала функція не має рвати весь скрипт
+// ------------------------------------------------------------
+// РЕГРЕСІЯ, яку це виправляє: цей файл — один суцільний <script> з десятками
+// послідовних top-level викликів (searchSongs(), initHotkeys(), ..., потім
+// var ANN_STYLES = {...} і решта). Якщо БУДЬ-ЯКИЙ із ранніх викликів кидає
+// виняток (напр. відсутній DOM-елемент), браузер одразу зупиняє виконання
+// ВСЬОГО скрипта — усе, що мало виконатись ПІСЛЯ (зокрема ANN_STYLES), просто
+// ніколи не отримує значення. Наслідок: непов'язана функція (Оголошення)
+// падає з "Cannot read properties of undefined (reading 'dark')", хоча сам
+// баг був десь зовсім в іншому місці, що виконалось раніше.
+// safeInit() ловить помилку кожного виклику окремо, лишає банер (як і
+// window.onerror нижче) і ДОЗВОЛЯЄ решті скрипта виконатись далі як звичайно.
+function safeInit(fn, label) {
+  try { fn(); }
+  catch (e) {
+    console.error('[init] ' + label + ' впала:', e);
+    try {
+      var box = document.getElementById('pv2ErrBox');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'pv2ErrBox';
+        box.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#7f1d1d;color:#fff;' +
+          'font:12px/1.4 monospace;padding:8px 12px;max-height:30vh;overflow:auto;border-top:2px solid #f56565;' +
+          'pointer-events:none';
+        document.body.appendChild(box);
+      }
+      box.textContent = '⚠ Ініціалізація «' + label + '» впала: ' + e.message;
+      box.style.display = 'block';
+      clearTimeout(box._t);
+      box._t = setTimeout(function () { if (box) box.style.display = 'none'; }, 6000);
+    } catch (e2) {}
+  }
+}
+
+// ANN_STYLES, ANN_KEY і announcements навмисно оголошено ТУТ, одразу після
+// safeInit і перед усіма подальшими top-level викликами — щоб вони
+// гарантовано отримали значення, навіть якщо якийсь ще не захищений виклик
+// далі в скрипті впаде і обірве решту виконання. Саме цей ланцюжок падав
+// у користувачів: спершу "Cannot read properties of undefined (reading
+// 'dark')" (ANN_STYLES, у renderAnnounceList), а тоді — при спробі
+// "Зберегти" оголошення — так само з announcements (`.push is not a
+// function` / "reading 'push'"), бо обидва стояли ПІСЛЯ ризикованих
+// викликів у файлі.
+var ANN_KEY = 'church_announcements';
+var announcements = [];
+
+var ANN_STYLES = {
+  dark:   { bg: '#000000', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
+  blue:   { bg: 'linear-gradient(135deg,#0a1628,#1e3a5f)', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
+  purple: { bg: 'linear-gradient(135deg,#1a0a2e,#3d1155)', titleColor: '#c8a84b', bodyColor: '#ffffff', dateColor: '#8b92a8' },
+  gold:   { bg: 'linear-gradient(135deg,#1a0e00,#3d2a00)', titleColor: '#f0c040', bodyColor: '#fff8e0', dateColor: '#c8a84b' },
+  green:  { bg: 'linear-gradient(135deg,#0a2010,#1a4a25)', titleColor: '#3ecf8e', bodyColor: '#ffffff', dateColor: '#8b92a8' }
+};
+
+// ============================================================
 // БАЗА ПІСЕНЬ (вбудована)
 // ============================================================
 var SONGS_KEY = 'church_songs_db';
@@ -2045,7 +2169,7 @@ var BOOK_ALIASES = {
 // Будуємо плоский список {alias, bookId} для швидкого пошуку,
 // плюс саму нормалізовану повну назву з BIBLE_BOOKS теж додаємо як аліас
 var BOOK_ALIAS_LIST = [];
-(function buildBookAliasList() {
+safeInit(function buildBookAliasList() {
   BIBLE_BOOKS.forEach(function(b) {
     var aliases = (BOOK_ALIASES[b.id] || []).slice();
     aliases.push(b.name);
@@ -2056,7 +2180,7 @@ var BOOK_ALIAS_LIST = [];
   // Сортуємо за довжиною аліасу спадно — щоб довші (точніші) варіанти
   // перевірялись першими і не "з'їдались" коротшими підрядками
   BOOK_ALIAS_LIST.sort(function(a, b) { return b.alias.length - a.alias.length; });
-})();
+}, 'buildBookAliasList');
 
 function fuzzyNormalizeRef(s) {
   return String(s).toLowerCase().replace(/['"«»"„"\.]/g, '').replace(/\s+/g, ' ').trim();
@@ -2315,7 +2439,16 @@ function toggleBothOutputs() {
 // ensureProjector — гарантує що хоча б один вихід відкритий перед відправкою контенту
 function ensureProjector(cb) {
   if (!window.electronAPI) { cb(); return; }
-  if (!projOpen && !streamOpen) {
+  // Перевіряємо РЕАЛЬНИЙ стан (state.outputStates) — джерело правди, яке
+  // правильно оновлюють кнопки «Відкрити»/«Закрити» у вкладці «Виходи».
+  // Раніше тут перевірялись старі, окремі прапорці projOpen/streamOpen, які
+  // НІКОЛИ не оновлювались тими кнопками (лишались false назавжди) — тому
+  // будь-яка дія показу контенту (гортання вірша, надсилання пісні тощо)
+  // бачила «обидва закриті» й тихо ПЕРЕВІДКРИВАЛА трансляцію одразу після
+  // того, як оператор свідомо її закрив.
+  var projReallyOpen = !!(state && state.outputStates && state.outputStates[1] && state.outputStates[1].open) || projOpen;
+  var streamReallyOpen = !!(state && state.outputStates && state.outputStates[2] && state.outputStates[2].open) || streamOpen;
+  if (!projReallyOpen && !streamReallyOpen) {
     window.electronAPI.openBothOutputs().then(function() {
       projOpen = true;
       streamOpen = true;
@@ -2420,12 +2553,18 @@ function syncMonitorMissingBanner() {
 }
 setInterval(syncSendTargetBanner, 1000);   // ловимо зміну, з якої б вкладки її не зробили
 
-if (window.electronAPI) {
-  window.electronAPI.onOutputClosed(function(kind) {
-    if (kind === 'projector') { projOpen = false; updateProjStatus(false); }
-    else if (kind === 'stream') { streamOpen = false; updateStreamStatus(false); }
-  });
-}
+// Загорнуто в safeInit разом з рештою ранньої ініціалізації — якщо
+// preload раптом не виставив onOutputClosed (напр. неузгоджена версія),
+// пряма помилка тут раніше рвала б увесь подальший скрипт (той самий
+// клас багу, що й з ANN_STYLES/announcements вище).
+safeInit(function() {
+  if (window.electronAPI) {
+    window.electronAPI.onOutputClosed(function(kind) {
+      if (kind === 'projector') { projOpen = false; updateProjStatus(false); }
+      else if (kind === 'stream') { streamOpen = false; updateStreamStatus(false); }
+    });
+  }
+}, 'onOutputClosed');
 
 function clearProjector() {
   updateLivePreview(null);
@@ -2448,6 +2587,21 @@ function sendToProjectorWin(text, ref) {
 
 function doSend(text, ref) {
   if (!window.electronAPI) return;
+  // ВИПРАВЛЕННЯ (знайдено живим тестуванням, а не лише порівнянням коду з
+  // форком): раніше тут стояло escHtml(text) — здавалось правильним фіксом
+  // «doSend не екранує, на відміну від інших шляхів», за аналогією з форком.
+  // Але глобальний ідентифікатор doSend НАЗАВЖДИ переозначується двома
+  // обгортками з extras-2.js (hookOutputs) одразу після завантаження —
+  // РЕАЛЬНИЙ виклик doSend(...) з коду (sendToProjectorWin, goLive і т.д.)
+  // завжди йде через них, і саме ЗОВНІШНЯ обгортка викликає
+  // hallText(text) — яка ВЖЕ екранує — перш ніж дістатись аж сюди, до
+  // цієї, найглибшої (оригінальної) реалізації. Додавання escHtml() тут
+  // означало ПОВТОРНЕ екранування вже екранованого тексту: "<" ставало не
+  // "&lt;", а буквальним "&amp;lt;" — прямо на екрані проектора. Перевірено
+  // живим Playwright-тестом (перехоплення escHtml): той самий рядок
+  // проходив крізь escHtml ДВІЧІ поспіль. Форк має ТОЙ САМИЙ ланцюжок
+  // обгорток — той самий баг є і в його коді, просто без живого тестування
+  // з реальним відправленням на екран цього не було видно.
   var htmlForProjector = text.replace(/\n/g,'<br>');
   // Прев'ю малюємо ТИМ САМИМ рендерером, що й зал — інакше воно показувало
   // чорно-білий варіант незалежно від теми, і не збігалося з екраном.
@@ -2455,14 +2609,19 @@ function doSend(text, ref) {
     try {
       updateLivePreview(slideHTMLFor({ kind: 'text', rawText: text, html: htmlForProjector, ref: ref || '' }));
     } catch (e) {
-      updateLivePreview('<div style="background:#000;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:40px;box-sizing:border-box;"><div style="color:#fff;font-size:clamp(16px,3vw,30px);text-align:center;line-height:1.6;font-family:Georgia,serif;">' + htmlForProjector + '<br><span style=\'color:#c8a84b;font-size:0.75em\'>' + (ref||'') + '</span></div></div>');
+      updateLivePreview('<div style="background:#000;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:40px;box-sizing:border-box;"><div style="color:#fff;font-size:clamp(16px,3vw,30px);text-align:center;line-height:1.6;font-family:Georgia,serif;">' + htmlForProjector + '<br><span style=\'color:#c8a84b;font-size:0.75em\'>' + escHtml(ref||'') + '</span></div></div>');
     }
   } else {
     updateLivePreview('<div style="background:#000;width:100%;height:100%;display:flex;align-items:center;justify-content:center;padding:40px;box-sizing:border-box;"><div style="color:#fff;font-size:clamp(16px,3vw,30px);text-align:center;line-height:1.6;font-family:Georgia,serif;">' + htmlForProjector + '<br><span style=\'color:#c8a84b;font-size:0.75em\'>' + (ref||'') + '</span></div></div>');
   }
   window.electronAPI.sendToProjector('text', { html: htmlForProjector, ref: ref || '' });
   onAirText = text;
-  document.getElementById('sendPreview').innerHTML = '<b>На екрані:</b> ' + escHtml(text).replace(/\n/g,' / ');
+  // Той самий момент, що й вище з htmlForProjector: text сюди приходить УЖЕ
+  // екранованим (через hallText() у зовнішній обгортці doSend) — цей рядок
+  // теж екранував його ПОВТОРНО (передіснуючий баг, не мій — виявлено тим
+  // самим живим тестом). Впливало лише на текст статус-мітки «На екрані:»
+  // внизу панелі, не на сам проектор, але той самий клас багу.
+  document.getElementById('sendPreview').innerHTML = '<b>На екрані:</b> ' + text.replace(/\n/g,' / ');
   document.getElementById('onAirLabel').textContent = '● НА ЕКРАНІ';
   document.getElementById('onAirLabel').style.color = '#3ecf8e';
 }
@@ -2812,8 +2971,8 @@ function escHtml(s) {
 // ============================================================
 // INIT
 // ============================================================
-searchSongs();
-initHotkeys();
+safeInit(searchSongs, 'searchSongs');
+safeInit(initHotkeys, 'initHotkeys');
 
 // Слайд-білдер + PDF — винесено в окремий модуль src/slide-ui.js
 
@@ -2948,6 +3107,30 @@ function drawQRLogo(canvas, cb) {
 
 // Єдиний генератор QR у canvas (використовується і прев'ю, і виводом)
 function buildQRCanvas(text, sz, cb) {
+  // Спершу пробуємо офлайн-генерацію (npm qrcode, у головному процесі) —
+  // працює з першого запуску, без жодної залежності від інтернету/CDN.
+  if (window.electronAPI && window.electronAPI.generateQRCode) {
+    window.electronAPI.generateQRCode(text, sz).then(function(res) {
+      if (res && res.ok && res.dataUrl) {
+        var canvas = document.createElement('canvas');
+        canvas.width = sz; canvas.height = sz;
+        var ctx = canvas.getContext('2d');
+        var img = new Image();
+        img.onload = function() { ctx.drawImage(img, 0, 0, sz, sz); drawQRLogo(canvas, cb); };
+        img.onerror = function() { _buildQRCanvasViaCDN(text, sz, cb); };   // на випадок биту dataUrl
+        img.src = res.dataUrl;
+      } else {
+        _buildQRCanvasViaCDN(text, sz, cb);   // офлайн-шлях недоступний — старий CDN-фолбек
+      }
+    }).catch(function() { _buildQRCanvasViaCDN(text, sz, cb); });
+    return;
+  }
+  _buildQRCanvasViaCDN(text, sz, cb);
+}
+
+// Старий спосіб (CDN-кешована qrcodejs) — лишається як резерв, якщо офлайн-шлях
+// раптом недоступний (напр. дуже стара збірка preload.js без нового IPC-каналу).
+function _buildQRCanvasViaCDN(text, sz, cb) {
   loadQRLib(function() {
     var tmp = document.createElement('div');
     tmp.style.display = 'none';
@@ -3048,7 +3231,11 @@ function renderQRPresets() {
   qrPresets.forEach(function(p, i) {
     var div = document.createElement('div');
     div.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;';
-    div.innerHTML = '<span style="flex:1;font-size:12px"><b>'+(p.label||p.text.substring(0,30))+'</b><br><span style="color:var(--text2);font-size:11px">'+escHtml(p.text.substring(0,40))+'</span></span>' +
+    // Список поділяється зі старим ключем QR_KEY і з новою вкладкою «QR-екран»
+    // (режим «Моє фото QR» зберігає туди запис БЕЗ .text, лише .photo) — без
+    // цієї перевірки p.text.substring() тут падав на кожному такому записі.
+    var sub = (p.mode === 'photo') ? '📷 фото' : escHtml((p.text || '').substring(0, 40));
+    div.innerHTML = '<span style="flex:1;font-size:12px"><b>'+escHtml(p.label || (p.text || '').substring(0,30) || 'QR')+'</b><br><span style="color:var(--text2);font-size:11px">'+sub+'</span></span>' +
       '<button class="btn btn-ghost btn-sm" onclick="loadQRPreset('+i+')">▶</button>' +
       '<button class="btn btn-danger btn-sm" onclick="deleteQRPreset('+i+')">✕</button>';
     el.appendChild(div);
@@ -3056,8 +3243,11 @@ function renderQRPresets() {
 }
 
 function loadQRPreset(i) {
-  document.getElementById('qrInput').value = qrPresets[i].text;
-  document.getElementById('qrLabel').value = qrPresets[i].label || '';
+  var p = qrPresets[i];
+  if (!p) return;
+  if (p.mode === 'photo') { notify('⚠️ Це QR із фото — відкрий у вкладці «📲 QR-екран»'); return; }
+  document.getElementById('qrInput').value = p.text || '';
+  document.getElementById('qrLabel').value = p.label || '';
   generateQR();
 }
 
@@ -3339,7 +3529,7 @@ function doSendHTML(htmlContent, label) {
 // ============================================================
 // INIT QR PRESETS
 // ============================================================
-renderQRPresets();
+safeInit(renderQRPresets, "renderQRPresets");
 
 // ============================================================
 // BIBLE TRANSLATIONS
@@ -3732,6 +3922,7 @@ function searchBibleInTranslation(q) {
 
 function renderBibleTranslationsList() {
   var el = document.getElementById('bibleTranslationsList');
+  if (!el) return;   // елемента нема в DOM (напр. вкладка ще не змонтована) — тихо виходимо, а не рвемо скрипт
   var keys = Object.keys(bibleTranslations);
   if (!keys.length) { el.innerHTML = '<p class="text-muted">Тільки вбудований УКБ</p>'; return; }
   el.innerHTML = '';
@@ -3806,10 +3997,42 @@ function exportSongsJSON() {
     library: 'Церква Прага',
     exported: new Date().toISOString().split('T')[0],
     songs: currentSongs.map(function(s) {
-      return { title: s.title, author: s.author || '', verses: s.verses };
+      return { title: s.title, author: s.author || '', songbook: s.songbook || '', verses: s.verses };
     })
   };
   downloadJSON(data, 'songs_export.json');
+}
+
+// Деякі старі імпорти зберігають перенос рядка як буквальний текст "<br>"
+// замість справжнього переносу (\n) — тоді на екрані видно сам напис "<br>".
+// Знаходить такі пісні й замінює "<br>"/"<br/>"/"<BR>" на нормальний перенос.
+function fixBrokenBrTags() {
+  var msg = document.getElementById('fixBrMsg');
+  var BR_RE = /<br\s*\/?>/gi;
+  var affectedSongs = 0, totalReplacements = 0;
+  currentSongs.forEach(function(s) {
+    var songTouched = false;
+    s.verses = s.verses.map(function(v) {
+      var matches = String(v).match(BR_RE);
+      if (matches && matches.length) {
+        totalReplacements += matches.length;
+        songTouched = true;
+        return v.replace(BR_RE, '\n');
+      }
+      return v;
+    });
+    if (songTouched) affectedSongs++;
+  });
+  if (!affectedSongs) {
+    msg.style.color = 'var(--green)';
+    msg.textContent = '✓ Усе гаразд — биті переноси рядків не знайдено';
+    return;
+  }
+  if (!confirm('Знайдено ' + affectedSongs + ' пісень із бітими перенесеннями (' + totalReplacements + ' місць). Виправити?')) return;
+  saveSongs(currentSongs);
+  if (typeof renderAllSongs === 'function') renderAllSongs();
+  msg.style.color = 'var(--green)';
+  msg.textContent = '✓ Виправлено пісень: ' + affectedSongs + ' (замінено ' + totalReplacements + ' місць)';
 }
 
 function downloadSongsTemplate() {
@@ -3849,9 +4072,19 @@ function downloadJSON(data, filename) {
 
 // ============================================================
 // OVERRIDE searchBible to use active translation
-// ============================================================
-var _origSearchBible = searchBible;
-// (searchBible override перенесено в bible.js)
+// ------------------------------------------------------------
+// РЕАЛЬНИЙ КРАШ, знайдений живим тестуванням (Playwright, не статичний
+// аналіз): тут раніше лишався рядок
+//   var _origSearchBible = searchBible;
+// Це мертвий код — сама функція searchBible оголошена в bible.js, який
+// завантажується ЯК ОКРЕМИЙ <script src> ПІСЛЯ цього інлайн-скрипта
+// index.html. У момент виконання цього рядка searchBible ще не існувала
+// взагалі — рядок кидав ReferenceError: searchBible is not defined, і це
+// обривало виконання ВСЬОГО решти цього <script>-блоку (той самий клас
+// каскадного падіння, що вже виправлявся через safeInit в іншому місці).
+// _origSearchBible ніде більше не читається (перевірено grep-ом по всьому
+// проєкту) — сам override тепер живе в bible.js, тож цей рядок був чистим
+// сміттям після рефакторингу. Просто прибрано.
 // ============================================================
 // MULTI-TRANSLATION PROJECTOR
 // ============================================================
@@ -3987,45 +4220,72 @@ function getMultiTransHTML(ref, blocks, n) {
 
 // ============================================================
 // INIT TRANSLATIONS
+// ------------------------------------------------------------
+// РЕАЛЬНИЙ КРАШ, знайдений живим тестуванням: loadBibleTranslations сама
+// оголошена в цьому ж інлайн-скрипті (тому виклик тут технічно не кидав
+// ReferenceError одразу), АЛЕ вона зсередини викликає
+// refreshTranslationSelector(), яка викликає initBibleBooks() — а та
+// функція оголошена лише в bible.js, який завантажується ЯК ОКРЕМИЙ
+// <script src> ПІСЛЯ цього інлайн-скрипта. safeInit() тут спрацював
+// правильно (перехопив і не дав обвалити решту скрипта), але наслідок
+// все одно був реальний і видимий користувачу: на КОЖНОМУ старті
+// застосунку з'являвся банер помилки "initBibleBooks is not defined", а
+// перелік перекладів Біблії не встигав ініціалізуватись цим шляхом.
+// Виправлення: сам виклик перенесено в останній <script>-блок (після
+// <script src="bible.js">), де initBibleBooks вже гарантовано існує.
 // ============================================================
-loadBibleTranslations();
 
 // ============================================================
 // ANNOUNCEMENTS
 // ============================================================
-var ANN_KEY = 'church_announcements';
-var announcements = [];
-
-var ANN_STYLES = {
-  dark:   { bg: '#000000', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
-  blue:   { bg: 'linear-gradient(135deg,#0a1628,#1e3a5f)', titleColor: '#f0c040', bodyColor: '#ffffff', dateColor: '#8b92a8' },
-  purple: { bg: 'linear-gradient(135deg,#1a0a2e,#3d1155)', titleColor: '#c8a84b', bodyColor: '#ffffff', dateColor: '#8b92a8' },
-  gold:   { bg: 'linear-gradient(135deg,#1a0e00,#3d2a00)', titleColor: '#f0c040', bodyColor: '#fff8e0', dateColor: '#c8a84b' },
-  green:  { bg: 'linear-gradient(135deg,#0a2010,#1a4a25)', titleColor: '#3ecf8e', bodyColor: '#ffffff', dateColor: '#8b92a8' }
-};
+// ANN_STYLES, ANN_KEY та announcements самі оголошуються значно раніше
+// (одразу після safeInit, на початку скрипта) — саме тому, що вони й були
+// тим самим ланцюжком, який реально падав у користувачів: спочатку
+// "Cannot read properties of undefined (reading 'dark')" (ANN_STYLES), а
+// потім — тепер вже на самому "Зберегти" — "reading 'push'" (announcements
+// лишався undefined тим самим шляхом: `announcements.push(...)` у
+// saveAnnounce() падав без жодного захисту). Якщо БУДЬ-ЯКИЙ ранній виклик
+// (навіть той, що ще не загорнутий у safeInit) кидає виняток, усе, що йшло
+// ПІСЛЯ нього в цьому ж <script>, просто ніколи не виконувалось.
 
 function loadAnnouncements() {
   try { announcements = JSON.parse(bigStoreGet(ANN_KEY) || '[]'); } catch(e) { announcements = []; }
   renderAnnounceList();
 }
 
+// id оголошення, яке зараз редагується (null = створюємо нове). Без цього
+// натискання ✏️ (loadAnnounce) заповнювало форму для редагування, але
+// «Зберегти» все одно ЗАВЖДИ пушило новий запис — редагування мовчки
+// створювало дублікат замість оновлення оригіналу.
+var annEditingId = null;
+
 function saveAnnounce() {
   var title = document.getElementById('annTitle').value.trim();
   var body = document.getElementById('annBody').value.trim();
   if (!title && !body) { return; }
-  announcements.push({
-    id: Date.now(),
-    title: title,
-    body: body,
-    datetime: document.getElementById('annDateTime').value.trim(),
-    style: document.getElementById('annStyle').value
-  });
+  var existing = (annEditingId != null) ? announcements.find(function(a){ return a.id === annEditingId; }) : null;
+  if (existing) {
+    // Редагування — оновлюємо на місці, а не створюємо дублікат.
+    existing.title = title;
+    existing.body = body;
+    existing.datetime = document.getElementById('annDateTime').value.trim();
+    existing.style = document.getElementById('annStyle').value;
+  } else {
+    announcements.push({
+      id: Date.now(),
+      title: title,
+      body: body,
+      datetime: document.getElementById('annDateTime').value.trim(),
+      style: document.getElementById('annStyle').value
+    });
+  }
   safeSet(ANN_KEY, JSON.stringify(announcements));
   renderAnnounceList();
   clearAnnounceForm();
 }
 
 function clearAnnounceForm() {
+  annEditingId = null;
   document.getElementById('annTitle').value = '';
   document.getElementById('annBody').value = '';
   document.getElementById('annDateTime').value = '';
@@ -4065,6 +4325,7 @@ function renderAnnounceList() {
 function loadAnnounce(id) {
   var a = announcements.find(function(x){ return x.id === id; });
   if (!a) return;
+  annEditingId = id;
   document.getElementById('annTitle').value = a.title || '';
   document.getElementById('annBody').value = a.body || '';
   document.getElementById('annDateTime').value = a.datetime || '';
@@ -4089,28 +4350,47 @@ function updateAnnPreview() {
   document.getElementById('annPreviewDate').textContent = dt ? '📅 ' + dt : '';
 }
 
-function getAnnounceHTML(ann) {
+function getAnnounceHTML(ann, outputN) {
   var s = ANN_STYLES[ann.style] || ANN_STYLES.dark;
   var bgStyle = s.bg.indexOf('gradient') > -1
     ? 'background:' + s.bg
     : 'background:' + s.bg;
+  var sizes = (state.announceSettings && state.announceSettings[outputN]) || { titleSize: 64, bodySize: 44, dateSize: 32 };
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
     'body{margin:0;' + bgStyle + ';min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;}' +
     '#wrap{text-align:center;padding:80px 120px;max-width:1600px;width:100%;opacity:0;transition:opacity .7s;}' +
     '#wrap.show{opacity:1;}' +
-    '.title{font-size:64px;font-weight:700;color:' + s.titleColor + ';margin-bottom:24px;text-shadow:0 2px 16px rgba(0,0,0,.5);line-height:1.2;}' +
-    '.body{font-size:44px;color:' + s.bodyColor + ';line-height:1.5;text-shadow:0 2px 12px rgba(0,0,0,.5);}' +
-    '.datetime{font-size:32px;color:' + s.dateColor + ';margin-top:28px;}' +
+    '.title{font-size:' + sizes.titleSize + 'px;font-weight:700;color:' + s.titleColor + ';margin-bottom:24px;text-shadow:0 2px 16px rgba(0,0,0,.5);line-height:1.2;}' +
+    '.body{font-size:' + sizes.bodySize + 'px;color:' + s.bodyColor + ';line-height:1.5;text-shadow:0 2px 12px rgba(0,0,0,.5);}' +
+    '.datetime{font-size:' + sizes.dateSize + 'px;color:' + s.dateColor + ';margin-top:28px;}' +
     '.divider{width:200px;height:2px;background:rgba(255,255,255,0.2);margin:24px auto;}' +
     '</style></head><body>' +
     '<div id="wrap">' +
     (ann.title ? '<div class="title">' + escHtml(ann.title) + '</div>' : '') +
     (ann.title && ann.body ? '<div class="divider"></div>' : '') +
-    (ann.body ? '<div class="body">' + ann.body.replace(/\n/g,'<br>') + '</div>' : '') +
+    (ann.body ? '<div class="body">' + escHtml(ann.body).replace(/\n/g,'<br>') + '</div>' : '') +
     (ann.datetime ? '<div class="datetime">📅 ' + escHtml(ann.datetime) + '</div>' : '') +
     '</div>' +
     '<script>setTimeout(function(){document.getElementById("wrap").classList.add("show");},100);<\/script>' +
     '</body></html>';
+}
+
+// Кожен вихід отримує ОКРЕМУ версію HTML зі своїм розміром тексту
+// (state.announceSettings[1..4]) — а не спільну копію на всі.
+function sendAnnounceToOutputs(ann, label) {
+  if (typeof sendHTMLToOutputN === 'function') {
+    sendHTMLToOutputN(1, getAnnounceHTML(ann, 1), label);
+    sendHTMLToOutputN(2, getAnnounceHTML(ann, 2), label);
+    // Вихід 3/4 — якщо відкриті, тепер теж зі своїм власним розміром
+    // (раніше отримували скопійований розмір проектора).
+    [3, 4].forEach(function(n) {
+      if (state.outputStates && state.outputStates[n] && state.outputStates[n].open) {
+        sendHTMLToOutputN(n, getAnnounceHTML(ann, n), label);
+      }
+    });
+  } else if (typeof sendHTMLToProjector === 'function') {
+    sendHTMLToProjector(getAnnounceHTML(ann, 1), label);   // фолбек на старий спосіб
+  }
 }
 
 function sendAnnounce() {
@@ -4121,15 +4401,13 @@ function sendAnnounce() {
     style: document.getElementById('annStyle').value
   };
   if (!ann.title && !ann.body) { alert('Додайте заголовок або текст'); return; }
-  var html = getAnnounceHTML(ann);
-  sendHTMLToProjector(html, ann.title || 'Оголошення');
+  sendAnnounceToOutputs(ann, ann.title || 'Оголошення');
 }
 
 function sendSavedAnnounce(id) {
   var a = announcements.find(function(x){ return x.id === id; });
   if (!a) return;
-  var html = getAnnounceHTML(a);
-  sendHTMLToProjector(html, a.title || 'Оголошення');
+  sendAnnounceToOutputs(a, a.title || 'Оголошення');
 }
 
 // Автоматичне слайд-шоу оголошень по колу — для екрана у фойє перед службою,
@@ -4178,7 +4456,7 @@ function copyAnnounceApiLink(id) {
   if (el) el.addEventListener('change', updateAnnPreview);
 });
 
-loadAnnouncements();
+safeInit(loadAnnouncements, 'loadAnnouncements');
 
 // ============================================================
 // BACKGROUND LIBRARY
@@ -4372,7 +4650,9 @@ doSend = function(text, ref) {
         updateLivePreview(bgHtml);
       });
       onAirText = text;
-      document.getElementById('sendPreview').innerHTML = '<b>На екрані:</b> ' + escHtml(text).replace(/\n/g,' / ');
+      // text сюди приходить уже екранованим через hallText() у зовнішній
+      // обгортці doSend (той самий клас багу, що й у самому doSend нижче).
+      document.getElementById('sendPreview').innerHTML = '<b>На екрані:</b> ' + text.replace(/\n/g,' / ');
       document.getElementById('onAirLabel').textContent = '● НА ЕКРАНІ';
       document.getElementById('onAirLabel').style.color = '#3ecf8e';
       return;
@@ -4395,12 +4675,12 @@ function getTextWithBgHTML(text, ref) {
     '.txt{color:'+(theme.textColor||'#fff')+';font-size:'+(theme.fontSize||58)+'px;line-height:1.45;font-family:'+(theme.fontFamily||'Georgia,serif')+';text-shadow:0 2px 16px rgba(0,0,0,.9);}' +
     '</style></head><body>' +
     '<div class="bg"></div><div class="dim"></div>' +
-    '<div class="wrap" id="w"><div class="ref">'+(ref||'')+'</div><div class="txt">'+text.replace(/\n/g,'<br>')+'</div></div>' +
+    '<div class="wrap" id="w"><div class="ref">'+escHtml(ref||'')+'</div><div class="txt">'+text.replace(/\n/g,'<br>')+'</div></div>' +
     '<script>setTimeout(function(){document.getElementById("w").classList.add("show");},100);<\/script>' +
     '</body></html>';
 }
 
-initBgLibrary();
+safeInit(initBgLibrary, 'initBgLibrary');
 
 // ============================================================
 // MONITORS / DISPLAYS
@@ -4549,32 +4829,34 @@ function setStreamChroma(color) {
   });
 }
 
-if (window.electronAPI) {
-  window.electronAPI.getOutputConfig().then(function(cfg) {
-    outputConfig = cfg;
-    document.querySelectorAll('.chroma-swatch').forEach(function(s) {
-      s.classList.toggle('sel', s.getAttribute('data-color') === (cfg.streamChroma || 'none'));
-    });
-    // Підтягуємо справжні значення хромакею з головного процесу в облік «Виходів» —
-    // інакше після старту програми стан там завжди був би «вимкнено» незалежно
-    // від того, що реально стоїть на екранах.
-    if (cfg.chroma && typeof state !== 'undefined' && state && state.outputChroma) {
-      var map = { projector: 1, stream: 2, out3: 3, out4: 4 };
-      Object.keys(map).forEach(function(kind) {
-        if (cfg.chroma[kind]) state.outputChroma[map[kind]] = cfg.chroma[kind];
+safeInit(function() {
+  if (window.electronAPI) {
+    window.electronAPI.getOutputConfig().then(function(cfg) {
+      outputConfig = cfg;
+      document.querySelectorAll('.chroma-swatch').forEach(function(s) {
+        s.classList.toggle('sel', s.getAttribute('data-color') === (cfg.streamChroma || 'none'));
       });
-    }
-    populateDisplaySelects();
-    renderMonitorLayout();
-  });
-  window.electronAPI.onDisplaysChanged(function(list) {
-    displaysList = list;
-    renderMonitorLayout();
-    populateDisplaySelects();
-  });
-}
+      // Підтягуємо справжні значення хромакею з головного процесу в облік «Виходів» —
+      // інакше після старту програми стан там завжди був би «вимкнено» незалежно
+      // від того, що реально стоїть на екранах.
+      if (cfg.chroma && typeof state !== 'undefined' && state && state.outputChroma) {
+        var map = { projector: 1, stream: 2, out3: 3, out4: 4 };
+        Object.keys(map).forEach(function(kind) {
+          if (cfg.chroma[kind]) state.outputChroma[map[kind]] = cfg.chroma[kind];
+        });
+      }
+      populateDisplaySelects();
+      renderMonitorLayout();
+    });
+    window.electronAPI.onDisplaysChanged(function(list) {
+      displaysList = list;
+      renderMonitorLayout();
+      populateDisplaySelects();
+    });
+  }
+}, 'getOutputConfig/onDisplaysChanged');
 
-refreshDisplays();
+safeInit(refreshDisplays, 'refreshDisplays');
 
 // ============================================================
 // THEME SYSTEM
@@ -4827,6 +5109,7 @@ function generateRemoteQR(url) {
 }
 
 // Handle remote commands from phone
+safeInit(function() {
 if (window.electronAPI) {
   window.electronAPI.onRemoteCommand(function(cmd) {
     // extras.js реєструє СВІЙ обробник тих самих команд пульта (initRemoteListener) —
@@ -4839,8 +5122,12 @@ if (window.electronAPI) {
     if (extrasHandlesRemote && overlapping.indexOf(cmd.action) >= 0) return;
 
     // Далі — запасний варіант (той самий порядок дій, що й раніше),
-    // на випадок якщо extras.js не завантажився.
-    if (cmd.action === 'next-verse') { nextVerse(); if (selectedSong) sendToProjector(); }
+    // на випадок якщо extras.js не завантажився. PDF в ефірі перевіряємо
+    // першим — так само, як у основному обробнику (extras-3.js), інакше
+    // ця запасна гілка так само надішле пісню/вірш поверх PDF.
+    if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && cmd.action === 'next-verse' && typeof nextSlide === 'function') { nextSlide(); }
+    else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf' && cmd.action === 'prev-verse' && typeof prevSlide === 'function') { prevSlide(); }
+    else if (cmd.action === 'next-verse') { nextVerse(); if (selectedSong) sendToProjector(); }
     else if (cmd.action === 'prev-verse') { prevVerse(); if (selectedSong) sendToProjector(); }
     else if (cmd.action === 'next-bible') nextBibleVerse();
     else if (cmd.action === 'prev-bible') prevBibleVerse();
@@ -4857,6 +5144,7 @@ if (window.electronAPI) {
     if (t && typeof t === 'object') { theme = Object.assign({}, theme, t); syncThemeUI(); updateThemePreview(); }
   });
 }
+}, 'onRemoteCommand/getTheme');
 
 // ============================================================
 // ⌨️ ГАРЯЧІ КЛАВІШІ
@@ -4892,11 +5180,17 @@ function initHotkeys() {
       return;
     }
     var bibleLive = (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible');
+    // PDF в ефірі (не ручний слайд з «Редактора слайдів» — у того немає
+    // «наступного») — перевіряємо ПЕРШИМ, ще до Біблії/пісні: інакше
+    // натискання Пробіл/Стрілка гортало б стару вибрану пісню чи вірш
+    // ПОВЕРХ щойно показаної сторінки PDF, замість наступної сторінки.
+    var pdfLive = (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'pdf');
 
     switch(e.key) {
       case ' ':                        // Пробіл — наступний куплет / вірш
         e.preventDefault();
-        if (bibleLive) nextBibleVerse();
+        if (pdfLive && typeof nextSlide === 'function') nextSlide();
+        else if (bibleLive) nextBibleVerse();
         else if (typeof liveSongAdvance === 'function' && liveSongAdvance(1)) {}   // аранжування/розбиття
         else if (selectedSong) { nextVerse(); sendToProjector(); }   // так само, як стрілки — інакше пробіл не оновлював екран
         else nextBibleVerse();
@@ -4904,7 +5198,8 @@ function initHotkeys() {
       case 'ArrowRight':               // → наступний куплет / вірш
       case 'ArrowDown':
         e.preventDefault();
-        if (bibleLive) nextBibleVerse();
+        if (pdfLive && typeof nextSlide === 'function') nextSlide();
+        else if (bibleLive) nextBibleVerse();
         else if (typeof liveSongAdvance === 'function' && liveSongAdvance(1)) {}   // аранжування/розбиття
         else if (selectedSong) { nextVerse(); if(selectedSong) sendToProjector(); }
         else nextBibleVerse();
@@ -4912,7 +5207,8 @@ function initHotkeys() {
       case 'ArrowLeft':                // ← попередній куплет / вірш
       case 'ArrowUp':
         e.preventDefault();
-        if (bibleLive) prevBibleVerse();
+        if (pdfLive && typeof prevSlide === 'function') prevSlide();
+        else if (bibleLive) prevBibleVerse();
         else if (typeof liveSongAdvance === 'function' && liveSongAdvance(-1)) {}   // аранжування/розбиття
         else if (selectedSong) { prevVerse(); if(selectedSong) sendToProjector(); }
         else prevBibleVerse();
@@ -5052,9 +5348,11 @@ function timerReset() {
   updateTimerButtons();
 }
 
-function timerSetTime() {
-  var val = document.getElementById('timerInput').value;
-  var secs = timerParseInput(val);
+// explicitSecs — необов'язково: якщо задано (напр. автостарт перед службою
+// рахує точну кількість секунд), беремо його напряму, а не значення поля
+// #timerInput. Без аргументу — стара поведінка (кнопки/ручне поле).
+function timerSetTime(explicitSecs) {
+  var secs = (explicitSecs != null) ? Math.round(explicitSecs) : timerParseInput(document.getElementById('timerInput').value);
   if (!secs || secs <= 0) return;
   timerState.setSeconds = secs;
   timerState.remaining = secs;
@@ -5216,12 +5514,19 @@ function broadcastRemoteState() {
   window.electronAPI.broadcastState(state);
 }
 
-// Перевизначаємо selectVerse і sendToProjector щоб оновлювати стан пульту
-var _origSelectVerse = selectVerse;
-selectVerse = function(idx) {
-  _origSelectVerse(idx);
-  setTimeout(broadcastRemoteState, 50);
-};
+// Перевизначаємо selectVerse щоб оновлювати стан пульту.
+// ------------------------------------------------------------
+// РЕАЛЬНИЙ КРАШ, знайдений живим тестуванням (той самий клас, що й
+// searchBible вище): selectVerse оголошена в song-display.js, який
+// завантажується ЯК ОКРЕМИЙ <script src> ПІСЛЯ цього інлайн-скрипта
+// index.html. Рядок `var _origSelectVerse = selectVerse;` кидав
+// ReferenceError у момент виконання (selectVerse ще не існувала) і обривав
+// виконання ВСЬОГО, що йшло далі в цьому <script>-блоці — включно з рештою
+// UI-ініціалізації. Сам override (не мертвий код — реально потрібен для
+// синхронізації стану віддаленого пульту) перенесено в останній
+// <script>-блок, після <script src="song-display.js">, де selectVerse вже
+// гарантовано визначена.
+// ============================================================
 
 // ============================================================
 // 💾 РЕЗЕРВНЕ КОПІЮВАННЯ
@@ -5264,6 +5569,7 @@ function restoreAllOld_UNUSED(input) {
             id: (s.id != null) ? s.id : (Date.now() + Math.random()),
             title: s.title || s.name || '',
             author: s.author || '',
+            songbook: s.songbook || '',
             verses: Array.isArray(s.verses) ? s.verses : String(s.verses || '').split(/\r?\n\s*\r?\n/)
           };
         }).filter(function(s){ return s.title && s.verses.length; });
@@ -5302,7 +5608,8 @@ function startSyncServer() {
     var el = document.getElementById('syncStatus');
     var ips = (result.ips && result.ips.length) ? result.ips : [result.ip];
     if (el) el.innerHTML = '✓ Сервер запущено. На 2-му ПК введи одну з цих адрес:<br>' +
-      ips.map(function(a){ return '<b style="color:var(--accent);font-size:15px">' + a + ':' + result.port + '</b>'; }).join('<br>') +
+      ips.map(function(a){ return '<b style="color:var(--accent);font-size:15px">' + escHtml(a) + ':' + escHtml(String(result.port)) + '</b>'; }).join('<br>') +
+      (result.pin ? '<br>Пароль: <b style="color:var(--accent);font-size:15px;letter-spacing:1px">' + escHtml(result.pin) + '</b>' : '') +
       '<br><span style="color:var(--text2);font-size:12px">Якщо не під\'єднується — на цьому ПК дозволь застосунку зв\'язок у брандмауері Windows (спливне вікно — тисни «Дозволити»), обидва ПК в одній мережі (Wi-Fi/кабель).</span>';
     document.getElementById('syncServerCard').style.display = 'block';
     generateSyncQR('http://' + result.ip + ':' + result.port + '/sync');
@@ -5374,6 +5681,17 @@ function toggleTheme() {
   if (btn) btn.textContent = isLight ? '🌙' : '☀️';
   try { localStorage.setItem('church_theme', isLight ? 'light' : 'dark'); } catch(e) {}
 }
+// Відновлюємо збережений вибір теми — інакше світла тема скидалась би на
+// темну при кожному перезапуску застосунку.
+(function() {
+  try {
+    if (localStorage.getItem('church_theme') === 'light') {
+      document.body.classList.add('light-theme');
+      var btn = document.getElementById('themeToggleBtn');
+      if (btn) btn.textContent = '🌙';
+    }
+  } catch(e) {}
+})();
 
 // Перемикач «Класичний / Сучасний вигляд» (лише панель оператора).
 function applyModernUI(on) {
@@ -5788,33 +6106,16 @@ function importSongsAny(input) {
   msg.style.color = 'var(--text2)';
   msg.textContent = 'Читаю ' + files.length + ' файл(ів)...';
 
-  var added = 0, skipped = 0, failed = 0, done = 0;
+  var failed = 0, done = 0;
+  var allParsed = [];   // усі розпізнані пісні з усіх файлів (ще не додані в базу)
 
-  function finish() {
+  function finishReading() {
     done++;
     if (done < files.length) return;
-    saveSongs(currentSongs);
-    if (typeof renderAllSongs === 'function') renderAllSongs();
-    msg.style.color = added ? 'var(--green)' : 'var(--red)';
-    msg.textContent = (added ? '✓ Додано пісень: ' + added : '✗ Нічого не додано') +
-      (skipped ? ', дублікатів пропущено: ' + skipped : '') +
-      (failed ? ', не розпізнано файлів: ' + failed : '');
-    input.value = '';
-  }
-
-  function addSongs(list) {
-    if (!list || !list.length) { failed++; return; }
-    list.forEach(function(s) {
-      var exists = currentSongs.find(function(x) { return x.title.toLowerCase() === s.title.toLowerCase(); });
-      if (exists) { skipped++; return; }
-      currentSongs.push({
-        id: Date.now() + Math.random(),
-        title: s.title,
-        author: s.author || '',
-        verses: s.verses
-      });
-      added++;
-    });
+    // Усі файли прочитано — тепер розділяємо на нові й дублікати (за назвою)
+    // і, якщо дублікати є, питаємо користувача, а не мовчки пропускаємо.
+    var classified = _classifySongsForImport(allParsed);
+    _finishSongImport(classified.newSongs, classified.dupItems, failed, msg, input);
   }
 
   files.forEach(function(file) {
@@ -5823,27 +6124,203 @@ function importSongsAny(input) {
     // PPTX / DOCX парсяться в main-процесі (це zip-архіви)
     if (ext === 'pptx' || ext === 'docx' || ext === 'potx' || ext === 'dotx') {
       if (!window.electronAPI || !window.electronAPI.parseOffice || !file.path) {
-        failed++; finish(); return;
+        failed++; finishReading(); return;
       }
       window.electronAPI.parseOffice(file.path, ext).then(function(res) {
-        if (!res || !res.slides || !res.slides.length) { failed++; finish(); return; }
+        if (!res || !res.slides || !res.slides.length) { failed++; finishReading(); return; }
         // Кожен слайд/абзац стає окремим «куплетом» — можна гортати як пісню
         var verses = res.slides.map(function(s) { return s.lines.join('\n'); }).filter(Boolean);
-        addSongs([{ title: file.name.replace(/\.[^.]+$/, ''), author: '', verses: verses }]);
-        finish();
-      }).catch(function() { failed++; finish(); });
+        if (verses.length) allParsed.push({ title: file.name.replace(/\.[^.]+$/, ''), author: '', songbook: '', verses: verses });
+        else failed++;
+        finishReading();
+      }).catch(function() { failed++; finishReading(); });
       return;
     }
 
     var reader = new FileReader();
     reader.onload = function(e) {
-      try { addSongs(fmtParseSongs(e.target.result, file.name)); }
+      try {
+        var parsed = fmtParseSongs(e.target.result, file.name);
+        if (parsed && parsed.length) allParsed = allParsed.concat(parsed);
+        else failed++;
+      }
       catch (err) { failed++; }
-      finish();
+      finishReading();
     };
-    reader.onerror = function() { failed++; finish(); };
+    reader.onerror = function() { failed++; finishReading(); };
     readTextCompatInto(reader, file);  // з резервним кодуванням
   });
+}
+
+// ---- Захист від дублікатів пісень при імпорті ----------------------------
+// Коли серед імпортованих файлів є пісні, що вже є в базі (за назвою),
+// показуємо попередження й даємо вибір: замінити чи пропустити — по одній
+// або всі одразу — замість того, щоб мовчки пропускати чи створювати копії.
+var _pendingImport = null;   // { newSongs, dupItems, decisions:{title:'replace'|'skip'}, failed, msg, input }
+
+// Розділяє список розпізнаних пісень на нові й дублікати за назвою.
+function _classifySongsForImport(parsedList) {
+  var newSongs = [], dupItems = [];
+  parsedList.forEach(function(s) {
+    var exists = currentSongs.find(function(x) { return x.title.toLowerCase() === s.title.toLowerCase(); });
+    if (exists) dupItems.push({ imported: s, existingId: exists.id, existingSongbook: exists.songbook || '' });
+    else newSongs.push(s);
+  });
+  return { newSongs: newSongs, dupItems: dupItems };
+}
+
+function _finishSongImport(newSongs, dupItems, failed, msg, input) {
+  if (!dupItems.length) {
+    // Дублікатів немає — додаємо все одразу, без зайвого діалогу.
+    newSongs.forEach(function(s) {
+      currentSongs.push({ id: Date.now() + Math.random(), title: s.title, author: s.author || '', songbook: s.songbook || '', verses: s.verses });
+    });
+    saveSongs(currentSongs);
+    if (typeof renderAllSongs === 'function') renderAllSongs();
+    msg.style.color = newSongs.length ? 'var(--green)' : 'var(--red)';
+    msg.textContent = (newSongs.length ? '✓ Додано пісень: ' + newSongs.length : '✗ Нічого не додано') +
+      (failed ? ', не розпізнано файлів: ' + failed : '');
+    input.value = '';
+    return;
+  }
+  _pendingImport = { newSongs: newSongs, dupItems: dupItems, decisions: {}, failed: failed, msg: msg, input: input };
+  _renderImportDupModal();
+}
+
+function _renderImportDupModal() {
+  var p = _pendingImport;
+  if (!p) return;
+  var old = document.getElementById('importDupOverlay');
+  if (old) old.remove();
+
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'importDupOverlay';
+
+  var rows = p.dupItems.map(function(d, i) {
+    var decided = p.decisions[d.imported.title];
+    var labels = { replace: '🔁 буде замінено', skip: '⏭ буде пропущено', both: '🗂 буде збережено обидва' };
+    var colors = { replace: 'var(--accent)', skip: 'var(--text2)', both: 'var(--green)' };
+    var statusHtml = decided
+      ? '<span style="font-size:11px;color:' + colors[decided] + '">' + labels[decided] + '</span>'
+      : '<span><button class="btn btn-primary btn-sm" onclick="_decideImportDup(' + i + ', \'replace\')">🔁 Замінити</button> ' +
+        '<button class="btn btn-ghost btn-sm" onclick="_decideImportDup(' + i + ', \'skip\')">⏭ Пропустити</button> ' +
+        '<button class="btn btn-ghost btn-sm" onclick="_decideImportDup(' + i + ', \'both\')">🗂 Зберегти обидва</button></span>';
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">' +
+      '<span style="font-size:13px;flex:1"><b>' + escHtml(d.imported.title) + '</b>' +
+      (d.existingSongbook ? ' <span style="color:var(--text2);font-size:11px">(зараз у «' + escHtml(d.existingSongbook) + '»)</span>' : '') + '</span>' +
+      statusHtml + '</div>';
+  }).join('');
+
+  overlay.innerHTML =
+    '<div class="modal">' +
+      '<h2>⚠️ Знайдено пісень, що вже є в базі (' + p.dupItems.length + ')</h2>' +
+      '<div style="font-size:12px;color:var(--text2);margin-bottom:12px">Для кожної обери: замінити наявну пісню версією з файлу, пропустити (лишити як є), або зберегти обидві версії окремо.</div>' +
+      '<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">' +
+        '<button class="btn btn-ghost btn-sm" onclick="_decideAllImportDup(\'replace\')">🔁 Замінити всі</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="_decideAllImportDup(\'skip\')">⏭ Пропустити всі</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="_decideAllImportDup(\'both\')">🗂 Зберегти обидва всі</button>' +
+      '</div>' +
+      '<div id="importDupRows" style="max-height:360px;overflow-y:auto">' + rows + '</div>' +
+      '<div class="modal-actions">' +
+        '<button class="btn btn-primary" onclick="_applyImportDecisions()">✅ Готово — застосувати</button>' +
+        '<button class="btn btn-ghost" onclick="_cancelSongImport()">✕ Скасувати весь імпорт</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+function _decideImportDup(i, action) {
+  var p = _pendingImport;
+  if (!p || !p.dupItems[i]) return;
+  p.decisions[p.dupItems[i].imported.title] = action;
+  _renderImportDupModal();
+}
+
+function _decideAllImportDup(action) {
+  var p = _pendingImport;
+  if (!p) return;
+  p.dupItems.forEach(function(d) { p.decisions[d.imported.title] = action; });
+  _renderImportDupModal();
+}
+
+function _cancelSongImport() {
+  var overlay = document.getElementById('importDupOverlay');
+  if (overlay) overlay.remove();
+  if (_pendingImport) {
+    _pendingImport.msg.style.color = 'var(--text2)';
+    _pendingImport.msg.textContent = 'Імпорт скасовано';
+    _pendingImport.input.value = '';
+  }
+  _pendingImport = null;
+}
+
+// Підбирає назву для «збереженої обидвох» пісні так, щоб не збігалась із
+// уже наявною — «Назва (2)», а якщо й вона зайнята — «Назва (3)» і далі.
+function _uniqueDupTitle(baseTitle) {
+  var n = 2;
+  var candidate = baseTitle + ' (' + n + ')';
+  while (currentSongs.some(function(s) { return (s.title || '').toLowerCase() === candidate.toLowerCase(); })) {
+    n++;
+    candidate = baseTitle + ' (' + n + ')';
+  }
+  return candidate;
+}
+
+function _applyImportDecisions() {
+  var p = _pendingImport;
+  if (!p) return;
+  var added = 0, replaced = 0, skipped = 0, kept = 0;
+
+  p.newSongs.forEach(function(s) {
+    currentSongs.push({ id: Date.now() + Math.random(), title: s.title, author: s.author || '', songbook: s.songbook || '', verses: s.verses });
+    added++;
+  });
+
+  p.dupItems.forEach(function(d) {
+    // Без явного рішення (пропустив у модалці) — безпечний варіант: пропустити.
+    var action = p.decisions[d.imported.title] || 'skip';
+    if (action === 'replace') {
+      var existing = currentSongs.find(function(x) { return x.id === d.existingId; });
+      if (existing) {
+        existing.title = d.imported.title;
+        existing.author = d.imported.author || '';
+        existing.songbook = d.imported.songbook || '';
+        existing.verses = d.imported.verses;
+        replaced++;
+      }
+    } else if (action === 'both') {
+      // Наявну пісню НЕ чіпаємо — версію з файлу додаємо окремим записом
+      // із розрізнюваною назвою, щоб обидві були видно окремо в пошуку.
+      currentSongs.push({
+        id: Date.now() + Math.random(),
+        title: _uniqueDupTitle(d.imported.title),
+        author: d.imported.author || '',
+        songbook: d.imported.songbook || '',
+        verses: d.imported.verses
+      });
+      kept++;
+    } else {
+      skipped++;
+    }
+  });
+
+  saveSongs(currentSongs);
+  if (typeof renderAllSongs === 'function') renderAllSongs();
+
+  var overlay = document.getElementById('importDupOverlay');
+  if (overlay) overlay.remove();
+
+  var parts = [];
+  if (added) parts.push('додано: ' + added);
+  if (replaced) parts.push('замінено: ' + replaced);
+  if (kept) parts.push('збережено обидва: ' + kept);
+  if (skipped) parts.push('пропущено: ' + skipped);
+  if (p.failed) parts.push('не розпізнано файлів: ' + p.failed);
+  p.msg.style.color = (added || replaced || kept) ? 'var(--green)' : 'var(--text2)';
+  p.msg.textContent = '✓ ' + (parts.length ? parts.join(', ') : 'Нічого не змінено');
+  p.input.value = '';
+  _pendingImport = null;
 }
 
 </script>
@@ -5882,6 +6359,28 @@ window.addEventListener('error', function(e) {
   clearTimeout(box._t);
   box._t = setTimeout(function() { if (box) box.style.display = 'none'; }, 6000);
 });
+
+// ============================================================
+// INIT TRANSLATIONS (перенесено сюди з початкового <script> — дивись
+// коментар вище "INIT TRANSLATIONS" у верхньому інлайн-скрипті: тут
+// initBibleBooks, з bible.js, підключеного вище, вже гарантовано
+// визначена)
+// ============================================================
+safeInit(loadBibleTranslations, 'loadBibleTranslations');
+
+// ============================================================
+// Перевизначаємо selectVerse (перенесено сюди з початкового <script> —
+// дивись коментар вище "Перевизначаємо selectVerse" у верхньому
+// інлайн-скрипті: тут selectVerse, з song-display.js, підключеного вище,
+// вже гарантовано визначена)
+// ============================================================
+safeInit(function() {
+  var _origSelectVerse = selectVerse;
+  selectVerse = function(idx) {
+    _origSelectVerse(idx);
+    setTimeout(broadcastRemoteState, 50);
+  };
+}, 'override selectVerse');
 
 // ============================================================
 // 🔍 МАСШТАБ ІНТЕРФЕЙСУ (+/-)

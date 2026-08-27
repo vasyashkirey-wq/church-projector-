@@ -26,8 +26,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Remote phone control
   // Велике сховище файлами (синхронне — щоб працювало як localStorage)
   dataReadSync: (key) => ipcRenderer.sendSync('data-read-sync', key),
-  dataWriteSync: (key, content) => ipcRenderer.sendSync('data-write-sync', { key, content }),
-  dataDeleteSync: (key) => ipcRenderer.sendSync('data-delete-sync', key),
+  // ФІКС (підвисання на Windows з великою базою даних, напр. 3300+ пісень):
+  // раніше це були sendSync-виклики — рендерер БЛОКУВАВСЯ, доки головний
+  // процес синхронно писав на диск (кілька мегабайт кожне збереження).
+  // Тепер — fire-and-forget send() на окремому "async"-каналі; головний
+  // процес сам гарантує, що запис дійде до диска перед виходом (дивись
+  // pendingDataWrites/maybeFinishQuit у main.js). Назви методів лишили ті ж
+  // самі (dataWriteSync/dataDeleteSync) — рендерер-код їх не викликає інакше.
+  dataWriteSync: (key, content) => { ipcRenderer.send('data-write-async', { key, content }); return true; },
+  dataDeleteSync: (key) => { ipcRenderer.send('data-delete-async', key); return true; },
   openDataFolder: () => ipcRenderer.invoke('open-data-folder'),
 
   cacheAsset: (name, content) => ipcRenderer.invoke('cache-asset', { name, content }),
@@ -66,6 +73,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // GDD-графіка (H2R / CasparCG): update / play / stop
   gddCommand: (kind, action, data) => ipcRenderer.invoke('gdd-command', { kind, action, data }),
+  generateQRCode: (text, size) => ipcRenderer.invoke('qrcode-generate', { text, size }),
 
   // Станції: хост ↔ клієнти
   startSyncServer: (pin) => ipcRenderer.invoke('start-sync-server', { pin }),
@@ -90,6 +98,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setFitGroup: (slides, kind) => ipcRenderer.invoke('set-fit-group', { slides, kind }),
   setLockedSize: (size, kind) => ipcRenderer.invoke('set-locked-size', { size, kind: kind || null }),
   showLogo: (dataUrl, kind) => ipcRenderer.invoke('show-logo', { dataUrl, kind }),
+  showWatermark: (cfg, kind) => ipcRenderer.invoke('show-watermark', { cfg, kind }),
   freezeOutput: (on, kind) => ipcRenderer.invoke('freeze-output', { on, kind }),
   onLogoAutoHidden: (cb) => ipcRenderer.on('logo-auto-hidden', () => cb()),
   sendAlert: (cfg, kind) => ipcRenderer.invoke('send-alert', { cfg, kind }),

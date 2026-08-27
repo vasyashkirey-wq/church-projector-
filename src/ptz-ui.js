@@ -9,7 +9,10 @@ var ptzSpeed = 12;
 function ptzSavePtzCams(){ try { localStorage.setItem('church_ptz_cams', JSON.stringify(ptzCams)); } catch(e){} }
 function ptzCfg(){ return ptzCams[ptzActive]; }
 function ptzDefaultPort(proto){ return proto === 'auto' ? 0 : proto === 'visca-tcp' ? 5678 : proto === 'onvif' ? 80 : proto === 'http-cgi' ? 80 : 52381; }
-function ptzSetField(f, v){ ptzCfg()[f] = v; if (f === 'protocol' && !ptzCfg().port) ptzCfg().port = ptzDefaultPort(v); ptzSavePtzCams(); }
+// Зміна протоколу МАЄ скидати порт на дефолтний для нового протоколу —
+// інакше стара камера (напр. 52381 від VISCA-UDP) лишається в полі port
+// і команди на новому протоколі (напр. HTTP-CGI, порт 80) тихо йдуть в нікуди.
+function ptzSetField(f, v){ ptzCfg()[f] = v; if (f === 'protocol') ptzCfg().port = ptzDefaultPort(v); ptzSavePtzCams(); }
 function ptzRenderTabs(){
   var t = document.getElementById('ptzCamTabs'); if (!t) return;
   t.innerHTML = ptzCams.map(function(c,i){
@@ -125,7 +128,10 @@ function ptzCheckLinks(){
   box.innerHTML = '⏳ Перевіряю звʼязок…';
   var checks = ptzCams.map(function(c, i){
     if (!c.ip) return Promise.resolve('📷 Камера ' + (i + 1) + ': — (немає IP)');
-    var port = (c.protocol === 'visca-tcp') ? (c.port || 5678) : 80;   // веб-порт камери для перевірки
+    // Порт для перевірки — саме настроєний порт камери (з дефолтом під її
+    // протокол), а не завжди 80: ONVIF/HTTP-CGI на нестандартному порту
+    // раніше завжди перевірявся на 80, тож давав хибний "офлайн"/"онлайн".
+    var port = c.port || ptzDefaultPort(c.protocol);
     return window.electronAPI.ptzPing({ ip: c.ip, port: port })
       .then(function(r){ return '📷 Камера ' + (i + 1) + ' (' + c.ip + '): ' + (r && r.online ? '🟢 онлайн' : '🔴 офлайн'); })
       .catch(function(){ return '📷 Камера ' + (i + 1) + ' (' + c.ip + '): 🔴 офлайн'; });
@@ -172,8 +178,13 @@ function playScene(i){
   var s = prodScenes[i]; if (!s) return;
   if (s.cam != null && s.preset != null && typeof ptzSendTo === 'function') ptzSendTo(s.cam, 'preset-recall', { n: s.preset });
   if (s.atem != null && window.electronAPI && window.electronAPI.atemCommand) {
-    atemCmd({ type: 'preview', input: s.atem });
-    setTimeout(function(){ atemCmd({ type: 'auto' }); }, 250);   // плавний перехід у ефір
+    // Чекаємо підтвердження зміни preview, а не фіксований таймер — інакше на
+    // повільному лінку 'auto' може спрацювати до фактичної зміни preview
+    // і в ефір піде попереднє джерело замість обраного сценою.
+    atemCmd({ type: 'preview', input: s.atem }).then(function(result) {
+      if (result && result.ok === false) return;
+      atemCmd({ type: 'auto' });   // плавний перехід у ефір
+    });
   }
   if (typeof notify === 'function') notify('🎬 ' + s.name);
 }

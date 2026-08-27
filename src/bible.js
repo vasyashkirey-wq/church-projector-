@@ -54,7 +54,7 @@ function updateVerses() {
   if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
   if (!ch) return;
   currentBibleChapter = parseInt(ch);
-  var count = 30;
+  var count = 0;   // безпечний дефолт — як у updateChapters(): немає даних, немає фейкових варіантів
 
   var t = bibleTranslations[currentTranslationId];
   if (t && t.books[currentBibleBook] && t.books[currentBibleBook][currentBibleChapter]) {
@@ -269,6 +269,17 @@ function sendBibleWithGraphics(target) {
   bibleGraphicsTo([target]);
 }
 
+// Показати вірш «з графікою» одразу на КІЛЬКА виходів (напр. [1,2,3] —
+// проектор + трансляція + вихід 3), усі з тим самим оформленням, яким
+// зараз показує «Трансляція» — на відміну від sendBibleWithGraphics, що
+// приймає лише один вихід за раз.
+function sendBibleGraphicsMulti(targets) {
+  if (targets.indexOf(0) >= 0) lastLiveGraphicsTargets = [0];
+  else lastLiveGraphicsTargets = targets.slice();
+  lastLiveGraphicsTarget = targets[targets.length - 1];
+  bibleGraphicsTo(targets);
+}
+
 // Повторний вивід під час гортання — на всі екрани, де вірш уже показано
 function bibleReplayGraphics() {
   var list = (lastLiveGraphicsTargets && lastLiveGraphicsTargets.length)
@@ -309,17 +320,18 @@ function bibleGraphicsTo(targets, _fromGoLive) {
     return;
   }
 
-  var payload = { html: text.replace(/\n/g, '<br>'), ref: ref };
+  var payload = { html: esc(String(text || '')).replace(/\n/g, '<br>'), ref: ref };
   if (typeof withSecondLang === 'function') payload = withSecondLang(payload);   // 2-га і 3-тя мова
   // Якщо серед цілей є вихід із хромакеєм — робимо фон напівпрозорим
-  // (керується повзунком «Прозорість фону для трансляції»).
+  // (керується повзунком прозорості фону саме ТОГО виходу, на який ідемо;
+  // прев'ю бере перший вихід із хромакеєм серед цілей як орієнтир —
+  // реальне надсилання нижче все одно рахує альфу для кожного окремо).
   var alpha;
   try {
-    var hasChroma = (targets || []).some(function(t) {
-      if (t === 0) return false;
-      return state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none';
+    var chromaTarget = (targets || []).find(function(t) {
+      return t !== 0 && state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none';
     });
-    if (hasChroma && typeof streamBgAlpha === 'function') alpha = streamBgAlpha();
+    if (chromaTarget != null && typeof outputBgAlpha === 'function') alpha = outputBgAlpha(chromaTarget);
   } catch (e) {}
   var html = getGraphicsHTML(payload.html, payload.ref, alpha);
 
@@ -347,8 +359,8 @@ function bibleGraphicsTo(targets, _fromGoLive) {
     // спільна, тож при виводі на обидва один із екранів отримував чужий фон.
     var aT;
     try {
-      if (t > 0 && state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none' && typeof streamBgAlpha === 'function') {
-        aT = streamBgAlpha();
+      if (t > 0 && state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none' && typeof outputBgAlpha === 'function') {
+        aT = outputBgAlpha(t);
       }
     } catch (e) {}
     var ht = getGraphicsHTML(payload.html, payload.ref, aT);
@@ -384,7 +396,12 @@ function prevBibleVerse() {
   var size = r.to - r.from + 1;              // розмір блоку (1 = один вірш)
   if (r.from <= 1) return;
   var newFrom = Math.max(1, r.from - size);
-  var newTo = size > 1 ? (newFrom + size - 1) : 0;
+  // Якщо newFrom довелось притиснути до 1 (розмір блоку не вкладається
+  // рівно у відстань від початку глави), реальний доступний розмір може
+  // бути МЕНШИМ за size — обмежуємо newTo так, щоб він не заходив у вже
+  // показаний діапазон (r.from), інакше "◀ попередній" міг повторно
+  // показати вірш, який щойно був на екрані.
+  var newTo = size > 1 ? Math.min(newFrom + size - 1, r.from - 1) : 0;
   goToVerse(currentBibleBook, currentBibleChapter, newFrom, newTo > newFrom ? newTo : undefined);
 }
 

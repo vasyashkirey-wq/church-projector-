@@ -1,0 +1,27 @@
+name: PR Checks
+
+# Запускається на кожен Pull Request (і на кожен новий коміт у ньому) —
+# незалежно від того, в яку гілку він мержиться. На відміну від build.yml
+# (реальна збірка .exe/.dmg на Windows/macOS раннерах, тільки по тегу),
+# тут — швидка перевірка на дешевому Linux-раннері, щоб зламаний код не
+# змержився непоміченим.
+on:
+  pull_request:
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # smoke-test.js навмисно не має npm-залежностей (лише вбудовані
+      # модулі Node: fs/path/vm) — install не потрібен, тест ганяється
+      # одразу після checkout.
+      - name: Run smoke tests
+        run: node tools/smoke-test.js
