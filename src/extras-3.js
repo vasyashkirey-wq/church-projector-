@@ -1833,6 +1833,7 @@ function refreshMonitors() {
     // перемальовувались, поки не вийти з вкладки й не зайти знову.
     if (isActive('monitors2')) renderTabInto('monitors2');
     if (typeof syncMonitorMissingBanner === 'function') syncMonitorMissingBanner();
+    if (typeof renderStageMonitorOptions === 'function') renderStageMonitorOptions();
   }).catch(() => {});
 }
 

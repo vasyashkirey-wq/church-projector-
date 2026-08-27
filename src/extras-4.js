@@ -390,6 +390,9 @@ function sermonStart(minutes) {
   saveJSON(STORAGE_KEYS.live + '_sermon', state.sermon);
   if (!_sermonTick) _sermonTick = setInterval(sermonUpdate, 1000);
   renderTabInto('control');
+  // Монітор сцени теж показує цей таймер (головне його призначення) —
+  // оновлюємо одразу, не чекаючи першого тіку.
+  if (typeof updateStageDisplay === 'function') updateStageDisplay();
   notify('📣 Таймер проповіді запущено: ' + (minutes || 30) + ' хв');
 }
 function sermonStop() {
@@ -397,6 +400,7 @@ function sermonStop() {
   clearInterval(_sermonTick); _sermonTick = null;
   if (window.electronAPI && window.electronAPI.sendStageTimer) window.electronAPI.sendStageTimer(null);
   renderTabInto('control');
+  if (typeof updateStageDisplay === 'function') updateStageDisplay();
   notify('⏹ Таймер проповіді зупинено');
 }
 let _sermonTick = null;
@@ -409,6 +413,7 @@ function sermonUpdate() {
   if (window.electronAPI && window.electronAPI.sendStageTimer) {
     window.electronAPI.sendStageTimer({ elapsed: elapsed, left: left, warn: warn });
   }
+  if (typeof updateStageDisplay === 'function') updateStageDisplay();
   const lbl = $('#sermonElapsed');
   if (lbl) lbl.textContent = fmtMMSS(elapsed) + (left >= 0 ? ' / лишилось ' + fmtMMSS(left) : ' / +' + fmtMMSS(-left));
 }
@@ -1918,9 +1923,9 @@ function renderRouterTab() {
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
         <button class="btn ${state.stageOutputNum === i ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setStageOutputNum(${i})">
-          🎤 ${state.stageOutputNum === i ? 'Це екран сцени — таймер тут' : 'Позначити екраном сцени'}
+          🎤 ${state.stageOutputNum === i ? '⏱ Таймер проповіді накладено тут' : 'Накласти таймер проповіді'}
         </button>
-        <span style="font-size:11px;color:var(--text2)">Таймер проповіді накладається поверх того, що вихід і так показує.</span>
+        <span style="font-size:11px;color:var(--text2)">Таймер лягає ПОВЕРХ того, що цей вихід і так показує (напр. трансляція). Інша річ, ніж окреме вікно «🖥 Stage» (Монітор сцени) — там таймер сам по собі, на власному екрані.</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
         <span style="font-size:12px;color:var(--text2);min-width:56px">Фон (код):</span>
@@ -2233,12 +2238,12 @@ function pv2Init() {
     if ($('#fontHeaders')) $('#fontHeaders').value = saved.headers || 'Georgia, serif';
   }
   const steps = [loadUiPrefs, loadProfiles, loadMasterVolume, loadBookmarks,
-                 loadScheduler, loadAutoBackup, loadSongTrash, loadLang, loadPultCfg, loadMultiTrans, loadMultiTransStyle, loadOutputNames, startAutomationWatcher, loadLower, loadOutputBindings, loadOutputFailover, loadRoomProfiles, loadScenePresets, loadServiceProfiles, loadChangeLog, loadTrainingMode, loadRemoteUsers, loadStageOutputNum, refreshMonitors, loadStationCfg, loadLiveConfig, loadNamedThemes, loadSecondLang, loadAutoTimer, loadAutoFit,
+                 loadScheduler, loadAutoBackup, loadSongTrash, loadLang, loadPultCfg, loadMultiTrans, loadMultiTransStyle, loadOutputNames, startAutomationWatcher, loadLower, loadOutputBindings, loadOutputFailover, loadRoomProfiles, loadScenePresets, loadServiceProfiles, loadChangeLog, loadTrainingMode, loadRemoteUsers, loadStageOutputNum, refreshMonitors, loadStageMonitorBinding, loadStationCfg, loadLiveConfig, loadNamedThemes, loadSecondLang, loadAutoTimer, loadAutoFit,
                  loadSplitCfg, loadOrders, loadArrangeGlobal, loadSongSize, loadSongTags, loadService, loadLayers, applyTypo, initObsListener, loadRoutes, loadOutputBg, loadOutputChroma, loadLooks, loadProps, loadMacros, loadPartLabels, loadArrangeSets, loadMsgTemplates, loadSoundBin, loadGraphicsSettings, loadAnnounceSettings, renderServicePlanEmbed, pv2SyncOutputStates, pv2RenderOutputsCard, loadPlaylistData, loadHotkeys, loadMidiMap, initMidi, loadOscMap, getCloudSyncFolder, loadStatistics, restoreFontChoice, loadStageNotes,
                  renderPlaylist, renderHotkeys, renderFontsList,
                  renderMediaList, updateH2RPreview, updateGraphicsPreview, updateTextPreview,
                  () => setPPTtemplate('classic'), updateStatistics,
-                 updateLivePanels, applyDisplayCfg, initDisplayControlListener, initRemoteListener, initLogoListener, initDisplaysListener, initUpdateListener];
+                 updateLivePanels, applyDisplayCfg, initDisplayControlListener, initRemoteListener, initLogoListener, initDisplaysListener, initStageWindowListener, initUpdateListener];
   steps.forEach(fn => { try { fn(); } catch(e) { console.error('extras init', e); } });
 
   // Автозбереження кожні 30 с

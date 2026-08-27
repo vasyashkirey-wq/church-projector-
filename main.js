@@ -59,6 +59,7 @@ function createMainWindow() {
     OUTPUT_KINDS.forEach(k => {
       if (outputWins[k] && !outputWins[k].isDestroyed()) outputWins[k].close();
     });
+    if (stageWin && !stageWin.isDestroyed()) stageWin.close();
     stopRemoteServer();
     mainWin = null;
   });
@@ -263,6 +264,65 @@ function getDisplaysList() {
 // Пошук монітора за «відбитком» (після перезапуску id інші)
 function findDisplayByFingerprint(fp) {
   return screen.getAllDisplays().find(d => displayFingerprint(d) === fp) || null;
+}
+
+// ============================================================
+// STAGE MONITOR — окреме вікно для сцени (поточний/наступний слайд,
+// таймер проповіді, нотатки). Раніше це був window.open()-попап (жив лише
+// в рендерері, без гарантії «поверх усіх вікон», зникав за блокуванням
+// спливаючих вікон). Тепер — звичайне BrowserWindow, як і інші виходи,
+// але НЕ частина OUTPUT_KINDS/OUTPUT_TITLES: сцені не потрібні хромакей,
+// прозорість, водяний знак чи маршрутизація — лише простий вибір монітора.
+// ============================================================
+let stageWin = null;
+let stageDisplayId = null;
+let stageFingerprint = null;
+
+function createStageWindow(callback) {
+  if (stageWin && !stageWin.isDestroyed()) { if (callback) callback(); return; }
+
+  // Не сідати на той самий монітор, що вже зайнятий проектором/трансляцією/іншими виходами
+  const usedDisplayIds = [];
+  OUTPUT_KINDS.forEach(k => {
+    const w = outputWins[k];
+    if (w && !w.isDestroyed()) usedDisplayIds.push(screen.getDisplayMatching(w.getBounds()).id);
+  });
+  const target = pickDisplay(usedDisplayIds, stageDisplayId);
+  const bounds = target ? target.bounds : { x: 120, y: 120, width: 960, height: 540 };
+
+  const win = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    backgroundColor: '#0a0a1a',
+    title: 'Stage Display',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'src/stage-preload.js')
+    }
+  });
+  stageWin = win;
+  win.loadFile(path.join(__dirname, 'src/stage.html'));
+  win.setAlwaysOnTop(true, 'screen-saver');
+
+  win.webContents.once('did-finish-load', () => {
+    if (target) win.setFullScreen(true);
+    stageWin = win;
+    if (callback) callback();
+  });
+
+  win.on('closed', () => {
+    stageWin = null;
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('stage-window-closed');
+  });
+}
+
+function closeStageWindow() {
+  if (stageWin && !stageWin.isDestroyed()) stageWin.close();
+  stageWin = null;
 }
 
 // Шле на ВСІ відкриті виходи, ігноруючи маршрути (для очищення екранів)
@@ -588,6 +648,34 @@ ipcMain.handle('set-stage-output', (event, kind) => {
     if (w && !w.isDestroyed()) w.webContents.send('stage-flag', true);
   }
   return { ok: true, stageOutputKind };
+});
+
+// ---- Stage Monitor (окреме вікно, не плутати з set-stage-output вище —
+// та функція лише накладає таймер поверх ОДНОГО з 4 звичайних виходів) ----
+ipcMain.handle('open-stage-window', () => { createStageWindow(); return { ok: true }; });
+ipcMain.handle('close-stage-window', () => { closeStageWindow(); return { ok: true }; });
+ipcMain.handle('stage-window-status', () => ({ open: !!(stageWin && !stageWin.isDestroyed()) }));
+ipcMain.handle('stage-content-update', (event, data) => {
+  if (stageWin && !stageWin.isDestroyed()) stageWin.webContents.send('stage-content', data);
+  return 'ok';
+});
+ipcMain.handle('set-stage-monitor', (event, displayId) => {
+  stageDisplayId = displayId || null;
+  if (stageWin && !stageWin.isDestroyed() && stageDisplayId) {
+    const d = screen.getAllDisplays().find(x => x.id === stageDisplayId);
+    if (d) {
+      stageWin.setFullScreen(false);
+      stageWin.setBounds(d.bounds);
+      stageWin.setFullScreen(true);
+    }
+  }
+  return { ok: true };
+});
+ipcMain.handle('bind-stage-monitor-fingerprint', (event, fingerprint) => {
+  stageFingerprint = fingerprint || null;
+  const d = fingerprint ? findDisplayByFingerprint(fingerprint) : null;
+  if (d) stageDisplayId = d.id;
+  return { id: d ? d.id : null };
 });
 
 ipcMain.handle('set-auto-launch', (event, on) => {

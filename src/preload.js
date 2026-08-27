@@ -109,6 +109,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendStageTimer: (data) => ipcRenderer.invoke('send-stage-timer', data),
   setStageOutput: (kind) => ipcRenderer.invoke('set-stage-output', kind),
 
+  // Stage Monitor — окреме вікно сцени (не плутати з setStageOutput вище,
+  // яка лише накладає таймер поверх одного зі звичайних 4 виходів)
+  openStageWindow: () => ipcRenderer.invoke('open-stage-window'),
+  closeStageWindow: () => ipcRenderer.invoke('close-stage-window'),
+  stageWindowStatus: () => ipcRenderer.invoke('stage-window-status'),
+  updateStageWindow: (data) => ipcRenderer.invoke('stage-content-update', data),
+  setStageMonitor: (displayId) => ipcRenderer.invoke('set-stage-monitor', displayId),
+  bindStageMonitorFingerprint: (fp) => ipcRenderer.invoke('bind-stage-monitor-fingerprint', fp),
+  onStageWindowClosed: (cb) => ipcRenderer.on('stage-window-closed', () => cb()),
+
   // Діагностика і бекап
   logError: (where, message) => ipcRenderer.invoke('log-error', { where, message }),
   getLogPath: () => ipcRenderer.invoke('get-log-path'),
