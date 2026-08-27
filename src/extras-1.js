@@ -142,7 +142,8 @@ const STORAGE_KEYS = {
   animations: 'church_animations',
   fonts: 'church_fonts',
   scenePresets: 'church_scene_presets',
-  announceSettings: 'church_announce_settings'
+  announceSettings: 'church_announce_settings',
+  stageMonitor: 'church_stage_monitor'
 };
 
 const H2R_STYLES = {
@@ -404,7 +405,12 @@ var state = {
   playlist: [], playlistIndex: 0, playlistRunning: false, playlistTimer: null,
   mediaFiles: [], currentMediaIndex: -1, mediaPlayer: null,
   animSettings: {entry:'fade', exit:'fade', speed:500},
-  stageWindow: null,
+  // Раніше state.stageWindow тримав window.open()-попап. Тепер Stage Monitor —
+  // справжнє Electron BrowserWindow, яким керує головний процес; тут лишається
+  // лише прапорець «відкрито/закрито» та прив'язка до монітора.
+  stageDisplayOpen: false,
+  stageMonitorId: null,
+  stageMonitorFingerprint: null,
   statsData: {totalOutputs:0, songUsage:{}, bibleUsage:{}, dailyActivity:{}, log:[]},
   textSettings: {
     1:{size:58,position:'center',align:'center',color:'#ffffff',bgColor:'#000000',fontFamily:'Georgia, serif',styles:{bold:false,italic:false,shadow:true},
@@ -603,8 +609,9 @@ const status = $('#playlistStatus');
 if(status) status.textContent = '● Зупинено';
 }
 
-function closeStageDisplay() {
-if(state.stageWindow && !state.stageWindow.closed) { state.stageWindow.close(); state.stageWindow = null; }
+async function closeStageDisplay() {
+if(window.electronAPI && window.electronAPI.closeStageWindow) await window.electronAPI.closeStageWindow();
+state.stageDisplayOpen = false;
 const status = $('#stageStatus');
 if(status) status.textContent = '✕ Stage Display закрито';
 }
@@ -1304,15 +1311,17 @@ savePlaylistData();
 renderPlaylist();
 }
 
-function openStageDisplay() {
-if(state.stageWindow && !state.stageWindow.closed) { state.stageWindow.focus(); return; }
-state.stageWindow = window.open('', '_blank', 'width=1280,height=720,menubar=no,toolbar=no,location=no');
-if(!state.stageWindow) { notify('Дозвольте спливаючі вікна'); return; }
-state.stageWindow.document.write(`<html><head><meta charset="UTF-8"><title>Stage Display</title><style>body{margin:0;background:#0a0a1a;color:#fff;font-family:Georgia,serif;height:100vh;display:flex;flex-direction:column;padding:16px 30px}.header{display:flex;justify-content:space-between;color:#c8a84b;font-size:2.2vh;border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:6px}.main{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center}.label{color:rgba(255,255,255,0.3);font-size:1.8vh;letter-spacing:2px}.current{font-size:5vh;line-height:1.3;margin:4px 0;max-width:85%}.next-box{border-top:1px solid rgba(255,255,255,0.03);padding-top:6px}.next-label{color:rgba(255,255,255,0.3);font-size:1.6vh}.next-text{color:rgba(255,255,255,0.45);font-size:2.6vh}.footer{display:flex;justify-content:space-between;border-top:1px solid rgba(255,255,255,0.03);padding-top:6px;font-size:1.8vh;color:rgba(255,255,255,0.4)}.timer{font-family:monospace;font-size:3vh;color:#f56565}</style></head><body><div class="header"><span>⛪ Церква Прага</span><span id="stageClock">00:00</span></div><div class="main"><div class="label">📖 ПОТОЧНИЙ</div><div class="current" id="stageCurrent">—</div><div class="next-box"><div class="next-label">▶ НАСТУПНИЙ</div><div class="next-text" id="stageNext">—</div></div></div><div class="footer"><span id="stageNotes">📝</span><span class="timer" id="stageTimer">⏱ 10:00</span></div><script>setInterval(function(){var d=new Date();document.getElementById("stageClock").textContent=d.toLocaleTimeString("uk-UA");},1000);window.addEventListener("message",function(e){if(e.data.current)document.getElementById("stageCurrent").textContent=e.data.current;if(e.data.next)document.getElementById("stageNext").textContent=e.data.next;if(e.data.timer)document.getElementById("stageTimer").textContent="⏱ "+e.data.timer;if(e.data.notes)document.getElementById("stageNotes").textContent="📝 "+e.data.notes;});</script></body></html>`);
-state.stageWindow.document.close();
-updateStageDisplay();
+async function openStageDisplay() {
+if(!window.electronAPI || !window.electronAPI.openStageWindow) { notify('Stage Display недоступний'); return; }
+if(state.stageDisplayOpen) {
+  updateStageDisplay();
+  return;
+}
+await window.electronAPI.openStageWindow();
+state.stageDisplayOpen = true;
 const status = $('#stageStatus');
 if(status) status.textContent = '✓ Stage Display відкрито';
+updateStageDisplay();
 }
 
 
@@ -1939,8 +1948,45 @@ function renderPowerPointTab() {
 return `<div class="grid2"><div> <div class="card"><div class="card-title">📊 Експорт</div> <div class="flex" style="margin-bottom:2px"><span style="font-size:11px;color:var(--text2)">Шаблон:</span><button class="btn btn-ghost btn-sm" onclick="setPPTtemplate('classic')" id="pptTemplateClassic" style="border:1px solid var(--accent)">📜</button><button class="btn btn-ghost btn-sm" onclick="setPPTtemplate('modern')" id="pptTemplateModern">✨</button><button class="btn btn-ghost btn-sm" onclick="setPPTtemplate('dark')" id="pptTemplateDark">🌑</button></div> <div class="flex"><button class="btn btn-primary" onclick="exportToPPTX()">⬇ PPTX</button><button class="btn btn-ghost btn-sm" onclick="exportToHTML()">🌐</button></div> <div id="pptStatus" class="text-muted mt8"></div></div> </div><div> <div class="card"><div class="card-title">👁 Прев\'ю</div> <div id="pptPreview" style="aspect-ratio:16/9;background:linear-gradient(135deg,#0a1628,#1e3a5f);border-radius:2px;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid var(--border);padding:6px;text-align:center"> <div id="pptPreviewTitle" style="color:#f0c040;font-size:12px;font-weight:700">Назва пісні</div> <div id="pptPreviewAuthor" style="color:rgba(255,255,255,0.3);font-size:11px">Автор</div> <div id="pptPreviewVerses" style="color:#fff;font-size:12px;line-height:1.2;margin-top:2px">Текст куплету</div></div> <div class="flex" style="margin-top:2px"><button class="btn btn-ghost btn-sm" onclick="pptPrevPreview()">◀</button><button class="btn btn-ghost btn-sm" onclick="pptNextPreview()">▶</button><span class="text-muted" id="pptPreviewCounter" style="font-size:11px;padding:1px">1/1</span></div></div> </div></div>`;
 }
 
+// Прив'язка Stage Monitor до конкретного фізичного монітора — за «відбитком»,
+// щоб пережити перезапуск Windows (там id моніторів після ребута інші).
+// Той самий підхід, що й у bindOutputToDisplay()/loadOutputBindings() для
+// звичайних 4 виходів (extras-3.js), але без OUT_KIND/OUT_NAME — сцена не
+// входить у ту систему.
+function renderStageMonitorOptions() {
+  const sel = $('#stageMonitorSelect');
+  if (!sel) return;
+  const displays = state.displays || [];
+  if (!displays.length) { sel.innerHTML = '<option value="">Монітори не знайдені — відкрий «Прив\'язка екранів»</option>'; return; }
+  sel.innerHTML = '<option value="">Авто (перший вільний монітор)</option>' + displays.map(d =>
+    `<option value="${d.id}">${d.num}. ${d.width}×${d.height}${d.isPrimary ? ' (основний)' : ''}${d.isOperator ? ' (оператор)' : ''}</option>`
+  ).join('');
+  if (state.stageMonitorId) sel.value = String(state.stageMonitorId);
+}
+
+function setStageMonitor() {
+  const sel = $('#stageMonitorSelect');
+  if (!sel) return;
+  const id = sel.value ? parseInt(sel.value, 10) : null;
+  const d = (state.displays || []).find(x => x.id === id);
+  state.stageMonitorId = id;
+  state.stageMonitorFingerprint = d ? d.fingerprint : null;
+  saveJSON(STORAGE_KEYS.stageMonitor, state.stageMonitorFingerprint);
+  if (window.electronAPI && window.electronAPI.setStageMonitor) window.electronAPI.setStageMonitor(id);
+  notify(id ? '🖥 Монітор сцени встановлено' : 'Монітор сцени: авто');
+}
+
+function loadStageMonitorBinding() {
+  const fp = loadJSON(STORAGE_KEYS.stageMonitor);
+  if (!fp || !window.electronAPI || !window.electronAPI.bindStageMonitorFingerprint) return;
+  state.stageMonitorFingerprint = fp;
+  window.electronAPI.bindStageMonitorFingerprint(fp).then(res => {
+    if (res && res.id) { state.stageMonitorId = res.id; renderStageMonitorOptions(); }
+  }).catch(() => {});
+}
+
 function renderStageTab() {
-return `<div class="grid2"><div> <div class="card"><div class="card-title">🖥 Stage Display</div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-primary btn-sm" onclick="openStageDisplay()">📺 Відкрити</button><button class="btn btn-ghost btn-sm" onclick="closeStageDisplay()">✕</button><button class="btn btn-ghost btn-sm" onclick="updateStageDisplay()">🔄</button></div> <div id="stageStatus" class="text-muted mt8"></div></div> <div class="card"><div class="card-title">📝 Нотатки</div><textarea id="stageNotes" placeholder="Нотатки..." style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none;min-height:24px;resize:vertical;font-family:inherit"></textarea><div class="flex" style="margin-top:2px"><button class="btn btn-ghost btn-sm" onclick="saveStageNotes()">💾</button><button class="btn btn-ghost btn-sm" onclick="loadStageNotes()">📂</button></div></div> </div><div> <div class="card"><div class="card-title">👁 Прев\'ю</div> <div id="stagePreview" style="aspect-ratio:16/9;background:linear-gradient(135deg,#0a0a1a,#1a1a3e);border-radius:2px;border:1px solid var(--border);padding:6px;display:flex;flex-direction:column;justify-content:space-between;position:relative"> <div style="display:flex;justify-content:space-between"><div style="color:#c8a84b;font-size:12px;font-weight:700">⛪</div><div style="color:rgba(255,255,255,0.15);font-size:12px;font-family:monospace" id="stagePreviewClock">12:00</div></div> <div style="text-align:center;padding:2px 0"><div style="color:rgba(255,255,255,0.15);font-size:11px">Поточний</div><div style="color:#fff;font-size:12px;font-family:Georgia,serif" id="stagePreviewCurrent">Бо так возлюбив Бог...</div></div> <div style="border-top:1px solid rgba(255,255,255,0.05);padding-top:2px"><div style="color:rgba(255,255,255,0.15);font-size:11px">▶ Наступний</div><div style="color:rgba(255,255,255,0.3);font-size:12px;font-family:Georgia,serif" id="stagePreviewNext">Великий Бог...</div></div> <div style="position:absolute;bottom:3px;right:6px;color:rgba(255,255,255,0.08);font-size:11px" id="stagePreviewTimer">⏱ 10:00</div></div></div> </div></div>`;
+return `<div class="grid2"><div> <div class="card"><div class="card-title">🖥 Stage Display</div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-primary btn-sm" onclick="openStageDisplay()">📺 Відкрити</button><button class="btn btn-ghost btn-sm" onclick="closeStageDisplay()">✕</button><button class="btn btn-ghost btn-sm" onclick="updateStageDisplay()">🔄</button></div> <div id="stageStatus" class="text-muted mt8"></div></div> <div class="card"><div class="card-title">🖥 Монітор сцени</div><div class="card-sub">Окреме вікно (не проектор і не трансляція) — вибери фізичний монітор, на якому воно з'явиться.</div><select id="stageMonitorSelect" onchange="setStageMonitor()" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:3px 4px;color:var(--text);font-size:12px;outline:none;margin-top:4px"><option value="">Авто (перший вільний монітор)</option></select></div> <div class="card"><div class="card-title">📝 Нотатки</div><textarea id="stageNotes" placeholder="Нотатки..." style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none;min-height:24px;resize:vertical;font-family:inherit"></textarea><div class="flex" style="margin-top:2px"><button class="btn btn-ghost btn-sm" onclick="saveStageNotes()">💾</button><button class="btn btn-ghost btn-sm" onclick="loadStageNotes()">📂</button></div></div> </div><div> <div class="card"><div class="card-title">👁 Прев\'ю</div> <div id="stagePreview" style="aspect-ratio:16/9;background:linear-gradient(135deg,#0a0a1a,#1a1a3e);border-radius:2px;border:1px solid var(--border);padding:6px;display:flex;flex-direction:column;justify-content:space-between;position:relative"> <div style="display:flex;justify-content:space-between"><div style="color:#c8a84b;font-size:12px;font-weight:700">⛪</div><div style="color:rgba(255,255,255,0.15);font-size:12px;font-family:monospace" id="stagePreviewClock">12:00</div></div> <div style="text-align:center;padding:2px 0"><div style="color:rgba(255,255,255,0.15);font-size:11px">Поточний</div><div style="color:#fff;font-size:12px;font-family:Georgia,serif" id="stagePreviewCurrent">Бо так возлюбив Бог...</div></div> <div style="border-top:1px solid rgba(255,255,255,0.05);padding-top:2px"><div style="color:rgba(255,255,255,0.15);font-size:11px">▶ Наступний</div><div style="color:rgba(255,255,255,0.3);font-size:12px;font-family:Georgia,serif" id="stagePreviewNext">Великий Бог...</div></div> <div style="position:absolute;bottom:3px;right:6px;color:rgba(255,255,255,0.08);font-size:11px" id="stagePreviewTimer">⏱ 10:00</div></div></div> </div></div>`;
 }
 
 function renderStatisticsTab() {
@@ -2615,8 +2661,8 @@ function updateStageDisplay() {
   if (!next) next = '—';
   const timer = (typeof timerState !== 'undefined' && timerState) ? timerFmt(timerState.remaining) : '--:--';
   const notes = $('#stageNotes')?.value || '';
-  if (state.stageWindow && !state.stageWindow.closed) {
-    state.stageWindow.postMessage({ current: cur.substring(0, 200), next: next.substring(0, 200), timer, notes: notes.substring(0, 60) }, '*');
+  if (state.stageDisplayOpen && window.electronAPI && window.electronAPI.updateStageWindow) {
+    window.electronAPI.updateStageWindow({ current: cur.substring(0, 200), next: next.substring(0, 200), timer, notes: notes.substring(0, 60) });
   }
   const curEl = $('#stagePreviewCurrent');
   const nextEl = $('#stagePreviewNext');

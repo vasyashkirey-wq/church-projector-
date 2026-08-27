@@ -2233,12 +2233,12 @@ function pv2Init() {
     if ($('#fontHeaders')) $('#fontHeaders').value = saved.headers || 'Georgia, serif';
   }
   const steps = [loadUiPrefs, loadProfiles, loadMasterVolume, loadBookmarks,
-                 loadScheduler, loadAutoBackup, loadSongTrash, loadLang, loadPultCfg, loadMultiTrans, loadMultiTransStyle, loadOutputNames, startAutomationWatcher, loadLower, loadOutputBindings, loadOutputFailover, loadRoomProfiles, loadScenePresets, loadServiceProfiles, loadChangeLog, loadTrainingMode, loadRemoteUsers, loadStageOutputNum, refreshMonitors, loadStationCfg, loadLiveConfig, loadNamedThemes, loadSecondLang, loadAutoTimer, loadAutoFit,
+                 loadScheduler, loadAutoBackup, loadSongTrash, loadLang, loadPultCfg, loadMultiTrans, loadMultiTransStyle, loadOutputNames, startAutomationWatcher, loadLower, loadOutputBindings, loadOutputFailover, loadRoomProfiles, loadScenePresets, loadServiceProfiles, loadChangeLog, loadTrainingMode, loadRemoteUsers, loadStageOutputNum, refreshMonitors, loadStageMonitorBinding, loadStationCfg, loadLiveConfig, loadNamedThemes, loadSecondLang, loadAutoTimer, loadAutoFit,
                  loadSplitCfg, loadOrders, loadArrangeGlobal, loadSongSize, loadSongTags, loadService, loadLayers, applyTypo, initObsListener, loadRoutes, loadOutputBg, loadOutputChroma, loadLooks, loadProps, loadMacros, loadPartLabels, loadArrangeSets, loadMsgTemplates, loadSoundBin, loadGraphicsSettings, loadAnnounceSettings, renderServicePlanEmbed, pv2SyncOutputStates, pv2RenderOutputsCard, loadPlaylistData, loadHotkeys, loadMidiMap, initMidi, loadOscMap, getCloudSyncFolder, loadStatistics, restoreFontChoice, loadStageNotes,
                  renderPlaylist, renderHotkeys, renderFontsList,
                  renderMediaList, updateH2RPreview, updateGraphicsPreview, updateTextPreview,
                  () => setPPTtemplate('classic'), updateStatistics,
-                 updateLivePanels, applyDisplayCfg, initDisplayControlListener, initRemoteListener, initLogoListener, initDisplaysListener, initUpdateListener];
+                 updateLivePanels, applyDisplayCfg, initDisplayControlListener, initRemoteListener, initLogoListener, initDisplaysListener, initStageWindowListener, initUpdateListener];
   steps.forEach(fn => { try { fn(); } catch(e) { console.error('extras init', e); } });
 
   // Автозбереження кожні 30 с

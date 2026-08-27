@@ -1404,7 +1404,21 @@ function initDisplaysListener() {
       state.displays = list || [];
       if (isActive('monitors2')) renderTabInto('monitors2');
       if (typeof syncMonitorMissingBanner === 'function') syncMonitorMissingBanner();
+      if (typeof renderStageMonitorOptions === 'function') renderStageMonitorOptions();
       notify('🖥 Склад моніторів змінився');
+    });
+  }
+}
+
+// Stage Monitor — окреме вікно живе в головному процесі; якщо користувач
+// закриє його самостійно (системним хрестиком), рендерер про це не знав би
+// сам собою — слухаємо подію, щоб #stageStatus і стан не розходились.
+function initStageWindowListener() {
+  if (window.electronAPI && window.electronAPI.onStageWindowClosed) {
+    window.electronAPI.onStageWindowClosed(() => {
+      state.stageDisplayOpen = false;
+      const status = $('#stageStatus');
+      if (status) status.textContent = '✕ Stage Display закрито';
     });
   }
 }
