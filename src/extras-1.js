@@ -2543,6 +2543,10 @@ function renderTabInto(tabId) {
   if (tabId === 'stream') updateLowerPreview();
   if (tabId === 'qrscreen') updateQrPreview();
   if (tabId === 'stations') { renderStationClients(); renderRemoteUsersList(); }
+  if (tabId === 'service' && typeof svcRenderSongBookFilter === 'function') svcRenderSongBookFilter();
+  // План служби тепер вбудований і у вкладку «Пісні» — синхронізуємо обидва
+  // місця з ОДНОГО й того самого renderServiceTab(), без дублювання логіки.
+  if (tabId === 'service' && typeof renderServicePlanEmbed === 'function') renderServicePlanEmbed();
 }
 
 // Список шрифтів: системні + завантажені у вкладці «Шрифти»

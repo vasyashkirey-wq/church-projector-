@@ -1665,6 +1665,12 @@ function renderServiceTab() {
       <div class="card">
         <div class="card-title">➕ Додати до плану</div>
         <div style="font-size:12px;color:var(--text2);margin-top:4px">Пісня (весь текст, з порядком частин)</div>
+        <input id="svcSongSearch" type="text" placeholder="🔍 Знайти пісню за назвою…" oninput="svcRefreshSongPick()"
+               style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none;margin-bottom:4px">
+        <select id="svcSongBookFilter" onchange="svcRefreshSongPick()"
+                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none;margin-bottom:4px">
+          <option value="">📚 Усі збірники</option>
+        </select>
         <div style="display:flex;gap:4px">
           <select id="svcSongPick" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">${songOpts}</select>
           <button class="btn btn-primary btn-sm" onclick="svcAddSong($('#svcSongPick').value)">➕</button>
@@ -1716,6 +1722,42 @@ function renderServiceTab() {
   </div>`;
 }
 
+// Заповнює вбудовану копію плану служби у вкладці «Пісні» (id="servicePlanEmbed")
+// — тим самим renderServiceTab(), щоб не дублювати логіку й не розходитись
+// зі старою поведінкою. Викликається центрально з renderTabInto('service'),
+// тож усі десятки svc*-функцій, що вже й так оновлюють план, автоматично
+// оновлюють і цю копію теж, без правок у кожній із них окремо.
+function renderServicePlanEmbed() {
+  var host = document.getElementById('servicePlanEmbed');
+  if (!host) return;
+  try { host.innerHTML = renderServiceTab(); } catch (e) { console.error('renderServicePlanEmbed', e); }
+}
+
+function svcRefreshSongPick() {
+  var sel = document.getElementById('svcSongPick');
+  if (!sel) return;
+  var qEl = document.getElementById('svcSongSearch');
+  var q = qEl ? qEl.value.toLowerCase().trim() : '';
+  var bookEl = document.getElementById('svcSongBookFilter');
+  var book = bookEl ? bookEl.value : '';
+  var list = state.songs.slice().sort(function(a, b) { return (a.title || '').localeCompare(b.title || '', 'uk'); });
+  if (book) list = list.filter(function(s) { return (s.songbook || '').trim() === book; });
+  if (q) list = list.filter(function(s) { return (s.title || '').toLowerCase().indexOf(q) !== -1; });
+  sel.innerHTML = list.length
+    ? list.map(function(s) { return '<option value="' + s.id + '">' + esc(s.title + (s.songbook ? '  —  📚 ' + s.songbook : '')) + '</option>'; }).join('')
+    : '<option value="">— нічого не знайдено —</option>';
+}
+// Заповнює фільтр збірників для селектора плану служіння — той самий
+// перелік, що й в інших місцях пошуку пісень.
+function svcRenderSongBookFilter() {
+  var sel = document.getElementById('svcSongBookFilter');
+  if (!sel) return;
+  var prev = sel.value;
+  var books = Array.from(new Set(state.songs.map(function(s) { return (s.songbook || '').trim(); }).filter(Boolean))).sort(function(a, b) { return a.localeCompare(b, 'uk'); });
+  sel.innerHTML = '<option value="">📚 Усі збірники</option>' +
+    books.map(function(b) { return '<option value="' + escHtml(b) + '">' + escHtml(b) + '</option>'; }).join('');
+  if (books.indexOf(prev) !== -1) sel.value = prev;
+}
 
 // ============================================================
 // МОНІТОРИ (вдосконалено)
