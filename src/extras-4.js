@@ -390,6 +390,9 @@ function sermonStart(minutes) {
   saveJSON(STORAGE_KEYS.live + '_sermon', state.sermon);
   if (!_sermonTick) _sermonTick = setInterval(sermonUpdate, 1000);
   renderTabInto('control');
+  // Монітор сцени теж показує цей таймер (головне його призначення) —
+  // оновлюємо одразу, не чекаючи першого тіку.
+  if (typeof updateStageDisplay === 'function') updateStageDisplay();
   notify('📣 Таймер проповіді запущено: ' + (minutes || 30) + ' хв');
 }
 function sermonStop() {
@@ -397,6 +400,7 @@ function sermonStop() {
   clearInterval(_sermonTick); _sermonTick = null;
   if (window.electronAPI && window.electronAPI.sendStageTimer) window.electronAPI.sendStageTimer(null);
   renderTabInto('control');
+  if (typeof updateStageDisplay === 'function') updateStageDisplay();
   notify('⏹ Таймер проповіді зупинено');
 }
 let _sermonTick = null;
@@ -409,6 +413,7 @@ function sermonUpdate() {
   if (window.electronAPI && window.electronAPI.sendStageTimer) {
     window.electronAPI.sendStageTimer({ elapsed: elapsed, left: left, warn: warn });
   }
+  if (typeof updateStageDisplay === 'function') updateStageDisplay();
   const lbl = $('#sermonElapsed');
   if (lbl) lbl.textContent = fmtMMSS(elapsed) + (left >= 0 ? ' / лишилось ' + fmtMMSS(left) : ' / +' + fmtMMSS(-left));
 }
@@ -1918,9 +1923,9 @@ function renderRouterTab() {
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
         <button class="btn ${state.stageOutputNum === i ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setStageOutputNum(${i})">
-          🎤 ${state.stageOutputNum === i ? 'Це екран сцени — таймер тут' : 'Позначити екраном сцени'}
+          🎤 ${state.stageOutputNum === i ? '⏱ Таймер проповіді накладено тут' : 'Накласти таймер проповіді'}
         </button>
-        <span style="font-size:11px;color:var(--text2)">Таймер проповіді накладається поверх того, що вихід і так показує.</span>
+        <span style="font-size:11px;color:var(--text2)">Таймер лягає ПОВЕРХ того, що цей вихід і так показує (напр. трансляція). Інша річ, ніж окреме вікно «🖥 Stage» (Монітор сцени) — там таймер сам по собі, на власному екрані.</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
         <span style="font-size:12px;color:var(--text2);min-width:56px">Фон (код):</span>

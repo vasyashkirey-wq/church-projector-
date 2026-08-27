@@ -39,7 +39,17 @@
       // зайва обережність не завадить).
       if (data.current != null) document.getElementById('stageCurrent').textContent = data.current;
       if (data.next != null) document.getElementById('stageNext').textContent = data.next;
-      if (data.timer != null) document.getElementById('stageTimer').textContent = '⏱ ' + data.timer;
+      if (data.timer != null) {
+        var timerEl = document.getElementById('stageTimer');
+        timerEl.textContent = '⏱ ' + data.timer;
+        // Той самий колірний код, що й для накладки таймера проповіді на
+        // звичайних виходах (projector-preload.js) — щоб виглядало однаково,
+        // на якому б екрані промовець його не побачив.
+        timerEl.style.color = data.timerWarn === 'over' ? '#ff5252'
+          : data.timerWarn === 'soon' ? '#ffd23f'
+          : data.timerWarn === 'ok' ? '#7CFC9A'
+          : '#f56565';
+      }
       if (data.notes != null) document.getElementById('stageNotes').textContent = '📝 ' + data.notes;
     });
   }
