@@ -28,6 +28,16 @@ html, body { width:100%; height:100vh; background:#000; overflow:hidden; }
 
 /* Застиглий кадр */
 
+/* Постійний водяний знак — окремий шар з НАЙВИЩИМ z-index (вище за alert:7),
+   ніколи не ховається при зміні контенту (на відміну від logo-layer). */
+#watermark-layer { position:fixed; z-index:8; display:none; pointer-events:none;
+               font-family:Georgia,serif; font-weight:700; text-shadow:0 1px 4px rgba(0,0,0,.8);
+               padding:10px 14px; }
+#watermark-layer.top-left { top:0; left:0; }
+#watermark-layer.top-right { top:0; right:0; text-align:right; }
+#watermark-layer.bottom-left { bottom:0; left:0; }
+#watermark-layer.bottom-right { bottom:0; right:0; text-align:right; }
+
 /* Оголошення ПОВЕРХ живого слайда — пісня триває, повідомлення виїжджає знизу */
 #alert-layer { position:fixed; left:0; right:0; bottom:0; z-index:7; display:none; padding:18px 30px;
                background:rgba(10,10,26,.88); border-top:3px solid #c8a84b; color:#fff;
@@ -57,6 +67,7 @@ html, body { width:100%; height:100vh; background:#000; overflow:hidden; }
 </div>
 
 <div id="logo-layer"><img id="logo-img" alt=""></div>
+<div id="watermark-layer"></div>
 <div id="alert-layer"><span id="alert-text"></span></div>
 </body>
 </html>

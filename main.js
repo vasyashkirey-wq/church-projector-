@@ -987,6 +987,11 @@ ipcMain.handle('set-fit-group', (event, { slides, kind }) => { sendToOutputs('se
 ipcMain.handle('set-locked-size', (event, { size, kind }) => { sendToOutputs('set-locked-size', size, kind); return 'ok'; });
 ipcMain.handle('set-bg-video', (event, { cfg, kind }) => { sendToOutputs('set-bg-video', cfg, kind); return 'ok'; });
 ipcMain.handle('show-logo',    (event, { dataUrl, kind }) => { sendToOutputs('show-logo', dataUrl, kind); return 'ok'; });
+// Постійний водяний знак — окремий, незалежний шар: на відміну від логотипа
+// його НЕ торкається логіка автоприбирання при новому контенті (проектор-preload
+// має для нього окремий, ніколи не чіпаний слухач), тож він лишається поверх
+// усього, поки оператор не вимкне явно.
+ipcMain.handle('show-watermark', (event, { cfg, kind }) => { sendToOutputs('watermark', cfg, kind); return 'ok'; });
 ipcMain.handle('freeze-output',(event, { on, kind }) => { sendToOutputs('freeze', !!on, kind); return 'ok'; });
 ipcMain.handle('send-alert',   (event, { cfg, kind }) => { sendToOutputs('alert', cfg, kind); return 'ok'; });
 

@@ -622,6 +622,20 @@ ipcRenderer.on('show-logo', (event, dataUrl) => {
   layer.style.display = 'flex';
 });
 
+// --- Постійний водяний знак: окремий незалежний шар. НІХТО інший (ані
+// 'display', ані показ логотипа) його не ховає — саме тому він і лишається
+// на екрані завжди, на відміну від логотипа, який автоприбирається нижче. ---
+ipcRenderer.on('watermark', (event, cfg) => {
+  const layer = document.getElementById('watermark-layer');
+  if (!layer) return;
+  if (!cfg || !cfg.on) { layer.style.display = 'none'; return; }
+  layer.textContent = cfg.text || '';
+  layer.className = cfg.position || 'top-left';
+  layer.style.fontSize = (cfg.size || 16) + 'px';
+  layer.style.color = cfg.color || '#ffffff';
+  layer.style.display = cfg.text ? 'block' : 'none';
+});
+
 // --- Заморозити кадр: знімаємо поточний вигляд і показуємо як картинку ---
 let isFrozen = false;
 ipcRenderer.on('freeze', (event, on) => {

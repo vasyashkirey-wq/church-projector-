@@ -414,11 +414,29 @@ function loadLayers() {
   state.bgQueue = c.bgQueue || [];
   state.bgQueueInterval = c.bgQueueInterval || 30;
   state.bgQueueIdx = c.bgQueueIdx || 0;
+  if (c.watermark) {
+    // Міграція зі старого формату (один спільний об'єкт, не мапа по виходах):
+    // якщо в збереженому є "text"/"on" напряму (не 1/2/3/4-ключі) — це старий
+    // запис, застосовуємо його як стартове значення для виходу 1 (проектор),
+    // а решта лишаються вимкненими за замовчуванням.
+    if (typeof c.watermark.text === 'string' && !c.watermark[1]) {
+      Object.assign(state.watermark[1], c.watermark);
+    } else {
+      [1, 2, 3, 4].forEach(function(n) { if (c.watermark[n]) Object.assign(state.watermark[n], c.watermark[n]); });
+    }
+  }
   if (state.bgAudio && c.volume != null) state.bgAudio.volume = c.volume;
   // Відновлюємо фон і логотип на вже відкритих виходах
   if (state.bgVideo && window.electronAPI && window.electronAPI.setBgVideo) {
     window.electronAPI.setBgVideo({ src: state.bgVideo.src, loop: true, speed: state.bgVideo.speed || 1 });
   }
+  // Водяний знак теж має пережити перезапуск і одразу з'явитись на КОЖНОМУ
+  // виході, де був увімкнений, — незалежно один від одного.
+  [1, 2, 3, 4].forEach(function(n) {
+    if (state.watermark[n].on && window.electronAPI && window.electronAPI.showWatermark) {
+      window.electronAPI.showWatermark(state.watermark[n], OUT_KIND[n]);
+    }
+  });
 }
 function saveLayers() {
   // Сесійні blob-посилання після перезапуску мертві — не зберігаємо їх
@@ -429,6 +447,7 @@ function saveLayers() {
     bgQueue: (state.bgQueue || []).filter(x => !x.session),
     bgQueueInterval: state.bgQueueInterval || 30,
     bgQueueIdx: state.bgQueueIdx || 0,
+    watermark: state.watermark,
     volume: state.bgAudio ? state.bgAudio.volume : 0.5
   });
 }
@@ -554,6 +573,42 @@ function showLogo(on) {
   renderTabInto('layers');
   notify(on ? '🖼 Логотип на екрані' : 'Логотип прибрано');
 }
+
+// Постійний водяний знак — на відміну від логотипа, не ховається при зміні
+// контенту (пісня/вірш/оголошення тощо), лишається поверх усього завжди,
+// поки не вимкнеш. ОКРЕМИЙ для кожного з 4 виходів — можна, наприклад, мати
+// водяний знак на трансляції й не мати на проекторі, або зовсім різний текст.
+// НЕ перебудовуємо тут всю панель (renderTabInto) — інакше текстове поле
+// втрачало б фокус прямо під час набору тексту (як і з повзунками раніше).
+function setWatermark(n, key, val) {
+  state.watermark[n][key] = val;
+  saveLayers();
+  if (state.watermark[n].on && window.electronAPI && window.electronAPI.showWatermark) {
+    window.electronAPI.showWatermark(state.watermark[n], OUT_KIND[n]);
+  }
+}
+// Для кнопок позиції — тут перебудова панелі безпечна (це клік, не набір
+// тексту), і потрібна, щоб підсвітити нову активну кнопку.
+function setWatermarkPosition(n, pos) {
+  setWatermark(n, 'position', pos);
+  renderTabInto('layers');
+}
+// Перемикає, налаштування ЯКОГО виходу зараз показано в панелі.
+function selectWatermarkOutput(n) {
+  state._watermarkEditN = n;
+  renderTabInto('layers');
+}
+function toggleWatermark(n, on) {
+  if (on && !(state.watermark[n].text || '').trim()) { notify('⚠️ Спершу введи текст водяного знаку'); return; }
+  state.watermark[n].on = !!on;
+  saveLayers();
+  if (window.electronAPI && window.electronAPI.showWatermark) {
+    window.electronAPI.showWatermark(on ? state.watermark[n] : { on: false }, OUT_KIND[n]);
+  }
+  renderTabInto('layers');
+  notify(on ? '🏷 ' + OUT_NAME[n] + ': водяний знак увімкнено' : '🏷 ' + OUT_NAME[n] + ': водяний знак вимкнено');
+}
+
 function toggleFreeze() {
   if (!window.electronAPI || !window.electronAPI.freezeOutput) return;
   state.frozen = !state.frozen;
@@ -2009,6 +2064,40 @@ function renderLayersTab() {
       </div>
       <div class="card-sub" style="margin-top:4px">Логотип — замість чорноти на паузі. Заморозка — застигла картинка, поки готуєш наступне.</div>
     </div>
+  </div>
+
+  <div class="card" style="border-color:var(--accent)">
+    <div class="card-title">🏷 Постійний водяний знак</div>
+    <div class="card-sub">На відміну від логотипа — НЕ ховається, коли показуєш пісню/вірш/оголошення. Лишається на екрані завжди, поки не вимкнеш. ОКРЕМИЙ для кожного виходу — можна мати різний текст чи взагалі вимкнути лише на одному.</div>
+    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">
+      ${[1, 2, 3, 4].map(n => `<button class="btn ${state._watermarkEditN === n ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="selectWatermarkOutput(${n})">
+        ${state.watermark[n].on ? '🔴 ' : ''}${esc(OUT_NAME[n])}
+      </button>`).join('')}
+    </div>
+    ${(function() {
+      const n = state._watermarkEditN || 1;
+      const wm = state.watermark[n];
+      return `
+    <input id="watermarkText" type="text" placeholder="Наприклад: 2017 СЛАВЯНСЬКА ЦЕРКОВЬ ТРОЇЦІ" value="${esc(wm.text || '')}"
+           oninput="setWatermark(${n}, 'text', this.value)"
+           style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:7px;color:var(--text);font-size:12px;outline:none;margin-top:10px">
+    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">
+      <button class="btn ${wm.position==='top-left'?'btn-primary':'btn-ghost'} btn-sm" onclick="setWatermarkPosition(${n}, 'top-left')">Зверху-зліва</button>
+      <button class="btn ${wm.position==='top-right'?'btn-primary':'btn-ghost'} btn-sm" onclick="setWatermarkPosition(${n}, 'top-right')">Зверху-справа</button>
+      <button class="btn ${wm.position==='bottom-left'?'btn-primary':'btn-ghost'} btn-sm" onclick="setWatermarkPosition(${n}, 'bottom-left')">Знизу-зліва</button>
+      <button class="btn ${wm.position==='bottom-right'?'btn-primary':'btn-ghost'} btn-sm" onclick="setWatermarkPosition(${n}, 'bottom-right')">Знизу-справа</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+      <div style="flex:1">
+        <div style="font-size:11px;color:var(--text2)">Розмір: <b id="watermarkSizeLbl">${wm.size || 16}</b>px</div>
+        <input type="range" min="10" max="48" value="${wm.size || 16}" oninput="document.getElementById('watermarkSizeLbl').textContent=this.value; setWatermark(${n}, 'size', parseInt(this.value,10))" style="width:100%">
+      </div>
+      <input type="color" value="${wm.color || '#ffffff'}" oninput="setWatermark(${n}, 'color', this.value)" style="width:36px;height:26px;border:none;background:none;cursor:pointer">
+    </div>
+    <button class="btn ${wm.on ? 'btn-primary' : 'btn-success'} btn-block" style="margin-top:8px" onclick="toggleWatermark(${n}, ${wm.on ? 'false' : 'true'})">
+      🏷 ${esc(OUT_NAME[n])}: ${wm.on ? 'Вимкнути водяний знак' : 'Увімкнути водяний знак'}
+    </button>`;
+    })()}
   </div>
 
   <div class="card" style="border-color:var(--gold)">

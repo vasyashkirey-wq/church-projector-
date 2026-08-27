@@ -379,6 +379,15 @@ var state = {
   bgVideo: null,     // фонове відео
   bgQueue: [], bgQueueInterval: 30, bgQueueIdx: 0, bgQueueRunning: false,  // черга з авто-ротацією
   logo: null,        // логотип церкви
+  // Постійний водяний знак (напр. назва церкви/рік) — ОКРЕМИЙ для кожного
+  // з 4 виходів (раніше було одне спільне налаштування на всі).
+  watermark: {
+    1: { text: '', on: false, position: 'top-left', size: 16, color: '#ffffff' },
+    2: { text: '', on: false, position: 'top-left', size: 16, color: '#ffffff' },
+    3: { text: '', on: false, position: 'top-left', size: 16, color: '#ffffff' },
+    4: { text: '', on: false, position: 'top-left', size: 16, color: '#ffffff' }
+  },
+  _watermarkEditN: 1,   // який вихід зараз редагується в панелі «Шари» (лише UI, не зберігається)
   frozen: false,
   alertCfg: { text: '', position: 'bottom', size: 34, seconds: 12, ticker: false },
   bgAudio: { playing: false, volume: 0.5, name: '' },

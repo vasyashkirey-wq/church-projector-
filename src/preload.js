@@ -97,6 +97,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setFitGroup: (slides, kind) => ipcRenderer.invoke('set-fit-group', { slides, kind }),
   setLockedSize: (size, kind) => ipcRenderer.invoke('set-locked-size', { size, kind: kind || null }),
   showLogo: (dataUrl, kind) => ipcRenderer.invoke('show-logo', { dataUrl, kind }),
+  showWatermark: (cfg, kind) => ipcRenderer.invoke('show-watermark', { cfg, kind }),
   freezeOutput: (on, kind) => ipcRenderer.invoke('freeze-output', { on, kind }),
   onLogoAutoHidden: (cb) => ipcRenderer.on('logo-auto-hidden', () => cb()),
   sendAlert: (cfg, kind) => ipcRenderer.invoke('send-alert', { cfg, kind }),
