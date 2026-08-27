@@ -1452,7 +1452,17 @@ function svcPrev() {
     const pi = state.service.idx - 1;
     state.service.idx = pi;
     const slides = svcSlides(state.service.items[pi]);
-    svcShowSlide(Math.max(0, slides.length - 1));
+    if (!slides.length) {
+      // Пункт без слайдів (молитва/проповідь/пожертви) — показуємо перехід
+      // ЯВНО (як і svcGoTo при русі вперед), інакше оператор тисне ◀ і не
+      // бачить жодної реакції — здається, що кнопка «не працює».
+      state.service.slideIdx = 0;
+      saveService();
+      renderTabInto('service');
+      notify('◀ ' + state.service.items[pi].title + ' (без слайдів)');
+      return;
+    }
+    svcShowSlide(slides.length - 1);
   }
 }
 

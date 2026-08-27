@@ -920,6 +920,13 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
               <div class="card-title" style="margin-top:14px">📄 Шаблон JSON для пісень</div>
               <button class="btn btn-ghost btn-sm" onclick="downloadSongsTemplate()">⬇ Завантажити шаблон</button>
             </div>
+
+            <div class="card">
+              <div class="card-title">🧹 Виправити биті переноси рядків</div>
+              <p class="text-muted" style="margin-bottom:8px;line-height:1.6">Деякі старі імпорти зберігають перенос рядка як буквальний текст «&lt;br&gt;» замість справжнього переносу — тоді на екрані видно сам напис «&lt;br&gt;». Ця кнопка знайде такі пісні й замінить «&lt;br&gt;» на нормальний перенос рядка.</p>
+              <button class="btn btn-ghost btn-sm" onclick="fixBrokenBrTags()">🧹 Перевірити й виправити пісні</button>
+              <div id="fixBrMsg" class="mt8"></div>
+            </div>
           </div>
 
         </div>
@@ -2376,7 +2383,16 @@ function toggleBothOutputs() {
 // ensureProjector — гарантує що хоча б один вихід відкритий перед відправкою контенту
 function ensureProjector(cb) {
   if (!window.electronAPI) { cb(); return; }
-  if (!projOpen && !streamOpen) {
+  // Перевіряємо РЕАЛЬНИЙ стан (state.outputStates) — джерело правди, яке
+  // правильно оновлюють кнопки «Відкрити»/«Закрити» у вкладці «Виходи».
+  // Раніше тут перевірялись старі, окремі прапорці projOpen/streamOpen, які
+  // НІКОЛИ не оновлювались тими кнопками (лишались false назавжди) — тому
+  // будь-яка дія показу контенту (гортання вірша, надсилання пісні тощо)
+  // бачила «обидва закриті» й тихо ПЕРЕВІДКРИВАЛА трансляцію одразу після
+  // того, як оператор свідомо її закрив.
+  var projReallyOpen = !!(state && state.outputStates && state.outputStates[1] && state.outputStates[1].open) || projOpen;
+  var streamReallyOpen = !!(state && state.outputStates && state.outputStates[2] && state.outputStates[2].open) || streamOpen;
+  if (!projReallyOpen && !streamReallyOpen) {
     window.electronAPI.openBothOutputs().then(function() {
       projOpen = true;
       streamOpen = true;
@@ -2515,7 +2531,13 @@ function sendToProjectorWin(text, ref) {
 
 function doSend(text, ref) {
   if (!window.electronAPI) return;
-  var htmlForProjector = text.replace(/\n/g,'<br>');
+  // esc(): текст завжди екрануємо перед показом у зал (так само, як hallText()
+  // робить для інших виходів) — інакше "<"/">" з імпортованих пісень (напр.
+  // буквальний "<br>" у джерелі замість справжнього переносу рядка) показався
+  // б як реальний HTML-тег на проекторі, а не як текст. Раніше цей шлях НЕ
+  // екранував — тому та сама пісня виглядала по-різному на проекторі й на
+  // виході з маршрутом "graphics" (де екранування вже було).
+  var htmlForProjector = escHtml(text).replace(/\n/g,'<br>');
   // Прев'ю малюємо ТИМ САМИМ рендерером, що й зал — інакше воно показувало
   // чорно-білий варіант незалежно від теми, і не збігалося з екраном.
   if (typeof slideHTMLFor === 'function') {
@@ -3880,6 +3902,38 @@ function exportSongsJSON() {
   downloadJSON(data, 'songs_export.json');
 }
 
+// Деякі старі імпорти зберігають перенос рядка як буквальний текст "<br>"
+// замість справжнього переносу (\n) — тоді на екрані видно сам напис "<br>".
+// Знаходить такі пісні й замінює "<br>"/"<br/>"/"<BR>" на нормальний перенос.
+function fixBrokenBrTags() {
+  var msg = document.getElementById('fixBrMsg');
+  var BR_RE = /<br\s*\/?>/gi;
+  var affectedSongs = 0, totalReplacements = 0;
+  currentSongs.forEach(function(s) {
+    var songTouched = false;
+    s.verses = s.verses.map(function(v) {
+      var matches = String(v).match(BR_RE);
+      if (matches && matches.length) {
+        totalReplacements += matches.length;
+        songTouched = true;
+        return v.replace(BR_RE, '\n');
+      }
+      return v;
+    });
+    if (songTouched) affectedSongs++;
+  });
+  if (!affectedSongs) {
+    msg.style.color = 'var(--green)';
+    msg.textContent = '✓ Усе гаразд — биті переноси рядків не знайдено';
+    return;
+  }
+  if (!confirm('Знайдено ' + affectedSongs + ' пісень із бітими перенесеннями (' + totalReplacements + ' місць). Виправити?')) return;
+  saveSongs(currentSongs);
+  if (typeof renderAllSongs === 'function') renderAllSongs();
+  msg.style.color = 'var(--green)';
+  msg.textContent = '✓ Виправлено пісень: ' + affectedSongs + ' (замінено ' + totalReplacements + ' місць)';
+}
+
 function downloadSongsTemplate() {
   var template = {
     library: "Назва бібліотеки",
@@ -4098,23 +4152,39 @@ function loadAnnouncements() {
   renderAnnounceList();
 }
 
+// id оголошення, яке зараз редагується (null = створюємо нове). Без цього
+// натискання ✏️ (loadAnnounce) заповнювало форму для редагування, але
+// «Зберегти» все одно ЗАВЖДИ пушило новий запис — редагування мовчки
+// створювало дублікат замість оновлення оригіналу.
+var annEditingId = null;
+
 function saveAnnounce() {
   var title = document.getElementById('annTitle').value.trim();
   var body = document.getElementById('annBody').value.trim();
   if (!title && !body) { return; }
-  announcements.push({
-    id: Date.now(),
-    title: title,
-    body: body,
-    datetime: document.getElementById('annDateTime').value.trim(),
-    style: document.getElementById('annStyle').value
-  });
+  var existing = (annEditingId != null) ? announcements.find(function(a){ return a.id === annEditingId; }) : null;
+  if (existing) {
+    // Редагування — оновлюємо на місці, а не створюємо дублікат.
+    existing.title = title;
+    existing.body = body;
+    existing.datetime = document.getElementById('annDateTime').value.trim();
+    existing.style = document.getElementById('annStyle').value;
+  } else {
+    announcements.push({
+      id: Date.now(),
+      title: title,
+      body: body,
+      datetime: document.getElementById('annDateTime').value.trim(),
+      style: document.getElementById('annStyle').value
+    });
+  }
   safeSet(ANN_KEY, JSON.stringify(announcements));
   renderAnnounceList();
   clearAnnounceForm();
 }
 
 function clearAnnounceForm() {
+  annEditingId = null;
   document.getElementById('annTitle').value = '';
   document.getElementById('annBody').value = '';
   document.getElementById('annDateTime').value = '';
@@ -4154,6 +4224,7 @@ function renderAnnounceList() {
 function loadAnnounce(id) {
   var a = announcements.find(function(x){ return x.id === id; });
   if (!a) return;
+  annEditingId = id;
   document.getElementById('annTitle').value = a.title || '';
   document.getElementById('annBody').value = a.body || '';
   document.getElementById('annDateTime').value = a.datetime || '';

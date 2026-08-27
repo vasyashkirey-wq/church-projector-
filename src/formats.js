@@ -864,7 +864,11 @@ function gddInject(html, data) {
     } catch(e) { console.error('GDD applyFields:', e); }
   }
   function __boot() {
-    __call('update', __data);
+    // update() за конвенцією GDD (як у Propovidnik.html) очікує ГОТОВИЙ
+    // РЯДОК JSON (сам робить JSON.parse) — якщо передати сюди об'єкт
+    // напряму, JSON.parse("[object Object]") впаде і update() мовчки
+    // нічого не зробить, навіть на першому показі графіки.
+    __call('update', JSON.stringify(__data));
     __applyFields(__data);
     __call('play');
   }
@@ -875,7 +879,7 @@ function gddInject(html, data) {
   window.addEventListener('message', function(e) {
     var m = e && e.data;
     if (!m || !m.__gdd) return;
-    if (m.__gdd === 'update') { __data = m.data || {}; __call('update', __data); __applyFields(__data); }
+    if (m.__gdd === 'update') { __data = m.data || {}; __call('update', JSON.stringify(__data)); __applyFields(__data); }
     else if (m.__gdd === 'play') __call('play');
     else if (m.__gdd === 'stop') { if (!__call('stop')) __call('play'); } /* деякі графіки ховаються повторним play() */
   });
