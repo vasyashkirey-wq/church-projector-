@@ -26,8 +26,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Remote phone control
   // Велике сховище файлами (синхронне — щоб працювало як localStorage)
   dataReadSync: (key) => ipcRenderer.sendSync('data-read-sync', key),
-  dataWriteSync: (key, content) => ipcRenderer.sendSync('data-write-sync', { key, content }),
-  dataDeleteSync: (key) => ipcRenderer.sendSync('data-delete-sync', key),
+  // ФІКС (підвисання на Windows з великою базою даних, напр. 3300+ пісень):
+  // раніше це були sendSync-виклики — рендерер БЛОКУВАВСЯ, доки головний
+  // процес синхронно писав на диск (кілька мегабайт кожне збереження).
+  // Тепер — fire-and-forget send() на окремому "async"-каналі; головний
+  // процес сам гарантує, що запис дійде до диска перед виходом (дивись
+  // pendingDataWrites/maybeFinishQuit у main.js). Назви методів лишили ті ж
+  // самі (dataWriteSync/dataDeleteSync) — рендерер-код їх не викликає інакше.
+  dataWriteSync: (key, content) => { ipcRenderer.send('data-write-async', { key, content }); return true; },
+  dataDeleteSync: (key) => { ipcRenderer.send('data-delete-async', key); return true; },
   openDataFolder: () => ipcRenderer.invoke('open-data-folder'),
 
   cacheAsset: (name, content) => ipcRenderer.invoke('cache-asset', { name, content }),

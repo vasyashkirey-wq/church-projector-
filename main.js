@@ -717,16 +717,34 @@ ipcMain.on('data-read-sync', (event, key) => {
     event.returnValue = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null;
   } catch (e) { event.returnValue = null; }
 });
-ipcMain.on('data-write-sync', (event, { key, content }) => {
+// ФІКС: раніше запис/видалення були fs.writeFileSync/unlinkSync на каналі
+// sendSync — це БЛОКУВАЛО весь застосунок (рендерер чекає, а сам головний
+// процес теж синхронно пише на диск, тож і вивід на проектор/трансляцію
+// теж завмирав на цей час). З базою 3300+ пісень кожне збереження — це
+// кілька мегабайт, тож підвисання були відчутні, особливо на Windows.
+// Тепер пишемо асинхронно (fs.writeFile) на окремому "async"-каналі, куди
+// рендерер лише «стукає» (send, не sendSync) — не чекаючи відповіді.
+ipcMain.on('data-write-async', (event, { key, content }) => {
   try {
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(dataFile(key), String(content == null ? '' : content), 'utf8');
-    event.returnValue = true;
-  } catch (e) { logError('data-write', e); event.returnValue = false; }
+    pendingDataWrites++;
+    fs.writeFile(dataFile(key), String(content == null ? '' : content), 'utf8', (err) => {
+      pendingDataWrites--;
+      if (err) logError('data-write-async', err);
+      maybeFinishQuit();
+    });
+  } catch (e) { logError('data-write-async', e); }
 });
-ipcMain.on('data-delete-sync', (event, key) => {
-  try { const f = dataFile(key); if (fs.existsSync(f)) fs.unlinkSync(f); event.returnValue = true; }
-  catch (e) { event.returnValue = false; }
+ipcMain.on('data-delete-async', (event, key) => {
+  try {
+    const f = dataFile(key);
+    pendingDataWrites++;
+    fs.unlink(f, (err) => {
+      pendingDataWrites--;
+      if (err && err.code !== 'ENOENT') logError('data-delete-async', err);
+      maybeFinishQuit();
+    });
+  } catch (e) { logError('data-delete-async', e); }
 });
 ipcMain.handle('open-data-folder', () => {
   try {
@@ -2282,7 +2300,28 @@ ipcMain.handle('ptz-discover', async () => {
 // APP INIT
 // ============================================================
 // Тимчасові HTML-оверлеї накопичувались у temp і ніколи не видалялись
-app.on('before-quit', () => {
+// Лічильник незавершених асинхронних записів на диск (data-write-async /
+// data-delete-async). Потрібен, щоб застосунок НЕ закрився раніше, ніж
+// запис справді дійде до диска — інакше зміни, зроблені прямо перед
+// закриттям (напр. імпорт перекладів і одразу вихід), могли б загубитись.
+let pendingDataWrites = 0;
+let quitPending = false;
+function maybeFinishQuit() {
+  if (quitPending && pendingDataWrites === 0) {
+    quitPending = false;
+    app.quit();
+  }
+}
+
+app.on('before-quit', (event) => {
+  if (pendingDataWrites > 0 && !quitPending) {
+    // Даємо записам шанс дописатись — але не тримаємо застосунок відкритим
+    // вічно, якщо диск раптом "завис" (запобіжний тайм-аут).
+    event.preventDefault();
+    quitPending = true;
+    setTimeout(() => { if (quitPending) { quitPending = false; app.quit(); } }, 3000);
+    return;
+  }
   // Прибираємо всі тимчасові оверлеї, які створили за сеанс
   overlayFiles.forEach(f => { try { fs.unlinkSync(f); } catch (e) {} });
   overlayFiles.length = 0;

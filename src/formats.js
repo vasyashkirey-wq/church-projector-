@@ -764,6 +764,7 @@ function fmtParseSongsJSON(text) {
   const songs = arr.map(s => ({
     title: s.title || s.name || '',
     author: s.author || '',
+    songbook: s.songbook || s.book || s.collection || '',
     verses: Array.isArray(s.verses) ? s.verses : String(s.verses || '').split(/\r?\n\s*\r?\n/)
   })).filter(s => s.title && s.verses.length);
   return songs.length ? songs : null;

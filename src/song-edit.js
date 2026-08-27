@@ -243,6 +243,44 @@ function renderSongBookOptions() {
   if (dl) dl.innerHTML = books.map(function(b) { return '<option value="' + escHtml(b) + '">'; }).join('');
 }
 
+// ---- Масовий вибір пісень (для видалення декількох за раз) ----
+var _selectedSongIds = {};       // { songId: true } — позначені пісні
+var _lastRenderedSongIds = [];   // id пісень у ПОТОЧНОМУ відфільтрованому списку
+
+function toggleSongSelect(id, checked) {
+  if (checked) _selectedSongIds[id] = true; else delete _selectedSongIds[id];
+  updateSongBulkDeleteUI();
+  var allBox = document.getElementById('songSelectAllBox');
+  if (allBox) allBox.checked = _lastRenderedSongIds.length > 0 && _lastRenderedSongIds.every(function(i){ return !!_selectedSongIds[i]; });
+}
+
+function toggleSelectAllSongs(checked) {
+  _lastRenderedSongIds.forEach(function(id) { if (checked) _selectedSongIds[id] = true; else delete _selectedSongIds[id]; });
+  renderAllSongs();
+}
+
+function updateSongBulkDeleteUI() {
+  var n = Object.keys(_selectedSongIds).length;
+  var btn = document.getElementById('songBulkDeleteBtn');
+  var cnt = document.getElementById('songSelectedCount');
+  if (cnt) cnt.textContent = n;
+  if (btn) btn.style.display = n ? '' : 'none';
+}
+
+function deleteSelectedSongs() {
+  var ids = Object.keys(_selectedSongIds).map(Number);
+  if (!ids.length) return;
+  if (!confirm('Видалити обрані пісні (' + ids.length + ')? Їх можна відновити з кошика.')) return;
+  ids.forEach(function(id) {
+    var toDel = currentSongs.filter(function(s){ return s.id === id; })[0];
+    if (toDel && typeof trashSong === 'function') trashSong(toDel);
+  });
+  currentSongs = currentSongs.filter(function(s){ return ids.indexOf(s.id) === -1; });
+  saveSongs(currentSongs);
+  _selectedSongIds = {};
+  renderAllSongs();
+}
+
 function renderAllSongs() {
   renderSongBookOptions();
   var container = document.getElementById('allSongsList');
@@ -258,6 +296,10 @@ function renderAllSongs() {
   // списку, але ніколи не проходила б цей фільтр.
   if (book) list = list.filter(function(s) { return (s.songbook || '').trim() === book; });
   if (q) list = list.filter(function(s){ return ((s.title || '') + ' ' + (s.author || '') + ' ' + (s.songbook || '')).toLowerCase().indexOf(q) !== -1; });
+  // Список id, видимих у ПОТОЧНОМУ (відфільтрованому) списку — для «Обрати всі»,
+  // щоб вона позначала лише те, що людина зараз бачить, а не всю базу.
+  _lastRenderedSongIds = list.map(function(s){ return s.id; });
+  updateSongBulkDeleteUI();
   if (!list.length) {
     var emptyMsg = (q || book) ? 'Нічого не знайдено' + (book ? ' у збірнику «' + escHtml(book) + '»' : '') + (q ? ' за «' + escHtml(q) + '»' : '') : 'Ще немає пісень';
     container.innerHTML = '<p style="color:var(--text2);font-size:12px;padding:8px 0">' + emptyMsg + '</p>';
@@ -267,11 +309,13 @@ function renderAllSongs() {
     var div = document.createElement('div');
     div.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;';
     var tc = songTagColor(s.id);
+    var checked = _selectedSongIds[s.id] ? ' checked' : '';
+    var checkbox = '<input type="checkbox"'+checked+' onchange="toggleSongSelect('+s.id+', this.checked)" style="flex:0 0 auto;cursor:pointer">';
     var dot = '<span style="width:10px;height:10px;border-radius:50%;flex:0 0 auto;background:' + (tc || 'transparent') + ';border:1px solid ' + (tc || 'var(--border)') + '"></span>';
     var cur = (state.songTags && state.songTags[s.id]) || '';
     var tagSel = '<select onchange="setSongTag(' + s.id + ', this.value)" title="Категорія пісні" style="font-size:11px;background:var(--panel2);border:1px solid var(--border);border-radius:5px;color:var(--text);padding:2px 4px;max-width:74px">' +
       SONG_TAGS.map(function(t){ return '<option value="' + t.key + '"' + (cur === t.key ? ' selected' : '') + '>' + t.label + '</option>'; }).join('') + '</select>';
-    div.innerHTML = dot + '<span style="flex:1;font-size:13px"><b>' + escHtml(s.title) + '</b>' +
+    div.innerHTML = checkbox + dot + '<span style="flex:1;font-size:13px"><b>' + escHtml(s.title) + '</b>' +
       (s.author ? ' <span style="color:var(--text2);font-size:11px">— ' + escHtml(s.author) + '</span>' : '') +
       (s.songbook ? ' <span style="color:var(--accent);font-size:11px">📚 ' + escHtml(s.songbook) + '</span>' : '') +
       '<br><span style="color:var(--text2);font-size:11px">' + s.verses.length + ' куплет(ів)</span></span>' +
