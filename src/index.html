@@ -3093,6 +3093,30 @@ function drawQRLogo(canvas, cb) {
 
 // Єдиний генератор QR у canvas (використовується і прев'ю, і виводом)
 function buildQRCanvas(text, sz, cb) {
+  // Спершу пробуємо офлайн-генерацію (npm qrcode, у головному процесі) —
+  // працює з першого запуску, без жодної залежності від інтернету/CDN.
+  if (window.electronAPI && window.electronAPI.generateQRCode) {
+    window.electronAPI.generateQRCode(text, sz).then(function(res) {
+      if (res && res.ok && res.dataUrl) {
+        var canvas = document.createElement('canvas');
+        canvas.width = sz; canvas.height = sz;
+        var ctx = canvas.getContext('2d');
+        var img = new Image();
+        img.onload = function() { ctx.drawImage(img, 0, 0, sz, sz); drawQRLogo(canvas, cb); };
+        img.onerror = function() { _buildQRCanvasViaCDN(text, sz, cb); };   // на випадок биту dataUrl
+        img.src = res.dataUrl;
+      } else {
+        _buildQRCanvasViaCDN(text, sz, cb);   // офлайн-шлях недоступний — старий CDN-фолбек
+      }
+    }).catch(function() { _buildQRCanvasViaCDN(text, sz, cb); });
+    return;
+  }
+  _buildQRCanvasViaCDN(text, sz, cb);
+}
+
+// Старий спосіб (CDN-кешована qrcodejs) — лишається як резерв, якщо офлайн-шлях
+// раптом недоступний (напр. дуже стара збірка preload.js без нового IPC-каналу).
+function _buildQRCanvasViaCDN(text, sz, cb) {
   loadQRLib(function() {
     var tmp = document.createElement('div');
     tmp.style.display = 'none';
@@ -3193,7 +3217,11 @@ function renderQRPresets() {
   qrPresets.forEach(function(p, i) {
     var div = document.createElement('div');
     div.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;';
-    div.innerHTML = '<span style="flex:1;font-size:12px"><b>'+(p.label||p.text.substring(0,30))+'</b><br><span style="color:var(--text2);font-size:11px">'+escHtml(p.text.substring(0,40))+'</span></span>' +
+    // Список поділяється зі старим ключем QR_KEY і з новою вкладкою «QR-екран»
+    // (режим «Моє фото QR» зберігає туди запис БЕЗ .text, лише .photo) — без
+    // цієї перевірки p.text.substring() тут падав на кожному такому записі.
+    var sub = (p.mode === 'photo') ? '📷 фото' : escHtml((p.text || '').substring(0, 40));
+    div.innerHTML = '<span style="flex:1;font-size:12px"><b>'+escHtml(p.label || (p.text || '').substring(0,30) || 'QR')+'</b><br><span style="color:var(--text2);font-size:11px">'+sub+'</span></span>' +
       '<button class="btn btn-ghost btn-sm" onclick="loadQRPreset('+i+')">▶</button>' +
       '<button class="btn btn-danger btn-sm" onclick="deleteQRPreset('+i+')">✕</button>';
     el.appendChild(div);
@@ -3201,8 +3229,11 @@ function renderQRPresets() {
 }
 
 function loadQRPreset(i) {
-  document.getElementById('qrInput').value = qrPresets[i].text;
-  document.getElementById('qrLabel').value = qrPresets[i].label || '';
+  var p = qrPresets[i];
+  if (!p) return;
+  if (p.mode === 'photo') { notify('⚠️ Це QR із фото — відкрий у вкладці «📲 QR-екран»'); return; }
+  document.getElementById('qrInput').value = p.text || '';
+  document.getElementById('qrLabel').value = p.label || '';
   generateQR();
 }
 

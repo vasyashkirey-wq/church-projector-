@@ -2224,12 +2224,17 @@ function renderLayersTab() {
 // ============================================================
 function qrState() {
   if (!state.qrScreen) {
-    state.qrScreen = loadJSON(STORAGE_KEYS.live + '_qrscreen') || {
+    const defaults = {
       mode: 'logo',
       photo: null,            // готове фото QR (показуємо як є, без генерації)
       photoFit: 'contain',    // contain = увесь QR видно | cover = на весь екран
+      photoScale: 100,        // % розміру фото в режимі "contain" — керування розміром картинки
       title: 'Підтримати служіння',
       subtitle: 'Скануй камерою телефона',
+      titleSize: 72,          // px — розмір заголовка окремо від тексту нижче
+      subtitleSize: 32,       // px — розмір підпису
+      titleColor: '#ffffff',
+      subtitleColor: '#c8a84b',
       single: { text: '', label: 'Пожертви' },
       banner: null,                 // dataURL фото
       bannerCorner: 'br',           // кут QR: br/bl/tr/tl
@@ -2240,6 +2245,11 @@ function qrState() {
       ],
       target: 1
     };
+    // Мердж (не заміна) — щоб у вже збережених станів (без нових полів
+    // titleSize/subtitleSize/photoScale) ці поля отримали значення за
+    // замовчуванням, а не лишились undefined.
+    const saved = loadJSON(STORAGE_KEYS.live + '_qrscreen');
+    state.qrScreen = saved ? Object.assign({}, defaults, saved) : defaults;
   }
   return state.qrScreen;
 }
@@ -2250,6 +2260,18 @@ function setQr(key, val) {
   saveQrScreen();
   renderTabInto('qrscreen');
   updateQrPreview();
+}
+// Легша версія для повзунків розміру: НЕ перебудовує всю панель (renderTabInto)
+// на кожен рух повзунка — інакше DOM-елемент повзунка знищувався б і
+// перестворювався прямо під час перетягування, ламаючи взаємодію мишею.
+// Оновлює лише прев'ю й підпис числа поруч із повзунком.
+function setQrSize(key, val, labelId) {
+  const q = qrState();
+  q[key] = val;
+  saveQrScreen();
+  updateQrPreview();
+  const lbl = document.getElementById(labelId);
+  if (lbl) lbl.textContent = val;
 }
 function setQrItem(i, key, val) {
   const q = qrState();
@@ -2319,13 +2341,14 @@ function composeQrScreen(cb) {
     g.fillStyle = grad; g.fillRect(0, 0, W, H);
     const img = new Image();
     img.onload = () => {
+      const scale = (q.photoScale || 100) / 100;
       if (q.photoFit === 'cover') {
-        const r = Math.max(W / img.width, H / img.height);
+        const r = Math.max(W / img.width, H / img.height) * scale;
         const w = img.width * r, h = img.height * r;
         g.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
       } else {
         // contain — увесь QR видно, з полями (щоб код точно зчитувався)
-        const r = Math.min((W * 0.7) / img.width, (H * 0.8) / img.height);
+        const r = Math.min((W * 0.7) / img.width, (H * 0.8) / img.height) * scale;
         const w = img.width * r, h = img.height * r;
         // біла підкладка під QR — камери читають надійніше
         const pad = 40;
@@ -2333,9 +2356,9 @@ function composeQrScreen(cb) {
         roundRect(g, (W - w) / 2 - pad, (H - h) / 2 - pad + 30, w + pad*2, h + pad*2, 20); g.fill();
         g.drawImage(img, (W - w) / 2, (H - h) / 2 + 30, w, h);
       }
-      // Заголовок зверху
-      if (q.title) { g.textAlign = 'center'; g.fillStyle = '#fff'; g.font = '700 72px Georgia, serif'; g.fillText(q.title, W/2, 110); }
-      if (q.subtitle) { g.fillStyle = '#c8a84b'; g.font = '32px Georgia, serif'; g.fillText(q.subtitle, W/2, 165); }
+      // Заголовок зверху — розмір і колір окремо для заголовка й підпису
+      if (q.title) { g.textAlign = 'center'; g.fillStyle = q.titleColor || '#ffffff'; g.font = '700 ' + (q.titleSize || 72) + 'px Georgia, serif'; g.fillText(q.title, W/2, 110); }
+      if (q.subtitle) { g.fillStyle = q.subtitleColor || '#c8a84b'; g.font = (q.subtitleSize || 32) + 'px Georgia, serif'; g.fillText(q.subtitle, W/2, 165); }
       cb(canvas);
     };
     img.onerror = () => cb(canvas);
@@ -2345,10 +2368,10 @@ function composeQrScreen(cb) {
 
   function drawTitle() {
     if (q.mode === 'banner') return;
-    g.textAlign = 'center'; g.fillStyle = '#ffffff';
+    g.textAlign = 'center'; g.fillStyle = q.titleColor || '#ffffff';
     g.font = '700 76px Georgia, serif';
     if (q.title) g.fillText(q.title, W / 2, 150);
-    g.fillStyle = '#c8a84b'; g.font = '34px Georgia, serif';
+    g.fillStyle = q.subtitleColor || '#c8a84b'; g.font = '34px Georgia, serif';
     if (q.subtitle) g.fillText(q.subtitle, W / 2, 210);
   }
 
@@ -2494,16 +2517,35 @@ function qrList() {
 }
 function qrScreenSave() {
   const q = qrState();
+  if (q.mode === 'photo') {
+    // Режим фото: посилання тут немає взагалі — джерело правди це саме
+    // завантажене фото. Раніше ця гілка була відсутня, тому збереження
+    // завжди вимагало «посилання», якого в цьому режимі просто нема.
+    if (!q.photo) { notify('⚠️ Спершу завантаж фото QR'); return; }
+    const label = q.title || 'QR-фото';
+    const list = qrList();
+    list.push({
+      mode: 'photo', label: label,
+      photo: q.photo, photoFit: q.photoFit, photoScale: q.photoScale,
+      title: q.title, subtitle: q.subtitle,
+      titleSize: q.titleSize, subtitleSize: q.subtitleSize,
+      target: q.target
+    });
+    if (typeof safeSet === 'function') safeSet(QR_KEY, JSON.stringify(list));
+    else localStorage.setItem(QR_KEY, JSON.stringify(list));
+    renderTabInto('qrscreen');
+    notify('⭐ Збережено з фото: ' + label);
+    return;
+  }
   const text = q.mode === 'multi'
     ? ((q.items || []).find(i => i.text && i.text.trim()) || {}).text
     : (q.single || {}).text;
   if (!text || !text.trim()) { notify('⚠️ Спершу введи посилання'); return; }
   const label = (q.single && q.single.label) || q.title || text.slice(0, 30);
   const list = qrList();
-  list.push({ text: text.trim(), label: label });
+  list.push({ mode: q.mode, text: text.trim(), label: label });
   if (typeof safeSet === 'function') safeSet(QR_KEY, JSON.stringify(list));
   else localStorage.setItem(QR_KEY, JSON.stringify(list));
-  if (typeof renderQRPresets === 'function') { try { renderQRPresets(); } catch (e) {} }
   renderTabInto('qrscreen');
   notify('⭐ Збережено: ' + label);
 }
@@ -2511,12 +2553,27 @@ function qrScreenLoad(i) {
   const p = qrList()[i];
   if (!p) return;
   const q = qrState();
-  if (q.mode === 'multi' || q.mode === 'photo') q.mode = 'simple';
-  q.single = { text: p.text, label: p.label || '' };
+  if (p.mode === 'photo' && p.photo) {
+    // Відновлюємо ТОЧНО те, що було збережено — фото, підписи й розміри —
+    // а не лише текст (раніше тут насильно перемикало на режим 'simple',
+    // тому збережене фото ніколи не показувалось знову).
+    q.mode = 'photo';
+    q.photo = p.photo;
+    q.photoFit = p.photoFit || 'contain';
+    q.photoScale = p.photoScale || 100;
+    q.title = p.title || '';
+    q.subtitle = p.subtitle || '';
+    q.titleSize = p.titleSize || 72;
+    q.subtitleSize = p.subtitleSize || 32;
+    if (p.target) q.target = p.target;
+  } else {
+    if (q.mode === 'multi' || q.mode === 'photo') q.mode = 'simple';
+    q.single = { text: p.text, label: p.label || '' };
+  }
   saveQrScreen();
   renderTabInto('qrscreen');
   updateQrPreview();
-  notify('▶ ' + (p.label || p.text.slice(0, 24)));
+  notify('▶ ' + (p.label || (p.text || '').slice(0, 24)));
 }
 function qrScreenDelete(i) {
   const list = qrList();
@@ -2524,7 +2581,6 @@ function qrScreenDelete(i) {
   list.splice(i, 1);
   if (typeof safeSet === 'function') safeSet(QR_KEY, JSON.stringify(list));
   else localStorage.setItem(QR_KEY, JSON.stringify(list));
-  if (typeof renderQRPresets === 'function') { try { renderQRPresets(); } catch (e) {} }
   renderTabInto('qrscreen');
 }
 
@@ -2580,6 +2636,24 @@ function renderQrScreenTab() {
                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px">
         <input type="text" value="${esc(q.subtitle)}" oninput="setQr('subtitle',this.value)" placeholder="Підзаголовок"
                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px;margin-top:4px">
+
+        <div style="font-size:12px;color:var(--text2);margin-top:10px;font-weight:600">Розмір</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:4px">Розмір фото/QR: <span id="qrPhotoScaleLbl">${q.photoScale || 100}</span>%</div>
+        <input type="range" min="50" max="150" value="${q.photoScale || 100}" oninput="setQrSize('photoScale',parseInt(this.value,10),'qrPhotoScaleLbl')" style="width:100%">
+        <div style="font-size:11px;color:var(--text2);margin-top:4px">Розмір заголовка: <span id="qrTitleSizeLbl">${q.titleSize || 72}</span>px</div>
+        <input type="range" min="20" max="140" value="${q.titleSize || 72}" oninput="setQrSize('titleSize',parseInt(this.value,10),'qrTitleSizeLbl')" style="width:100%">
+        <div style="font-size:11px;color:var(--text2);margin-top:4px">Розмір підпису: <span id="qrSubtitleSizeLbl">${q.subtitleSize || 32}</span>px</div>
+        <input type="range" min="12" max="80" value="${q.subtitleSize || 32}" oninput="setQrSize('subtitleSize',parseInt(this.value,10),'qrSubtitleSizeLbl')" style="width:100%">
+
+        <div style="font-size:12px;color:var(--text2);margin-top:10px;font-weight:600">Колір тексту</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <span style="font-size:11px;color:var(--text2);width:70px">Заголовок</span>
+          <input type="color" value="${q.titleColor || '#ffffff'}" oninput="setQr('titleColor', this.value)" style="width:36px;height:26px;border:none;background:none;cursor:pointer">
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <span style="font-size:11px;color:var(--text2);width:70px">Підпис</span>
+          <input type="color" value="${q.subtitleColor || '#c8a84b'}" oninput="setQr('subtitleColor', this.value)" style="width:36px;height:26px;border:none;background:none;cursor:pointer">
+        </div>
       ` : q.mode !== 'banner' ? `
         <div style="font-size:12px;color:var(--text2);margin-top:10px;font-weight:600">Заголовок екрана</div>
         <input type="text" value="${esc(q.title)}" oninput="setQr('title',this.value)"
@@ -2627,8 +2701,8 @@ function renderQrScreenTab() {
           <div style="font-size:12px;color:var(--text2);margin-bottom:4px">⭐ Збережені QR</div>
           ${list.map((p, i) => `<div style="display:flex;align-items:center;gap:5px;padding:4px 0;border-bottom:1px solid var(--border)">
               <span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                <b>${esc(p.label || p.text.slice(0, 28))}</b>
-                <span style="color:var(--text2);font-size:11px"> ${esc(p.text.slice(0, 34))}</span>
+                <b>${esc(p.label || (p.text || '').slice(0, 28) || 'QR')}</b>
+                ${p.mode === 'photo' ? '<span style="color:var(--text2);font-size:11px"> 📷 фото</span>' : `<span style="color:var(--text2);font-size:11px"> ${esc((p.text || '').slice(0, 34))}</span>`}
               </span>
               <button class="btn btn-ghost btn-sm" onclick="qrScreenLoad(${i})">▶</button>
               <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="qrScreenDelete(${i})">✕</button>

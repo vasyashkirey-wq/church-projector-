@@ -73,6 +73,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // GDD-графіка (H2R / CasparCG): update / play / stop
   gddCommand: (kind, action, data) => ipcRenderer.invoke('gdd-command', { kind, action, data }),
+  generateQRCode: (text, size) => ipcRenderer.invoke('qrcode-generate', { text, size }),
 
   // Станції: хост ↔ клієнти
   startSyncServer: (pin) => ipcRenderer.invoke('start-sync-server', { pin }),

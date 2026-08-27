@@ -381,6 +381,29 @@ ipcMain.handle('convert-media', async (event, { filePath }) => {
   }
 });
 
+// ============================================================
+// QR-КОД (npm qrcode) — генерується в головному процесі й повертається
+// як data URI. Чистий JS, без компіляції, тож завжди доступний. На відміну
+// від попереднього способу (браузерна qrcodejs з CDN), працює ПОВНІСТЮ
+// офлайн одразу з першого запуску — не треба жодного разу мати інтернет,
+// щоб закешувати скрипт.
+// ============================================================
+ipcMain.handle('qrcode-generate', async (event, { text, size }) => {
+  try {
+    if (!text) return { ok: false, error: 'Порожній текст' };
+    let QRCodeLib;
+    try { QRCodeLib = require('qrcode'); }
+    catch (e) { return { ok: false, error: 'Немає qrcode — виконай `npm install`' }; }
+    const dataUrl = await QRCodeLib.toDataURL(text, {
+      width: size || 300,
+      margin: 1,
+      errorCorrectionLevel: 'H',   // висока корекція — витримує логотип по центру
+      color: { dark: '#000000', light: '#ffffff' }
+    });
+    return { ok: true, dataUrl };
+  } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+});
+
 // Читає файл із диска й повертає data URI (для картинок, які треба покласти на
 // canvas: file:// «отруює» canvas, а data URI — ні). Використовується після
 // конвертації HEIC → JPG для логотипа й картинок слайдів.
