@@ -41,12 +41,36 @@ const read = f => fs.readFileSync(path.join(ROOT, f), 'utf8').replace(/\r\n/g, '
 const SRC = {
   index: read('src/index.html'),
   extras: (function(){
-    // extras.js розбито на кілька частин extras-N.js — читаємо всі по порядку
+    // Автоматично читає УСІ .js-файли в src/, крім тих, що вже мають власний
+    // запис нижче (preload.js, projector-preload.js). Так розбиття коду на
+    // нові файли (напр. qr.js, bible-translations.js) НЕ вимагає щоразу
+    // правити цей список вручну — новий файл підхоплюється сам.
     var fs2 = require('fs');
+    var exclude = new Set(['preload.js', 'projector-preload.js', 'formats.js']);
     var parts = fs2.readdirSync(path.join(ROOT, 'src'))
-      .filter(function(f){ return /^(extras.*|ptz-ui|atem-ui|slide-ui|song-edit|song-display|bible)\.js$/.test(f); })
+      .filter(function(f){ return /\.js$/.test(f) && !exclude.has(f); })
       .sort();
-    return parts.map(function(f){ return read('src/' + f); }).join('\n');
+    var out = parts.map(function(f){ return read('src/' + f); }).join('\n');
+
+    // src/tabs/**/*.js і src/core/**/*.js — куди від 26.08.2026 поетапно
+    // виносяться вкладки/спільні функції з extras-*.js та index.html
+    // (див. план модуляризації). Функції звідти мають бути видимі тут
+    // так само, як і з самих extras-N.js — інакше перевірки на кшталт
+    // "функції зі списку ініціалізації існують" хибно падатимуть на
+    // кожному наступному етапі виносу коду.
+    function readTreeJs(dir) {
+      var abs = path.join(ROOT, dir);
+      if (!fs2.existsSync(abs)) return '';
+      var chunks = [];
+      fs2.readdirSync(abs, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).forEach(function(entry) {
+        var rel = dir + '/' + entry.name;
+        if (entry.isDirectory()) chunks.push(readTreeJs(rel));
+        else if (/\.js$/.test(entry.name)) chunks.push(read(rel));
+      });
+      return chunks.join('\n');
+    }
+    out += '\n' + readTreeJs('src/tabs') + '\n' + readTreeJs('src/core');
+    return out;
   })(),
   formats: read('src/formats.js'),
   main: read('main.js'),
@@ -63,6 +87,7 @@ const SRC = {
   projPreload: read('src/projector-preload.js'),
   projHtml: read('src/projector.html'),
   preload: read('src/preload.js'),
+  announce: read('src/announce.js'),
 };
 
 let checks = 0, failures = 0;
@@ -102,7 +127,7 @@ head('Ізоляція ранньої ініціалізації (safeInit)');
     ok('safeInit огортає виклик у try/catch (одна помилка не рве решту)');
   else bad('safeInit не ловить виняток — захист не працює');
 
-  ['searchSongs', 'initHotkeys', 'renderQRPresets', 'loadBibleTranslations'].forEach(name => {
+  ['searchSongs', 'initHotkeys', 'loadBibleTranslations'].forEach(name => {
     if (new RegExp('safeInit\\(' + name + ',').test(ix))
       ok(name + ' викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
     else bad(name + ' викликається напряму — його падіння й далі зупинить усе, що йде після нього (напр. ANN_STYLES)');
@@ -115,14 +140,18 @@ head('Ізоляція ранньої ініціалізації (safeInit)');
   // properties of undefined (reading 'dark')") навіть ПІСЛЯ того, як усі 5
   // відомих ризикованих викликів загорнули в safeInit — бо сам ANN_STYLES
   // стояв ПІСЛЯ них у файлі, і будь-який ще не знайдений ранній виняток
-  // так само лишав його undefined. Тепер ANN_STYLES визначається одразу
-  // ПІСЛЯ самої функції safeInit і ПЕРЕД усіма ризикованими викликами —
-  // йому вже нічого не може завадити отримати значення.
-  const idxSafeInitEnd = ix.indexOf('function safeInit(fn, label)');
-  const idxAnn = idxSafeInitEnd > -1 ? ix.indexOf('var ANN_STYLES = {', idxSafeInitEnd) : -1;
-  const idxFirstSafeInitCall = ix.indexOf("safeInit(function buildBookAliasList()");
-  if (idxSafeInitEnd > -1 && idxAnn > -1 && idxFirstSafeInitCall > -1 && idxAnn < idxFirstSafeInitCall)
-    ok('ANN_STYLES визначається одразу після safeInit і ДО всіх ризикованих викликів — недосяжний для каскадного падіння');
+  // так само лишав його undefined.
+  //
+  // Тепер ANN_STYLES/ANN_KEY/announcements живуть в announce.js — ОКРЕМОМУ
+  // <script>-тегу. Це фактично надійніший захист, ніж просто "стояти рано
+  // в тому самому файлі": крах БУДЬ-ДЕ в іншому файлі більше не може
+  // завадити announce.js виконатись — кожен <script>-тег є незалежним
+  // контекстом виконання, тож перевіряємо саме це.
+  const hasAnnScriptTag = /<script src="announce\.js">/.test(ix);
+  const annFirstFnIdx = SRC.announce.search(/^function\s/m);
+  const idxAnnStylesNew = SRC.announce.indexOf('var ANN_STYLES = {');
+  if (hasAnnScriptTag && idxAnnStylesNew > -1 && annFirstFnIdx > -1 && idxAnnStylesNew < annFirstFnIdx)
+    ok('ANN_STYLES визначається на самому початку announce.js — окремого <script>-тегу, незалежного від крашів деінде');
   else bad('ANN_STYLES більше не стоїть перед усіма ризикованими викликами — каскадне падіння знову може лишити його undefined');
 
   // ANN_KEY/announcements — той самий каскад, друга половина: користувач
@@ -130,29 +159,36 @@ head('Ізоляція ранньої ініціалізації (safeInit)');
   // крах, бо announcements (var announcements = []) так само стояв ПІСЛЯ
   // ризикованих викликів — announcements.push(...) у saveAnnounce() падав
   // без жодного захисту, коли announcements лишався undefined.
-  const idxAnnKey = idxSafeInitEnd > -1 ? ix.indexOf('var ANN_KEY = ', idxSafeInitEnd) : -1;
-  const idxAnnArr = idxSafeInitEnd > -1 ? ix.indexOf('var announcements = [];', idxSafeInitEnd) : -1;
-  if (idxAnnKey > -1 && idxAnnArr > -1 && idxFirstSafeInitCall > -1 && idxAnnKey < idxFirstSafeInitCall && idxAnnArr < idxFirstSafeInitCall)
-    ok('ANN_KEY/announcements визначаються одразу після safeInit і ДО всіх ризикованих викликів');
+  const idxAnnKeyNew = SRC.announce.indexOf('var ANN_KEY = ');
+  const idxAnnArrNew = SRC.announce.indexOf('var announcements = [];');
+  if (hasAnnScriptTag && idxAnnKeyNew > -1 && idxAnnArrNew > -1 && annFirstFnIdx > -1 && idxAnnKeyNew < annFirstFnIdx && idxAnnArrNew < annFirstFnIdx)
+    ok('ANN_KEY/announcements визначаються на самому початку announce.js, перед будь-якою функцією');
   else bad('ANN_KEY/announcements більше не стоять перед усіма ризикованими викликами — "Зберегти" оголошення знову може впасти');
 
   // Решта прямих (не загорнутих у safeInit) top-level викликів, знайдених
   // у тому ж скрипті при повторному аудиті — кожен з них теж міг обірвати
   // все, що йде після нього, якщо електронний preload не дав очікуваний метод.
-  ['loadAnnouncements', 'initBgLibrary', 'refreshDisplays'].forEach(name => {
-    if (new RegExp('safeInit\\(' + name + ',').test(ix))
-      ok(name + '() викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
-    else bad(name + '() викликається напряму — його падіння й далі зупинить усе, що йде після нього');
-  });
+  // loadAnnouncements тепер в announce.js, initBgLibrary — в background.js
+  // (обидва в SRC.extras), refreshDisplays досі в index.html.
+  if (/safeInit\(loadAnnouncements,/.test(SRC.extras))
+    ok('loadAnnouncements() викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+  else bad('loadAnnouncements() викликається напряму — його падіння й далі зупинить усе, що йде після нього');
+  if (/safeInit\(initBgLibrary,/.test(SRC.extras))
+    ok('initBgLibrary() викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+  else bad('initBgLibrary() викликається напряму — його падіння й далі зупинить усе, що йде після нього');
+  if (new RegExp('safeInit\\(refreshDisplays,').test(SRC.extras))
+    ok('refreshDisplays() викликається через safeInit (ізольовано від сусідніх ініціалізаторів)');
+  else bad('refreshDisplays() викликається напряму — його падіння й далі зупинить усе, що йде після нього');
   // indexOf замість regex із буквальним \n: на Windows-раннері git checkout
   // конвертує LF → CRLF, і regex із голим \n (без \r?) там мовчки не збігався,
   // хоча код був повністю коректний — це й завалило build-win на v2.2.3.
-  const idxGetOutputConfigWrap = ix.indexOf("safeInit(function() {\n  if (window.electronAPI) {\n    window.electronAPI.getOutputConfig");
+  const idxGetOutputConfigWrap = SRC.extras.indexOf("safeInit(function() {\n  if (window.electronAPI) {\n    window.electronAPI.getOutputConfig");
   if (idxGetOutputConfigWrap > -1)
     ok('getOutputConfig/onDisplaysChanged загорнуто в safeInit');
   else bad('getOutputConfig/onDisplaysChanged викликається напряму поза safeInit');
-  const idxOnRemoteCmdCall = ix.indexOf('window.electronAPI.onRemoteCommand');
-  const idxOnRemoteCmdWrap = ix.lastIndexOf('safeInit(function() {', idxOnRemoteCmdCall > -1 ? idxOnRemoteCmdCall : 0);
+  const idxGetThemeLabel = SRC.extras.indexOf("'onRemoteCommand/getTheme'");
+  const idxOnRemoteCmdCall = idxGetThemeLabel > -1 ? SRC.extras.lastIndexOf('window.electronAPI.onRemoteCommand', idxGetThemeLabel) : -1;
+  const idxOnRemoteCmdWrap = SRC.extras.lastIndexOf('safeInit(function() {', idxOnRemoteCmdCall > -1 ? idxOnRemoteCmdCall : 0);
   if (idxOnRemoteCmdCall > -1 && idxOnRemoteCmdWrap > -1 && (idxOnRemoteCmdCall - idxOnRemoteCmdWrap) < 200)
     ok('onRemoteCommand/getTheme загорнуто в safeInit');
   else bad('onRemoteCommand/getTheme викликається напряму поза safeInit');
@@ -160,7 +196,7 @@ head('Ізоляція ранньої ініціалізації (safeInit)');
   // Конкретний незахищений DOM-доступ, знайдений у цьому ревʼю: якщо
   // #bibleTranslationsList відсутній у DOM (напр. вкладка ще не змонтована),
   // .innerHTML на null кидав TypeError і рвав усе, що йде далі в скрипті.
-  const renderBody = fnBody(ix, 'renderBibleTranslationsList');
+  const renderBody = fnBody(SRC.extras, 'renderBibleTranslationsList');
   if (/if \(!el\) return;/.test(renderBody))
     ok('renderBibleTranslationsList має null-guard на #bibleTranslationsList');
   else bad('РЕГРЕСІЯ: renderBibleTranslationsList знову без null-guard — відсутній елемент знову зупинить увесь подальший скрипт');
@@ -452,10 +488,152 @@ head('Захист від відомих регресій');
   else bad('кнопки пісні гортають сирі куплети повз аранжування (регресія)');
 })();
 
+// ── Аудит 4.1: навігаційна безпека вікон, що показують контент ───────────
+head('Аудит 4.1: output/Stage/identify-вікна не можуть навігувати/відкривати нові вікна');
+(function () {
+  const m = SRC.main;
+  // safeInit(loadDisplayToggles) мусить стояти ПІСЛЯ усіх top-level const/var,
+  // від яких залежить тіло функції (loadJSON, STORAGE_KEYS, state) — перший
+  // фікс переносив виклик лише за loadJSON і цього виявилось замало (впало
+  // вдруге на «Cannot access 'STORAGE_KEYS' before initialization»). Тепер
+  // виклик — у САМОМУ КІНЦІ файлу, тож перевіряємо саме це напряму, а не
+  // ганяємось за черговою залежністю: він має бути ПІСЛЯ loadJSON, STORAGE_KEYS
+  // і var state, і НЕ мати більше нічого істотного після себе в файлі.
+  const ex1 = read('src/extras-1.js');
+  const iFn = ex1.indexOf('function loadDisplayToggles');
+  const iConst = ex1.indexOf('const loadJSON = key =>');
+  const iStorageKeys = ex1.indexOf('const STORAGE_KEYS = {');
+  const iState = ex1.indexOf('var state = {');
+  const iSafe = ex1.lastIndexOf("safeInit(loadDisplayToggles, 'loadDisplayToggles')");
+  if ([iFn, iConst, iStorageKeys, iState, iSafe].every(x => x >= 0) &&
+      iFn < iConst && iConst < iStorageKeys && iStorageKeys < iState && iState < iSafe &&
+      (ex1.length - iSafe) < 250)   // майже останній рядок файлу — не десь посередині
+    ok('loadDisplayToggles: safeInit викликається ПІСЛЯ loadJSON, STORAGE_KEYS і var state (без TDZ)');
+  else bad('РЕГРЕСІЯ TDZ: safeInit(loadDisplayToggles) знову стоїть до однієї зі своїх залежностей — впаде при старті');
+})();
+
+head('Аварійна панель: не потрапляє в containing-block-пастку backdrop-filter/.topbar');
+(function () {
+  const ix = SRC.index;
+  // #emergencyPanel мусить бути ПОЗА .topbar (і взагалі поза .app) — інакше
+  // в темі modern-ui, де .topbar має backdrop-filter, position:fixed
+  // прив'язується до .topbar (не до екрана), і стек-контекст панелі
+  // опиняється замкнений там, малюючись РАНІШЕ за .content — панель
+  // технічно відкрита, але фізично намальована ПІД основним контентом.
+  const iPanel = ix.indexOf('id="emergencyPanel"');
+  const iBtn = ix.indexOf('id="emergencyBtn"');
+  if (iBtn >= 0 && iPanel > iBtn && /<\/div>\s*\n<\/div>\s*\n\s*\n<!-- Аварійна панель/.test(ix.slice(iBtn, iPanel + 50)))
+    ok('#emergencyPanel винесена за межі .topbar/.app (не потрапляє в пастку backdrop-filter)');
+  else bad('РЕГРЕСІЯ: #emergencyPanel знову всередині .topbar — «modern-ui» знову намалює її позаду контенту');
+  if (/z-index:2000000000/.test(ix))
+    ok('#emergencyPanel: z-index із великим запасом понад усі відомі overlay (100000/99999)');
+  else bad('#emergencyPanel: z-index знову замалий — конфлікт із pv2Prompt/банером помилки можливий');
+  if (/backdrop-filter:blur\(18px\) saturate\(1\.6\)/.test(ix))
+    ok('(довідково) підтверджено: modern-ui .topbar і досі має backdrop-filter — тому винесення панелі досі критичне');
+})();
+
+head('Аудит 4.1: output/Stage/identify-вікна не можуть навігувати/відкривати нові вікна');
+(function () {
+  const m = SRC.main;
+  if (/function hardenContentWindow\(win\)/.test(m) &&
+      /will-navigate.*=>\s*\{\s*e\.preventDefault\(\);\s*\}\)/.test(m) &&
+      /setWindowOpenHandler\(\(\) => \(\{ action: 'deny' \}\)\)/.test(m))
+    ok('hardenContentWindow(win) визначена: блокує will-navigate і window.open');
+  else bad('ЗНИКЛА hardenContentWindow — output-вікна знову можуть навігувати на сторонній URL');
+  // Порядок у файлі підтверджує, що виклик стоїть у функції СТВОРЕННЯ
+  // output-вікна (до loadFile), а не десь у непов'язаному місці.
+  if (/const win = new BrowserWindow\(\{[\s\S]{0,1200}hardenContentWindow\(win\);[\s\S]{0,400}outputWins\[kind\] = win;/.test(m))
+    ok('output-вікно (projector/stream/out3/out4) захищене hardenContentWindow');
+  else bad('output-вікно НЕ викликає hardenContentWindow — регресія безпеки 4.1');
+  if (/hardenContentWindow\(win\);\s*\n\s*stageWin = win;/.test(m))
+    ok('Stage-вікно захищене hardenContentWindow');
+  else bad('Stage-вікно НЕ викликає hardenContentWindow — регресія безпеки 4.1');
+  if (/hardenContentWindow\(w\);\s*\n\s*w\.setAlwaysOnTop\(true, 'screen-saver'\);\s*\n\s*identifyWins\.push/.test(m))
+    ok('identify-вікна (номери моніторів) захищені hardenContentWindow');
+  else bad('identify-вікна НЕ захищені hardenContentWindow — регресія безпеки 4.1');
+  // webviewTag: true прибрано з output-вікна — підтверджений мертвий код
+  // (у projector.html немає жодного <webview>, лише звичайний <iframe>)
+  if (!/webviewTag:\s*true/.test(m))
+    ok('webviewTag:true прибрано з output-вікна (підтверджено невживаним)');
+  else bad('webviewTag:true повернувся — або справді знадобився (перевір), або регресія прибирання');
+})();
+
+// ── Свіжі фічі: «На вихід / Прибрати з» (Біблія/QR) + маркер кінця пісні ──
+head('Нові фічі: адресний вивід/прибирання (Біблія, QR) + *** в кінці пісні');
+(function () {
+  const ix = SRC.index, ex = SRC.extras;
+
+  // Біблія — картка «Обраний вірш»: один динамічний рядок кнопок (той самий
+  // патерн, що вже в H2R-титрах: кнопка сама підсвічується 🔴, коли вірш
+  // там в ефірі; «✕ Прибрати» показується лише для активних виходів) —
+  // замість двох статичних рядів по 4 кнопки завжди.
+  if (/function clearBibleFrom\(n\)/.test(ex))
+    ok('clearBibleFrom(n) визначена (bible.js)');
+  else bad('ЗНИКЛА clearBibleFrom(n) — кнопки «Прибрати з» у Біблії поламаються');
+  if (/id="bibleOutputRow"/.test(ix))
+    ok('Біблія: контейнер #bibleOutputRow на місці (динамічний рядок кнопок)');
+  else bad('ЗНИК #bibleOutputRow — нема куди рендерити кнопки виходів у Біблії');
+  if (/function renderBibleOutputRow\(\)/.test(ex) &&
+      /onclick="sendBibleWithGraphics\(' \+ n \+ '\)"/.test(ex) &&
+      /onclick="clearBibleFrom\(' \+ n \+ '\)"/.test(ex))
+    ok('renderBibleOutputRow(): кнопки На вихід/Прибрати генеруються по всіх n через sendBibleWithGraphics/clearBibleFrom');
+  else bad('renderBibleOutputRow зламана або не викликає sendBibleWithGraphics/clearBibleFrom для кожного n');
+  if (/function bibleGraphicsTo[\s\S]{0,4200}renderBibleOutputRow\(\);/.test(ex))
+    ok('bibleGraphicsTo викликає renderBibleOutputRow() після надсилання — кнопки оновлюються');
+  else bad('bibleGraphicsTo НЕ оновлює renderBibleOutputRow — кнопки лишаться застарілими після надсилання');
+  if (/pv2ClearOutput\(n\);[\s\S]{0,600}renderBibleOutputRow\(\);/.test(ex))
+    ok('clearBibleFrom використовує канонічний pv2ClearOutput(n) (як H2R), не саморобний порожній HTML');
+  else bad('clearBibleFrom не використовує pv2ClearOutput — регресія на саморобний блок-HTML');
+  if (/function renderMultiTransCard[\s\S]{0,50}\{[\s\S]{0,3200}onclick="clearBibleFrom\(\$\{n\}\)"/.test(ex))
+    ok('Біблія: картка «Кілька перекладів» теж має «Прибрати з» на кожен активний вихід');
+  else bad('Картка «Кілька перекладів» без «Прибрати з» — лишився старий пробіл');
+
+  // clearBibleFrom має знімати вихід і з lastLiveGraphicsTargets, і з
+  // state.multiLive — інакше гортання стрілками поверне вірш назад
+  // одразу після того, як його прибрали.
+  if (/function clearBibleFrom[\s\S]{0,600}lastLiveGraphicsTargets = lastLiveGraphicsTargets\.filter/.test(ex) &&
+      /function clearBibleFrom[\s\S]{0,900}state\.multiLive = state\.multiLive\.filter/.test(ex))
+    ok('clearBibleFrom знімає вихід і з lastLiveGraphicsTargets, і з state.multiLive');
+  else bad('clearBibleFrom не чистить весь стан гортання — вірш може «повернутись» стрілками');
+
+  // QR-екран: той самий динамічний патерн — контейнер + рендер-функція
+  // замість двох статичних рядів по 4 кнопки.
+  if (/function sendQrScreenTo\(n\)/.test(ex) && /function clearQrScreenFrom\(n\)/.test(ex))
+    ok('sendQrScreenTo(n) / clearQrScreenFrom(n) визначені (extras-3.js)');
+  else bad('ЗНИКЛИ sendQrScreenTo/clearQrScreenFrom — вкладка QR-екран без адресних кнопок');
+  if (/id="qrOutputRow"/.test(ex))
+    ok('QR-екран: контейнер #qrOutputRow на місці (динамічний рядок кнопок)');
+  else bad('ЗНИК #qrOutputRow — нема куди рендерити кнопки виходів у QR-екрані');
+  if (/var qrLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(ex) && /function renderQrOutputRow\(\)/.test(ex))
+    ok('QR-екран: qrLiveMap + renderQrOutputRow() — кнопки самі підсвічуються 🔴, коли QR в ефірі');
+  else bad('QR-екран: зникло відстеження живих виходів (qrLiveMap/renderQrOutputRow)');
+  if (/qrLiveMap\[n\] = true;\s*\n\s*renderQrOutputRow\(\);/.test(ex) && /pv2ClearOutput\(n\);\s*\n\s*qrLiveMap\[n\] = false;/.test(ex))
+    ok('QR-екран: sendQrScreenTo/clearQrScreenFrom оновлюють qrLiveMap і використовують pv2ClearOutput');
+  else bad('QR-екран: sendQrScreenTo/clearQrScreenFrom не оновлюють qrLiveMap коректно');
+  // Старий хоткей «qr-send» має й далі працювати (sendQrScreen лишилась як обгортка)
+  if (/function sendQrScreen\(\) \{ sendQrScreenTo\(qrState\(\)\.target \|\| 1\); \}/.test(ex))
+    ok('sendQrScreen() (хоткей «qr-send») делегує в sendQrScreenTo — сумісність збережена');
+  else bad('sendQrScreen() більше не делегує в sendQrScreenTo — хоткей «qr-send» зламається');
+
+  // sendMultiToOutput має сам перемкнути маршрут виходу, якщо він ще
+  // «Дзеркало» — інакше звичайний broadcast мовчки перезапише переклади
+  if (/function sendMultiToOutput[\s\S]{0,1200}outputRoutes\[n\] \|\| 'mirror'\) === 'mirror'[\s\S]{0,120}setOutputRoute\(n, 'text'\)/.test(ex))
+    ok('sendMultiToOutput сам вимикає «Дзеркало» на виході — захист від перезапису broadcast’ом');
+  else bad('sendMultiToOutput НЕ перемикає маршрут — «Кілька перекладів» знову можна мовчки перезаписати');
+
+  // Пісня: *** у кінці — і без аранжування (sendToProjector), і з ним (songStep)
+  if (/selectedVerseIdx === selectedSong\.verses\.length - 1\) text \+= '\\n\\n\*\*\*'/.test(ex))
+    ok('Пісня без аранжування: *** додається на останньому куплеті (sendToProjector)');
+  else bad('Пісня без аранжування: маркер кінця *** зник із sendToProjector');
+  if (/\(i === slides\.length - 1\) \? \(sl\.text \+ '\\n\\n\*\*\*'\) : sl\.text/.test(ex))
+    ok('Пісня з аранжуванням: *** додається на останньому слайді (songStep)');
+  else bad('Пісня з аранжуванням: маркер кінця *** зник із songStep');
+})();
+
 // ── Гарячі клавіші F1/F2/F5/Esc: справді відкривають/закривають ──────────────
 head('Гарячі клавіші F1/F2/F5/Esc');
 (function () {
-  const ix = SRC.index, pl = SRC.preload;
+  const ix = SRC.index, pl = SRC.preload, ex = SRC.extras;
 
   // F1/F2 мають бути ТУМБЛЕРАМИ (перевіряють поточний стан projOpen/streamOpen),
   // а не просто "завжди відкрити" — інакше друге натискання нічого не закриє.
@@ -474,9 +652,14 @@ head('Гарячі клавіші F1/F2/F5/Esc');
   if (/function toggleBothOutputs/.test(ix) && /function closeBothOutputs/.test(ix))
     ok('F5 має toggleBothOutputs + closeBothOutputs (симетрично з F1/F2)');
   else bad('F5 досі лише ВІДКРИВАЄ (openBothOutputs) — повторне натискання не закриє виходи');
-  const swCase = (ix.match(/case 'F5':[\s\S]{0,160}/) || [''])[0];
-  if (/toggleBothOutputs\(\)/.test(swCase)) ok('обробник клавіші F5 викликає toggleBothOutputs (не тільки-відкрити)');
-  else bad('обробник клавіші F5 усе ще викликає openBothOutputs напряму — регресія');
+  // F1-F5 (відкрити/закрити виходи) перенесено з захардкодженого switch у
+  // index.html в перепризначуване меню «Клавіші» (state.hotkeys, диспетчер
+  // у extras-4.js) — на macOS ці клавіші за замовчуванням займає сама
+  // система (яскравість/Mission Control/Launchpad), тож оператору треба
+  // мати змогу призначити інші.
+  const swCase = (ex.match(/case 'toggle-both':[\s\S]{0,160}/) || [''])[0];
+  if (/toggleBothOutputs\(\)/.test(swCase)) ok('дія toggle-both викликає toggleBothOutputs (перепризначувана, не захардкоджений F5)');
+  else bad('дія toggle-both не викликає toggleBothOutputs — регресія');
 
   // Якщо вікно проектора/трансляції закрили НЕ через F1/F2 (хрестик вікна,
   // Alt+F4), а projOpen/streamOpen лишились true — наступне F1 спробує
@@ -579,9 +762,13 @@ head('PDF/слайди: гортання лишається на PDF, не "пе
     ok('глобальні гарячі клавіші (extras-4.js): PDF перевіряється до фолбеку на вибрану пісню');
   else bad('глобальні гарячі клавіші: фолбек на вибрану пісню може перехопити команду раніше за PDF');
 
-  // Резервний onRemoteCommand у самому index.html (діє лише якщо extras.js
-  // не завантажився) — та сама діра, знайдена повторним аудитом окремо.
-  const fallbackRemote = (ix.match(/Далі — запасний варіант[\s\S]{0,700}/) || [''])[0];
+  // Резервний onRemoteCommand (діє лише якщо основний обробник десь вище не
+  // спрацював) — перенесено разом з рештою блоку в theme-remote.js. Шукаємо
+  // за унікальною міткою 'onRemoteCommand/getTheme', а не за загальною фразою
+  // «Далі — запасний варіант» — вона повторюється і в НЕпов'язаному
+  // фолбеку гарячих клавіш плану служби, який лишився в index.html.
+  const idxGetThemeLabel2 = SRC.extras.indexOf("'onRemoteCommand/getTheme'");
+  const fallbackRemote = idxGetThemeLabel2 > -1 ? SRC.extras.slice(Math.max(0, idxGetThemeLabel2 - 900), idxGetThemeLabel2) : '';
   if (slideBeforeSongFallback(fallbackRemote, /cmd\.action === 'next-verse'\)\s*\{\s*nextVerse/))
     ok('index.html: резервний onRemoteCommand теж перевіряє PDF до фолбеку на nextVerse');
   else bad('index.html: резервний onRemoteCommand (extras.js не завантажився) не захищений від PDF-регресії');
@@ -661,7 +848,7 @@ head('Імпорт файлів');
   else bad('CONV_AUDIO не розширено');
   if (/accept="video\/\*[^"]*\.mkv[^"]*\.mts/.test(allsrc)) ok('accept відео перелічує розширення (.mkv/.mts вибираються на Windows)');
   else bad('accept відео лише video/* → .mkv/.mts не вибрати на Windows');
-  if (/function uploadBgImages[\s\S]{0,200}loadImageAsDataURL/.test(ix)) ok('фони конвертують HEIC/TIFF (loadImageAsDataURL)');
+  if (/function uploadBgImages[\s\S]{0,200}loadImageAsDataURL/.test(SRC.extras)) ok('фони конвертують HEIC/TIFF (loadImageAsDataURL)');
   else bad('uploadBgImages не конвертує (raw FileReader) — HEIC-фон не імпортується');
   if (/SUPPORTED_MEDIA[^\n]*'avif'/.test(ix)) ok('avif у нативних форматах');
   else bad('avif не додано в SUPPORTED_MEDIA');
@@ -729,7 +916,10 @@ head('Нові функції');
   if (/songbook\s*:\s*songbook/.test(addBody) || /ex\.songbook\s*=\s*songbook/.test(addBody))
     ok('addNewSong зберігає збірник (і при створенні, і при оновленні)');
   else bad('addNewSong не зберігає поле збірника');
-  const renderAllBody = fnBody(seBody, 'renderAllSongs');
+  // Після пакетування (rafDebounce) справжня реалізація живе в
+  // _renderAllSongsNow, а renderAllSongs — тонка обгортка. Перевіряємо
+  // саме реалізацію, інакше тест дивився б у порожню обгортку.
+  const renderAllBody = fnBody(seBody, '_renderAllSongsNow') || fnBody(seBody, 'renderAllSongs');
   if (/s\.songbook \|\| ''\)\.trim\(\) === book/.test(renderAllBody))
     ok('renderAllSongs фільтрує список за обраним збірником (з trim, узгоджено з renderSongBookOptions)');
   else bad('renderAllSongs не фільтрує за збірником, або забув .trim() — можлива розбіжність із випадаючим списком');
@@ -900,7 +1090,7 @@ head('Ініціалізація (loaders)');
 head('Біблія (розширення)');
 (function () {
   const ix = SRC.index, f = SRC.formats;
-  if (/function getVerseRangeText/.test(ix) && /function currentBibleRef/.test(ix))
+  if (/function getVerseRangeText/.test(SRC.extras) && /function currentBibleRef/.test(SRC.extras))
     ok('кілька віршів у діапазоні (getVerseRangeText + currentBibleRef)');
   else bad('немає підтримки діапазону віршів');
   if (/['"]tob['"]/.test(f) && /['"]2ma['"]/.test(f))
@@ -915,10 +1105,10 @@ head('Тема / оформлення');
   if (/setTheme\s*:/.test(pl) && /ipcMain\.handle\(\s*'set-theme'/.test(m) && /ipcRenderer\.on\('set-theme'[\s\S]{0,80}applyTheme/.test(pp))
     ok('тема доходить до проектора (preload → main → projector applyTheme)');
   else bad('ланцюг застосування теми розірвано');
-  if (/function onThemeChange/.test(ix) && /function applyThemeToProjector/.test(ix) && /electronAPI\.setTheme\(theme\)/.test(ix))
+  if (/function onThemeChange/.test(SRC.extras) && /function applyThemeToProjector/.test(SRC.extras) && /electronAPI\.setTheme\(theme\)/.test(SRC.extras))
     ok('вкладка «Тема»: onThemeChange + «Застосувати до проектора» на місці');
   else bad('вкладка «Тема» неповна');
-  if (/function toggleThemeLive/.test(ix) && /function themeLivePush/.test(ix) && /themeLivePush\(\)/.test(ix))
+  if (/function toggleThemeLive/.test(SRC.extras) && /function themeLivePush/.test(SRC.extras) && /themeLivePush\(\)/.test(SRC.extras))
     ok('перемикач «застосовувати одразу» (live-тема)');
   else bad('немає live-перемикача теми');
   if (/body\.modern-ui/.test(ix) && /function toggleModernUI/.test(ix) && /church_modern_ui/.test(ix) && !/modern-ui/.test(SRC.projPreload || ''))
@@ -1047,16 +1237,290 @@ head('Виправлення багів');
   if (/body\.light-theme\s*\{[\s\S]{0,80}--bg/.test(ix) && /body\.light-theme \.badge\.accent/.test(ix) && /body\.light-theme input\[type="range"\]/.test(ix))
     ok('світла тема доведена до куточків (badge/повзунки/скролбар/drop/скло)');
   else bad('світла тема неповна');
-  if (/function onThemeChange\(\)\s*\{\s*if \(!theme/.test(ix) && /if \(!document\.getElementById\('themeBgType'\)\) return/.test(ix))
+  if (/function onThemeChange\(\)\s*\{\s*if \(!theme/.test(SRC.extras) && /if \(!document\.getElementById\('themeBgType'\)\) return/.test(SRC.extras))
     ok('тема захищена від undefined (немає крашу «Cannot set bgType»)');
   else bad('onThemeChange не захищено від undefined theme');
-  if (/if \(!announcements \|\| !announcements\.length\)/.test(ix) && /if \(!userBgs \|\| !userBgs\.length\)/.test(ix))
+  if (/if \(!announcements \|\| !announcements\.length\)/.test(SRC.extras) && /if \(!userBgs \|\| !userBgs\.length\)/.test(SRC.extras))
     ok("порожні оголошення/фони не крашать (.length захищено від undefined)");
   else bad("порожні масиви можуть крашити на .length");
+  if (/var annEditingId = null;/.test(SRC.extras) && /existing\.title = title;/.test(SRC.extras) && /annEditingId = id;/.test(SRC.extras))
+    ok("БАГ (редагування оголошення створює дублікат): saveAnnounce тепер оновлює на місці");
+  else bad("редагування оголошення може мовчки створити дублікат замість оновлення");
+  if (/const filtered = saved\.filter\(i => song\.verses\[i\] != null\);\s*\n\s*if \(filtered\.length\) return filtered;/.test(SRC.extras) && /delete state\.orders\[key\];/.test(SRC.extras))
+    ok("БАГ (відредагована пісня → 0 слайдів): застарілий порядок відкидається, не показує порожньо");
+  else bad("БАГ НЕ перенесено: редагування пісні може дати 0 слайдів");
+  if (/function ensureChorusEach/.test(SRC.extras) && /if \(Array\.isArray\(state\.orders\[songKey\(song\)\]\) && state\.orders\[songKey\(song\)\]\.length\) return;/.test(SRC.extras))
+    ok("БАГ (ручний drag мовчки скидається): ensureChorusEach не чіпає вже збережений порядок");
+  else bad("БАГ НЕ перенесено: вибір пісні може стерти ручне перетягування чипів");
+  if (/notify\('◀ ' \+ state\.service\.items\[pi\]\.title \+ ' \(без слайдів\)'\)/.test(SRC.extras))
+    ok("БАГ (◀ Назад тихо застрягає на пункті без слайдів): svcPrev тепер сповіщає явно");
+  else bad("БАГ НЕ перенесено: svcPrev може мовчки застрягати на пункті без слайдів");
+  if (/const wasCurrent = \(i === state\.service\.idx\);/.test(SRC.extras) && /if \(wasCurrent\) state\.service\.slideIdx = 0;/.test(SRC.extras))
+    ok("БАГ (видалення активного пункту лишає застарілий slideIdx): svcRemove скидає його");
+  else bad("БАГ НЕ перенесено: видалення активного пункту може лишити застарілий slideIdx");
+  if (/id="songBookFilterMain"/.test(ix) && /var selMain = document\.getElementById\('songBookFilterMain'\);/.test(SRC.extras) && /if \(book\) pool = pool\.filter/.test(ix))
+    ok("фільтр збірників біля головного пошуку пісень (вкладка «🎵 Пісні»)");
+  else bad("немає фільтра збірників біля головного пошуку пісень");
+  if (/songbook: s\.songbook \|\| ''/.test(ix) && /library: 'Церква Прага'/.test(ix))
+    ok("БАГ (експорт пісень губить збірники): songbook тепер потрапляє у файл");
+  else bad("БАГ НЕ виправлено: експорт пісень все ще губить збірники");
+  if (/songbook: s\.songbook \|\| s\.book \|\| s\.collection \|\| ''/.test(SRC.formats))
+    ok("БАГ (імпорт JSON губить збірники): fmtParseSongsJSON тепер зберігає songbook");
+  else bad("БАГ НЕ виправлено: імпорт JSON все ще губить збірники в парсері");
+  if (/existing\.songbook = d\.imported\.songbook \|\| '';/.test(ix) && /songbook: s\.songbook \|\| '', verses: s\.verses \}\);\s*\n\s*added\+\+;/.test(ix))
+    ok("БАГ (повторний імпорт губив збірник): нові пісні копіюють songbook, заміна дублікату теж");
+  else bad("БАГ НЕ виправлено: songbook може губитись при імпорті нових/дублікатів");
+  if (/function _finishSongImport/.test(ix) && /function _applyImportDecisions/.test(ix) && /function _decideAllImportDup/.test(ix) && /overlay\.id = 'importDupOverlay';/.test(ix))
+    ok("захист від дублікатів пісень при імпорті: попередження з вибором замінити/пропустити (по одній або всі)");
+  else bad("немає інтерактивного попередження про дублікати при імпорті");
+  if (/function toggleSongSelect/.test(SRC.extras) && /function toggleSelectAllSongs/.test(SRC.extras) && /function deleteSelectedSongs/.test(SRC.extras) && /id="songBulkDeleteBtn"/.test(ix))
+    ok("масове видалення пісень: позначити вручну або всі одразу");
+  else bad("немає масового видалення пісень із позначенням вручну/всіх");
+  if (/ipcMain\.handle\(\s*'qrcode-generate'/.test(SRC.main) && /require\('qrcode'\)/.test(SRC.main) && /window\.electronAPI\.generateQRCode\(text, sz\)/.test(SRC.extras) && /function _buildQRCanvasViaCDN/.test(SRC.extras))
+    ok("QR-коди генеруються офлайн (npm qrcode) з фолбеком на CDN, якщо недоступно");
+  else bad("немає офлайн-генерації QR або фолбек на CDN зламано");
+  if (/require\('chokidar'\)/.test(SRC.main) && /ipcMain\.handle\(\s*'pick-watch-folder'/.test(SRC.main) && /function _classifySongsForImport/.test(ix) && /function _importParsedSongsFromWatcher/.test(ix) && /id="watchFolderPath"/.test(ix))
+    ok("тека спостереження: автовиявлення нових файлів пісень із тим самим захистом від дублікатів");
+  else bad("немає теки спостереження або вона не використовує захист від дублікатів");
+  if (/function svcRefreshSongPick/.test(SRC.extras) && /function svcRenderSongBookFilter/.test(SRC.extras) && /id="svcSongSearch"/.test(SRC.extras) && /id="svcSongBookFilter"/.test(SRC.extras) && /svcRenderSongBookFilter\(\)/.test(SRC.extras))
+    ok("план служіння: пошук пісень + видимі збірники в селекторі додавання");
+  else bad("немає пошуку/видимих збірників у плані служіння");
+  if (/var htmlForProjector = escHtml\(text\)\.replace\(\/\\n\/g,'<br>'\);/.test(ix))
+    ok("БАГ (проектор не екранував текст, на відміну від трансляції): doSend тепер безпечний і послідовний");
+  else bad("БАГ НЕ виправлено: doSend може показати необроблений HTML на проекторі");
+  if (/function fixBrokenBrTags/.test(ix) && /BR_RE = /.test(ix) && /onclick="fixBrokenBrTags\(\)"/.test(ix))
+    ok("🧹 масове виправлення битих <br> у текстах пісень (старі імпорти)");
+  else bad("немає утиліти виправлення битих <br> у піснях");
+  if (/function getAnnounceHTML\(ann, outputN\)/.test(SRC.extras) && /function sendAnnounceToOutputs/.test(SRC.extras) && /sendHTMLToOutputN\(1, getAnnounceHTML\(ann, 1\)/.test(SRC.extras) && /sendHTMLToOutputN\(2, getAnnounceHTML\(ann, 2\)/.test(SRC.extras) && /function setAnnounceSize/.test(SRC.extras))
+    ok("оголошення: окремий розмір тексту для проектора й трансляції");
+  else bad("немає окремого розміру тексту оголошень для проектора/трансляції");
+  if (/if \(q\.mode === 'photo'\) \{\s*\n\s*\/\/ Режим фото: посилання тут немає взагалі/.test(SRC.extras) && /p\.mode === 'photo' && p\.photo/.test(SRC.extras) && /photoScale: 100,/.test(SRC.extras) && /titleSize: 72,/.test(SRC.extras) && /function setQrSize/.test(SRC.extras))
+    ok("QR-екран (справжня вкладка): збереження/відновлення фото-режиму + окремі розміри фото/заголовка/підпису");
+  else bad("QR-екран: режим фото не зберігається/не відновлюється, або немає окремих розмірів");
+  if (/function sendBibleGraphicsMulti/.test(SRC.extras) && /onclick="sendBibleGraphicsMulti\(\[1,2\]\)"/.test(ix) && /onclick="sendBibleGraphicsMulti\(\[1,2,3,4\]\)"/.test(ix) && !/onclick="sendBibleToProjector\(\)"/.test(ix))
+    ok("Біблія: кнопка «На проектор» замінена на «2 виводи» + окрема кнопка «Усі 4 виводи»");
+  else bad("Біблія: немає кнопки на 2 виводи або на всі 4 виводи");
+  if (/const rows = \[1, 2, 3, 4\]\.map/.test(SRC.extras) && /onclick="sendMultiToOutput\(\$\{n\}\)"/.test(SRC.extras))
+    ok("Кілька перекладів: картка тепер на всі 4 виходи (Проектор/Трансляція/Вихід 3/Вихід 4), кожен своєю карткою з власною кнопкою показу");
+  else bad("Кілька перекладів: картка досі лише на 2 виходи");
+  if (ix.indexOf('id="annPreviewBox"') > 0 && ix.indexOf('id="annPreviewBox"') < ix.indexOf('🔄 Автоматичне слайд-шоу'))
+    ok("Оголошення: «Попередній перегляд» стоїть над «Автоматичне слайд-шоу» (права колонка)");
+  else bad("Оголошення: попередній перегляд не над слайд-шоу");
+  if (/var projReallyOpen = !!\(state && state\.outputStates/.test(ix) && /var streamReallyOpen = !!\(state && state\.outputStates/.test(ix))
+    ok("БАГ (трансляція сама перевідкривається після «Закрити»): ensureProjector тепер бачить реальний стан виходів");
+  else bad("ensureProjector може тихо перевідкрити закритий вихід (застарілі projOpen/streamOpen)");
+  if (/function sendHTMLOverlayTo/.test(SRC.extras) && /function clearHTMLOverlayOutput/.test(SRC.extras) && /var htmlLiveMap = \{ 1: null, 2: null, 3: null, 4: null \};/.test(SRC.extras) && /htmlLiveMap\[n\] > i\) htmlLiveMap\[n\]--;/.test(SRC.extras))
+    ok("HTML-графіка: показ на конкретний вихід + позначка «в ефірі» + вимкнення окремого виходу (index-safe)");
+  else bad("HTML-графіка: немає показу на конкретний вихід або позначки в ефірі");
+  if (/htmlLiveMap\[n\] === i\) \{ window\.electronAPI\.gddCommand\(OUT_KIND\[n\], 'update', data\); sentAny = true; \}/.test(SRC.extras) && /function gddStop\(i\)/.test(SRC.extras) && /if \(htmlLiveMap\[n\] === i\) \{ clearHTMLOverlayOutput\(n\); cleared = true; \}/.test(SRC.extras))
+    ok("БАГ (редагування GDD-поля зачіпало ВСІ 4 виходи одразу): gddLiveUpdate/gddStop тепер цілять лише в потрібний вихід");
+  else bad("GDD-графіка: редагування/прибирання поля може зачепити чужі виходи");
+  if (!/Стабільний розмір шрифту/.test((function(){
+        // текст функції renderTypoTab без тіла — перевіряємо саму сирцеву функцію
+        var m = SRC.extras.match(/function renderTypoTab\(\) \{[\s\S]*?\n\}\n/);
+        return m ? m[0] : '';
+      })()) && /id="songFontSizeLabel"/.test(ix) && /function syncSongFontSizeDisplay/.test(SRC.extras))
+    ok("Розмір шрифту пісні: картку перенесено з «Оформлення» у вкладку «Пісні»");
+  else bad("Картка розміру шрифту не на своєму новому місці (Оформлення/Пісні)");
+  if (ix.indexOf('⚡ Швидке посилання') > 0 && ix.indexOf('⚡ Швидке посилання') < ix.indexOf('>Глава і вірш<') && ix.indexOf('>Глава і вірш<') < ix.indexOf('📖 Переклад'))
+    ok("Біблія: «Глава і вірш» стоїть одразу під «Швидке посилання»");
+  else bad("Біблія: «Глава і вірш» не на новому місці під «Швидке посилання»");
+  if (/id="servicePlanEmbed"/.test(ix) && /function renderServicePlanEmbed/.test(SRC.extras) && /host\.innerHTML = renderServiceTab\(\);/.test(SRC.extras) && !/\[id: 'g_service'.*'service', '📅 План служби'/.test(SRC.extras.replace(/\n/g,' ')))
+    ok("План служби перенесено з вкладки «Служба» у вкладку «Пісні» (та сама renderServiceTab)");
+  else bad("План служби не вбудовано у вкладку «Пісні» або досі є окремою кнопкою в «Служба»");
+  if (/function _uniqueDupTitle/.test(ix) && /onclick="_decideImportDup\(' \+ i \+ ', \\'both\\'\)"/.test(ix) && /else if \(action === 'both'\) \{/.test(ix) && /kept\+\+;/.test(ix))
+    ok("Захист від дублікатів пісень: додано третій варіант «Зберегти обидва»");
+  else bad("Немає варіанту «Зберегти обидва» у діалозі дублікатів пісень");
+  if (/titleColor: '#ffffff',/.test(SRC.extras) && /subtitleColor: '#c8a84b',/.test(SRC.extras) && /g\.fillStyle = q\.titleColor \|\| '#ffffff';/.test(SRC.extras) && /oninput="setQr\('titleColor', this\.value\)"/.test(SRC.extras))
+    ok("QR-екран: додано вибір кольору тексту (заголовок/підпис)");
+  else bad("QR-екран: немає вибору кольору тексту");
+  if (/ipcMain\.handle\('show-watermark'/.test(SRC.main) && /showWatermark:/.test(SRC.preload) &&
+      /ipcRenderer\.on\('watermark', \(event, cfg\) => \{/.test(SRC.projPreload) &&
+      /function setWatermark\(n, key, val\)/.test(SRC.extras) && /function toggleWatermark\(n, on\)/.test(SRC.extras) &&
+      /#watermark-layer \{ position:fixed; z-index:8;/.test(SRC.projHtml))
+    ok("🏷 Постійний водяний знак: окремий шар, не зникає при зміні контенту, ОКРЕМИЙ для кожного з 4 виходів");
+  else bad("Немає постійного водяного знаку, або він не незалежний від контенту / не по виходах");
+  if (/if \(exists\) \{\s*\n\s*exists\.content = e\.target\.result;/.test(SRC.extras))
+    ok("БАГ (повторне завантаження HTML-файлу з тією самою назвою тихо ігнорувалось): тепер оновлює вміст");
+  else bad("Повторне завантаження HTML-файлу з тією самою назвою може досі мовчки нічого не міняти");
+  if (!/function renderQRPresets/.test(ix) && !/safeInit\(renderQRPresets/.test(ix))
+    ok("БАГ (старт падав: «Ініціалізація renderQRPresets впала» — елемент старої вкладки прибрано): функцію теж прибрано повністю");
+  else bad("renderQRPresets досі існує/викликається — падатиме на старті (елемент qrPresetsList прибрано)");
+  if (/__call\('update', JSON\.stringify\(__data\)\);/.test(SRC.formats) && /__call\('update', JSON\.stringify\(__data\)\); __applyFields\(__data\)/.test(SRC.formats))
+    ok("БАГ (GDD-графіка мовчки не оновлювалась, ні на старті, ні наживо): gddInject тепер передає update() рядок JSON, а не об'єкт");
+  else bad("gddInject все ще передає update() об'єкт замість рядка — GDD-графіки можуть мовчки не оновлюватись");
+  if (/oninput="debounceSearch\('songListSearch', renderAllSongs\)"/.test(ix))
+    ok("Оптимізація: пошук у «Всі пісні в базі» тепер з debounce (не перебудовує ~3300 рядків на кожен символ)");
+  else bad("Пошук у списку всіх пісень все ще без debounce — важкий перерендер на кожен символ при 3300+ піснях");
+  if (/dataWriteSync: \(key, content\) => \{ ipcRenderer\.send\('data-write-async'/.test(SRC.preload) && /ipcMain\.on\('data-write-async'/.test(SRC.main) && /fs\.writeFile\(dataFile\(key\)/.test(SRC.main) && !/data-write-sync/.test(SRC.main) && !/data-write-sync/.test(SRC.preload))
+    ok("Оптимізація (підвисання на Windows): запис великих даних (напр. 3300+ пісень) більше не блокує застосунок синхронно");
+  else bad("Запис великих даних досі синхронний (sendSync/writeFileSync) — може підвисати застосунок на великій базі");
+  if (/function saveScenePreset/.test(SRC.extras) && /function applyScenePreset/.test(SRC.extras) && /function deleteScenePreset/.test(SRC.extras) && /setOutputRoute\(n, o\.route\);/.test(SRC.extras) && /onclick="for\(let i=1;i<=4;i\+\+\) setOutputRoute\(i,'graphics'\)"/.test(SRC.extras) && /fingerprint: \(state\.outputBind && state\.outputBind\[OUT_KIND\[n\]\]\) \|\| null/.test(SRC.extras) && /bindOutputToDisplay\(n, o\.fingerprint \|\| null\);/.test(SRC.extras))
+    ok("🎬 Пресети сцени: одним кліком застосовує режим+хромакей+фон+монітор (за fingerprint, переживає перезавантаження Windows) на всі 4 виходи одразу");
+  else bad("Немає пресетів сцени для всіх 4 виходів одразу, або монітор досі прив'язаний через нестабільний displayId");
+  if (!/pv2LastContent = \{ kind: 'text', rawText: text, html: String\(text\)/.test(SRC.extras) && /pv2LastContent = \{ kind: 'text', rawText: text, html: hallText\(text\)\.replace/.test(SRC.extras))
+    ok("БАГ БЕЗПЕКИ (XSS): текст пісні/вірша тепер екранується (hallText) перед виходом із власним маршрутом — раніше йшов сирий HTML у вікно з contextIsolation:false");
+  else bad("XSS: pv2LastContent.html досі отримує НЕекранований String(text) — зловмисний HTML у назві/тексті пісні виконався б як скрипт");
+  if (/function onOutputDisplayChange\(n\)/.test(SRC.extras) && /window\.electronAPI\.setOutputDisplay\(OUT_KIND\[n\], id\)/.test(SRC.extras) && /id="pv2DisplaySel\$\{i\}"/.test(SRC.extras))
+    ok("Виходи: призначення монітора тепер доступне для всіх 4 виходів (раніше лише для проектора/трансляції)");
+  else bad("Призначення монітора досі недоступне для Виходу 3/4");
+  if (/"npmRebuild": false/.test(read('package.json')))
+    ok("Збірка: npmRebuild=false — не намагається зайво перезібрати вже готовий N-API бінарник ATEM (@julusian/freetype2), що й падало на Windows");
+  else bad("npmRebuild не вимкнено — electron-builder може зайво намагатись перезібрати вже робочі нативні модулі й падати на Windows");
+  if (/frozen: \{1: false, 2: false, 3: false, 4: false\}/.test(SRC.extras) && /function toggleFreezeOutput\(n\)/.test(SRC.extras) && /const allFrozen = \[1, 2, 3, 4\]\.every\(n => state\.frozen\[n\]\);/.test(SRC.extras) && /onclick="toggleFreezeOutput\(\$\{i\}\)"/.test(SRC.extras))
+    ok("❄️ Заморозка тепер окремо для кожного з 4 виходів + глобальна клавіша керує всіма разом (не дублює логіку)");
+  else bad("Заморозка досі лише глобальна, не по виходах");
+  if (/const kind = state\.alertCfg\.targetOutput \? OUT_KIND\[state\.alertCfg\.targetOutput\] : null;\s*\n\s*if \(typeof isClientStation/.test(SRC.extras))
+    ok("Props (постійні накладки) тепер теж поважають обраний вихід оголошень, як і сам sendAlert()");
+  else bad("Props досі завжди шле на всі виходи, ігноруючи obраний targetOutput");
+  if (/songSize: \{1: null, 2: null, 3: null, 4: null\}/.test(SRC.extras) && /function setOutputSongSize\(n, delta\)/.test(SRC.extras) && /function resetOutputSongSize\(n\)/.test(SRC.extras) && /onclick="setOutputSongSize\(\$\{i\}, -4\)"/.test(SRC.extras) && /if \(!state\.songSize\[n\]\) window\.electronAPI\.setFitGroup\(slides, OUT_KIND\[n\]\);/.test(SRC.extras))
+    ok("🔤 Розмір шрифту пісні: тепер повноцінна по-вихідна система (не додатковий шар) — авто-підгін і фіксований розмір окремо для кожного з 4 виходів");
+  else bad("Немає точкового перевизначення розміру шрифту по виходах");
+  if (/"adm-zip": "\^/.test(read('package.json')) && /ipcMain\.handle\('extract-pptx-notes'/.test(SRC.main) && /notesSlide\(\\d\+\)\\\.xml/.test(SRC.main) && /extractPptxNotes: \(buffer\) => ipcRenderer\.invoke\('extract-pptx-notes', buffer\)/.test(SRC.preload) && /function updateSlideNotesDisplay\(\)/.test(SRC.extras) && /updateSlideNotesDisplay\(\);/.test(SRC.extras))
+    ok("📝 PowerPoint: нотатки доповідача видобуваються (adm-zip, чиста JS) і показуються при гортанні слайдів");
+  else bad("Немає видобування нотаток доповідача з PowerPoint");
+  if (/function atemMultiviewRefreshDevices\(\)/.test(SRC.extras) && /function atemMultiviewStart\(\)/.test(SRC.extras) && /function atemMultiviewStop\(\)/.test(SRC.extras) && /d\.kind === 'videoinput'/.test(SRC.extras) && /'atemMvCard','atemControlCard2'/.test(SRC.extras))
+    ok("🖥 ATEM: мультивью через getUserMedia (картка захоплення) — стандартний веб-API, без нативних модулів");
+  else bad("Немає підтримки живого відео мультивью в ATEM");
+  // Menu має бути в імпорті — але список імпорту з часом росте (додався
+  // protocol для схеми app://), тому перевіряємо саме НАЯВНІСТЬ Menu в
+  // деструктуризації, а не точний склад усього рядка.
+  if (/Menu\.setApplicationMenu\(null\);/.test(SRC.main) && /const \{[^}]*\bMenu\b[^}]*\} = require\('electron'\);/.test(SRC.main))
+    ok("БАГ (Windows/Linux): фокус \"вилітав\" із полів вводу при Alt (autoHideMenuBar розкриває приховане меню) — тепер меню прибрано зовсім");
+  else bad("Меню не прибрано — Alt на Windows/Linux досі може красти фокус із полів вводу");
+  if (/function renameBibleTranslation\(id\)/.test(SRC.extras) && /if \(newLang === null\) return;/.test(SRC.extras) && SRC.extras.includes('renameBibleTranslation(') && SRC.extras.includes('✏️ Перейменувати') && /language: \(bibleTranslations\[id\] && bibleTranslations\[id\]\.language\) \|\| ''/.test(SRC.extras) && /b\.language \? ' <span style="opacity:0\.65/.test(ix))
+    ok("Переклади Біблії: можна перейменувати й додати мовну позначку (RU/UA/CZ), показується на екрані мультиперекладу");
+  else bad("Немає перейменування перекладів або мовної позначки на екрані мультиперекладу");
+  if (/function dblClickSendBoth\(e\)/.test(SRC.extras) && /if \(id === 'bibleDisplay'\)/.test(SRC.extras) && /if \(id === 'songVerses'\)/.test(SRC.extras) && /ondblclick="dblClickSendBoth\(event\)"/.test(ix) && /if \(typeof nextVerse === 'function'\) nextVerse\(\);\s*\n\s*if \(typeof sendToProjector === 'function'\) sendToProjector\(\);/.test(SRC.extras) && /if \(typeof nextBibleVerse === 'function'\) nextBibleVerse\(\);\s*\n\s*if \(typeof sendMultiToBoth === 'function'\) sendMultiToBoth\(\);/.test(SRC.extras))
+    ok("🖱 Подвійний клік — для Біблії ПРОСУВАЄ вірш (nextBibleVerse) перед показом, для пісень ПРОСУВАЄ куплет (nextVerse) — жодна гілка не шле повторно той самий текст");
+  else bad("Немає обробника подвійного кліку, або хоч одна гілка (Біблія/Пісні) знову лише повторно шле той самий текст замість просування");
+  // «Кілька перекладів»: раніше мала ЗАЙВИЙ підсумковий рядок нагорі картки
+  // (▶ Показати / На вихід / Усі 4), що дублював кнопки в кожній окремій
+  // картці виходу нижче — не той самий мінімалістичний патерн, що в H2R
+  // (один пункт = своя кнопка показу + умовна кнопка прибрати, і більше
+  // нічого). Прибрано: тепер кожен вихід — це ОДНА картка з 🔴-підсвіченою
+  // кнопкою показу і умовною кнопкою прибрати, точнісінько як у H2R.
+  if (/\$\{live \? '🔴 ' : ''\}📖 Показати на «\$\{esc\(OUT_NAME\[n\]\)\}»/.test(SRC.extras) &&
+      /\$\{live \? `<button class="btn btn-ghost btn-sm btn-block" style="margin-top:3px;color:var\(--red\)" onclick="clearBibleFrom\(\$\{n\}\)"/.test(SRC.extras) &&
+      !/onclick="sendMultiToBoth\(\)">▶ Показати<\/button>/.test(SRC.extras) &&
+      !/onclick="sendMultiToAll4\(\)"/.test(SRC.extras))
+    ok("📖 Кілька перекладів: зайвий підсумковий рядок нагорі прибрано — кожен вихід сам собі 🔴-кнопка показу + умовна «прибрати», як у H2R");
+  else bad("Кілька перекладів: досі є зайвий підсумковий рядок (▶ Показати/Усі 4), або пропала 🔴-підсвітка чи «прибрати» на картці виходу");
+  if (/function songRefForDisplay\(title\)/.test(SRC.extras) && /function setShowSongTitle\(val\)/.test(SRC.extras) && /function setShowTransName\(val\)/.test(SRC.extras) && /state\.showTransName !== false \?/.test(ix) && (SRC.extras.match(/songRefForDisplay\(/g) || []).length >= 6)
+    ok("🏷 Назви на екрані: можна вимкнути назву пісні й назву перекладу окремо (Налаштування) — посилання на вірш лишається завжди");
+  else bad("Немає перемикачів показу назви пісні/перекладу, або хелпер songRefForDisplay застосовано не в усіх місцях");
+  if (/function renameHTMLOverlay\(i\)/.test(SRC.extras) && /function setHtmlOverlayCategory\(i\)/.test(SRC.extras) && /function duplicateHTMLOverlay\(i\)/.test(SRC.extras) && /id="htmlOverlaySearch"/.test(ix) && /id="htmlOverlayCatFilter"/.test(ix) && /if \(catFilter && overlay\.category !== catFilter\) return;/.test(SRC.extras))
+    ok("📋 Список HTML-графіки: перейменування, категорії, пошук/фільтр, дублювання файлів");
+  else bad("Немає перейменування/пошуку/категорій/дублювання у списку HTML-графіки");
+  if (/f\.options && f\.options\.length/.test(SRC.extras) && /f\.type === 'color'/.test(SRC.extras) && /f\.type === 'number'/.test(SRC.extras) && /min: p\.min !== undefined \? p\.min : \(p\.minimum !== undefined \? p\.minimum : null\),/.test(SRC.formats))
+    ok("⚙ GDD-поля: список варіантів (select), палітра кольору, число з межами — раніше збирались у схемі, але ігнорувались панеллю");
+  else bad("GDD-поля досі завжди звичайний текстовий рядок, незалежно від типу/варіантів у схемі");
+  if (/function togglePinHTMLOverlay\(i\)/.test(SRC.extras) && /function moveHTMLOverlay\(i, direction\)/.test(SRC.extras) && /if \(htmlLiveMap\[n\] === i\) htmlLiveMap\[n\] = j;/.test(SRC.extras) && /var reordering = !q && !catFilter;/.test(SRC.extras))
+    ok("📌 HTML-графіка: закріплення нагорі + переміщення ▲▼ в межах групи (коректно оновлює htmlLiveMap при перестановці)");
+  else bad("Немає закріплення/переміщення у списку HTML-графіки, або htmlLiveMap не оновлюється при перестановці");
+  if (/function gddSavePreset\(i\)/.test(SRC.extras) && /function gddLoadPreset\(i, presetIdx\)/.test(SRC.extras) && /function gddDeletePreset\(i, presetIdx\)/.test(SRC.extras) && /function saveGddPresets\(\)/.test(SRC.extras) && /function loadGddPresets\(\)/.test(SRC.extras) && /if \(ov && ov\.name && byName\[ov\.name\]\) gddPresets\[idx\] = byName\[ov\.name\];/.test(SRC.extras))
+    ok("📁 GDD-пресети: кілька іменованих наборів полів на один файл (напр. «Ранок»/«Вечір»), прив'язані до назви файлу, переживають перезавантаження");
+  else bad("Немає пресетів значень для GDD-полів, або вони не прив'язані до назви файлу для стійкості");
+  if (/function updateNetIndicator\(\)/.test(SRC.extras) && /window\.addEventListener\('online', updateNetIndicator\);/.test(SRC.extras) && /id="netIndicator"/.test(ix) && /if \(!navigator\.onLine\) \{ notify\('🔴 Немає інтернету/.test(SRC.extras))
+    ok("🟢 Індикатор інтернету + попереджає перед автооновленням при офлайні");
+  else bad("Немає індикатора інтернету, або автооновлення не перевіряє з'єднання заздалегідь");
+  if (/required: !!p\.required \|\| requiredList\.indexOf\(key\) > -1/.test(SRC.formats) && /function gddCheckRequired\(i\)/.test(SRC.extras) && /const missing = gddCheckRequired\(i\);/.test(SRC.extras))
+    ok("⚠️ Обов'язкові GDD-поля: підсвітка + попередження при показі (не блокує — оператор вирішує сам)");
+  else bad("Немає підтримки обов'язкових GDD-полів");
+  if (/function gddFilterPresets\(i\)/.test(SRC.extras) && /\(gddPresets\[i\] \|\| \[\]\)\.length > 5/.test(SRC.extras) && /data-preset-name=/.test(SRC.extras))
+    ok("🔍 Пошук серед пресетів GDD (з'являється лише коли їх багато, фільтрує напряму через DOM без перебудови панелі)");
+  else bad("Немає пошуку серед пресетів GDD");
+  if (/function exportHtmlOverlays\(\)/.test(SRC.extras) && /function importHtmlOverlaysFile\(input\)/.test(SRC.extras) && /if \(existing\) \{ Object\.assign\(existing, imported\); updated\+\+; \}/.test(SRC.extras) && /if \(payload\.gddParams && payload\.gddParams\[o\.name\]\) gddParams\[idx\] = payload\.gddParams\[o\.name\];/.test(SRC.extras))
+    ok("📤 Експорт/імпорт колекції HTML-графіки — переносить файли+параметри+пресети між машинами, оновлює за назвою (не дублює)");
+  else bad("Немає експорту/імпорту колекції HTML-графіки");
+  if (/function svcUpdateTimingDisplay\(\)/.test(SRC.extras) && /const plannedMin = sv\.items\.slice\(0, sv\.idx\)\.reduce/.test(SRC.extras) && /function svcResetTiming\(\)/.test(SRC.extras) && /function svcPrint\(\)/.test(SRC.extras) && /if \(!state\.service\.serviceStartedAt\) state\.service\.serviceStartedAt = now;/.test(SRC.extras))
+    ok("⏱ План служби: реальний час vs заплановано (тікер, відставання/випередження) + 🖨 друк/експорт плану окремим файлом");
+  else bad("Немає відстеження реального часу служби або друку/експорту плану");
+  if (/@keyframes bgBreathe/.test(SRC.projHtml) && /bgEl\.classList\.toggle\('bg-animated', !!currentTheme\.bgAnimated\);/.test(SRC.projPreload) && /function onBgAnimatedChange\(\)/.test(SRC.extras) && /bgAnimated: !!activeBg\.animated/.test(SRC.extras))
+    ok("🌊 Плавний рух фону (H2R-стиль animated background) — вбудована анімація без відео-файлів");
+  else bad("Немає плавного руху фону");
+  if (/function getCreditsHTML\(\)/.test(SRC.extras) && /function sendCredits\(n\)/.test(SRC.extras) && /creditsConfig:/.test(SRC.extras) && /@keyframes creditsScroll/.test(SRC.extras))
+    ok("🎬 Прокрутка подяки — багаторядкові титри знизу вгору, як у кінці фільму (H2R-стиль credits)");
+  else bad("Немає прокрутки подяки (credits)");
+  if (/function getConfettiHTML\(\)/.test(SRC.extras) && /function sendConfetti\(n\)/.test(SRC.extras) && /@keyframes confettiFall/.test(SRC.extras) && /function clearH2R\(n\)/.test(SRC.extras) && /const animsOut = \{slideLeft:'h2rSlideLeftOut'/.test(SRC.extras) && /setTimeout\(\(\) => \{\s*\n\s*const blank = /.test(SRC.extras))
+    ok("🎉 Конфеті (самоочищується) + H2R: парні анімації входу/виходу, ✕ тепер реально прибирає з живого екрана (раніше лише блимало прев'ю)");
+  else bad("Немає конфеті, або H2R «✕» досі не прибирає з живого екрана");
+  if (/var videoCaptureStreams = \{\};/.test(SRC.extras) && /function videoCaptureStart\(key, selectId, videoId\)/.test(SRC.extras) && /function atemMultiviewStart\(\) \{ videoCaptureStart\('atem', 'atemMvDeviceSel', 'atemMvVideo'\); \}/.test(SRC.extras) && /id="h2rMvDeviceSel"/.test(ix) && /videoCaptureStart\('h2r', 'h2rMvDeviceSel', 'h2rMvVideo'\)/.test(ix))
+    ok("🎨 H2R Graphics: захоплення відео поруч із ATEM-мультивью, той самий узагальнений механізм (не дублює логіку, обидва можуть працювати одночасно)");
+  else bad("Немає картки захоплення H2R Graphics, або код захоплення задубльовано замість узагальнення");
+  if (/if \(!\/\^wss\?:\\\/\\\/\/i\.test\(url\)\)/.test(SRC.extras) && /url = 'ws:\/\/' \+ url;/.test(SRC.extras) && /можливо, «Server Password» з OBS/.test(SRC.extras))
+    ok("🎥 OBS: розпізнає типову плутанину полів (довгий пароль замість короткої адреси) — дає конкретну підказку, сам виправляє забутий ws:// префікс");
+  else bad("OBS-підключення досі не перевіряє формат адреси — плутанина полів дає незрозумілу помилку");
+  if (/function setHtmlOverlayCategoryInline\(i, value\)/.test(SRC.extras) && /onchange="setHtmlOverlayCategoryInline\(\$\{i\}, this\.value\)"/.test(SRC.extras) && /function bulkSetHtmlOverlayCategory\(\)/.test(SRC.extras) && /function toggleHtmlOverlaySelect\(i\)/.test(SRC.extras) && /function htmlOverlayLabel\(overlay\)/.test(SRC.extras) && /return overlay\.category \? '\[' \+ overlay\.category \+ '\] ' \+ name : name;/.test(SRC.extras))
+    ok("🏷 Категорії GDD: поле прямо в панелі полів, масове позначення кількох файлів, категорія в мітці показу");
+  else bad("Немає покращень категорій для GDD-шаблонів");
+  if (/function getTickerHTML\(\)/.test(SRC.extras) && /function sendTicker\(n\)/.test(SRC.extras) && /function stopTicker\(n\)/.test(SRC.extras) && /@keyframes tickerScroll/.test(SRC.extras) && /<span class="ticker-item">\$\{text\}<\/span><span class="ticker-item">\$\{text\}<\/span>/.test(SRC.extras))
+    ok("📰 Тікер: горизонтальний біжучий рядок по колу, текст подвоєно для безшовного циклу");
+  else bad("Немає тікера (горизонтального біжучого рядка)");
+  if (/if \(!stationPin\) stationPin = String\(crypto\.randomInt\(1000, 10000\)\);/.test(SRC.main) && !/Math\.floor\(1000 \+ Math\.random\(\) \* 9000\)/.test(SRC.main))
+    ok("🔐 PIN станції: crypto.randomInt() замість Math.random() (криптографічно стійке джерело)");
+  else bad("PIN станції досі генерується через Math.random() — недостатньо стійко");
+  if (/function emergencyRestoreAll\(\)/.test(SRC.extras) && /var anyFrozen = \[1, 2, 3, 4\]\.some/.test(SRC.extras) && /function sendEmergencyMessage\(\)/.test(SRC.extras) && /id="emergencyBtn"/.test(ix) && /id="emergencyPanel"/.test(ix))
+    ok("🚨 Аварійна панель: blackout/freeze/logo/повідомлення/відновити все в одному місці, доступна з будь-якої вкладки");
+  else bad("Немає єдиної аварійної панелі");
+  if (/function saveOnAirRecovery\(\)/.test(SRC.extras) && /function clearOnAirRecovery\(\)/.test(SRC.extras) && /function checkCrashRecovery\(\)/.test(SRC.extras) && /if \(ageMin > 180\) \{ clearOnAirRecovery\(\); return; \}/.test(SRC.extras) && /safeInit\(checkCrashRecovery, 'checkCrashRecovery'\);/.test(SRC.extras) && /const _undoStack = \[\];\s*\n\s*function pushUndo\(snapshot\) \{/.test(SRC.extras))
+    ok("💾 Crash Recovery: зберігає стан ефіру, пропонує відновити при старті (лише якщо свіжий, до 3 год)");
+  else bad("Немає Crash Recovery, або зачепило pushUndo/_undoStack при додаванні");
+  if (/function runPreflightCheck\(\)/.test(SRC.extras) && /function renderPreflightResults\(rows\)/.test(SRC.extras) && /level: openOutputs\.length \? 'ok' : 'bad'/.test(SRC.extras) && /id="preflightResults"/.test(SRC.extras))
+    ok("🚀 Preflight Check: один погляд на виходи/інтернет/ATEM/OBS/PTZ/медіа/Stage перед службою, нічого не вмикає само");
+  else bad("Немає Preflight Check перед службою");
+  if (/function svcSaveAsTemplate\(\)/.test(SRC.extras) && /function svcNewFromTemplate\(i\)/.test(SRC.extras) && /isTemplate: !!p\.isTemplate/.test(SRC.extras) && /state\.service\.serviceStartedAt = null;/.test(SRC.extras) && /\(sv\.saved\[b\]\.isTemplate \? 1 : 0\) - \(sv\.saved\[a\]\.isTemplate \? 1 : 0\)/.test(SRC.extras))
+    ok("💠 Шаблони служінь: окремо від звичайних планів (нагорі списку), «новий план із шаблону» не чіпає оригінал і скидає час");
+  else bad("Немає шаблонів служінь, або вони не відокремлені від звичайних збережених планів");
+  if ((SRC.extras.match(/if \(state\.onAir && !_undoing && typeof pushUndo === 'function'\) pushUndo\(state\.onAir\);/g) || []).length === 2)
+    ok("↶ Undo розширено на ВСІ зміни ефіру (не лише очищення) — кожен новий показ зберігає попередній стан у стек скасування");
+  else bad("Undo досі спрацьовує лише при очищенні екрана, не при зміні контенту");
+  if (/function setMediaCategory\(i\)/.test(SRC.extras) && /id="mediaCatFilter"/.test(SRC.extras) && /if \(catFilter && f\.category !== catFilter\) return;/.test(SRC.extras))
+    ok("🏷 Категорії медіафайлів: тегування, фільтр за категорією у списку");
+  else bad("Немає категорій для медіафайлів");
+  if (/function svcGenerateReport\(\)/.test(SRC.extras) && /const nextStarted = sv\.items\[i \+ 1\] && sv\.items\[i \+ 1\]\.startedAt;/.test(SRC.extras) && /if \(!sv\.serviceStartedAt\) \{ notify\('⚠️ Служба ще не починалась/.test(SRC.extras))
+    ok("📊 Звіт служби (реальний час): планові vs фактичні хвилини по кожному пункту, після завершення");
+  else bad("Немає звіту служби з реальним часом");
+  if (/typeof htmlOverlays !== 'undefined' \? htmlOverlays : \[\]\)\.forEach\(function\(o, i\) \{/.test(ix) && /if \(typeof previewHTMLOverlay === 'function'\) previewHTMLOverlay\(idx\);/.test(ix) && /if \(typeof playMedia === 'function'\) playMedia\(idx\);/.test(ix) && (ix.match(/id="globalSearchInput"/g) || []).length === 1)
+    ok("🔍 Глобальний пошук розширено на HTML-графіку й медіа (раніше лише пісні/оголошення/Біблія) — жодного дубліката UI");
+  else bad("Глобальний пошук досі не бачить HTML-графіку/медіа, або з'явився дублікат UI");
+  if (/function saveCurrentAsLook\(\)/.test(SRC.extras) && /function applyCustomLook\(i\)/.test(SRC.extras) && /applyThemeToProjector\(\);/.test(SRC.extras) && /var existingIdx = customLooks\.findIndex/.test(SRC.extras) && /id="customLooksList"/.test(ix))
+    ok("🎨 Власні стилі (Looks): зберегти поточний вигляд під назвою, застосувати одним кліком (одразу в ефір, не лише редактор)");
+  else bad("Немає власних (кастомних) стилів теми, окремих від готових пресетів");
+  if (/ipcMain\.handle\('get-app-version'/.test(SRC.main) && /getAppVersion: \(\) => ipcRenderer\.invoke\('get-app-version'\)/.test(SRC.preload) && /function manualCheckUpdates\(\)/.test(SRC.extras) && /function refreshAppVersion\(\)/.test(SRC.extras) && /onclick="manualCheckUpdates\(\)"/.test(SRC.extras))
+    ok("🔄 Оновлення: ручна перевірка + показ поточної версії в «Налаштуваннях» (раніше лише автоматична при старті)");
+  else bad("Немає ручної перевірки оновлень або показу версії застосунку");
+  if (/\['ptz', '🎥 Камери'\], \['atem', '🎬 ATEM'\]/.test(SRC.extras) && /id: 'g_media', label: '🖼 Медіа'/.test(SRC.extras) && /tabs: \[\s*\n\s*\['songs'.*?\['bible'.*?\['announce'/s.test(SRC.extras))
+    ok("Навігація: ATEM+PTZ разом у «Виходи», «Контент» розвантажено на «Контент»+«Медіа» (13→5+8)");
+  else bad("Навігація не перегрупована — ATEM окремо від PTZ, або «Контент» досі переповнений");
+  if (/logoSettings: \{\s*\n\s*1: \{ on: false, position: 'center-full', size: 160 \}/.test(SRC.extras) && /function setLogoPosition\(n, pos\)/.test(SRC.extras) && /function setLogoSize\(n, size\)/.test(SRC.extras) && /logoLayer\.classList\.contains\('corner'\)/.test(SRC.projPreload) && /const kind = OUTPUT_KINDS\.find\(k => outputWins\[k\]/.test(SRC.main))
+    ok("🖼 Логотип: тепер окремо для кожного з 4 виходів, з позицією (весь екран/кут) і розміром — раніше було одне спільне on/off");
+  else bad("Логотип досі спільний на всі виходи, без позиції/розміру");
+  if (/function buildImageSlideHTML\(dataUrl\)/.test(SRC.extras) && /function sendImageToOutputs\(dataUrl, label, sourceTag, targets\)/.test(SRC.extras) && /function sendSlideToOutputs\(targets\)/.test(SRC.extras) && /onclick="sendSlideToOutputs\(\[1,2\]\)"/.test(ix) && /onclick="sendCustomSlideTo\(\[1,2,3,4\]\)"/.test(ix))
+    ok("📽 PDF і Редактор слайдів: тепер можна надіслати на 2 виходи/усі 4, не лише на проектор — той самий шаблон HTML, без дублювання");
+  else bad("PDF/Редактор слайдів досі завжди йдуть лише на проектор");
+  if (/ipcMain\.handle\('convert-pptx-to-pdf'/.test(SRC.main) && /function findLibreOffice\(\)/.test(SRC.main) && /convertPptxToPdf: \(buffer\) => ipcRenderer\.invoke\('convert-pptx-to-pdf', buffer\)/.test(SRC.preload) && /function loadPowerPoint\(input\)/.test(SRC.extras) && /pdfjsLib\.getDocument\(\{data: res\.data\}\)/.test(SRC.extras))
+    ok("📽 PowerPoint: конвертація через локальну LibreOffice → показ через ТОЙ САМИЙ PDF-переглядач (без дублювання показу слайдів)");
+  else bad("Немає показу PowerPoint-файлів, або він дублює логіку PDF-переглядача замість перевикористання");
+  if (/function outputBgAlpha\(n\)/.test(SRC.extras) && /function setOutputOpacity\(n, v\)/.test(SRC.extras) && /outputOpacity: \{1: 62, 2: 62, 3: 62, 4: 62\}/.test(SRC.extras) && /if \(typeof s\.streamOpacity === 'number' && !s\.outputOpacity\)/.test(SRC.extras) && /oninput="document\.getElementById\('pv2OpacityLbl\$\{i\}'\)/.test(SRC.extras))
+    ok("Прозорість хромакею тепер окремо для кожного з 4 виходів (раніше лише для трансляції) + міграція старих значень");
+  else bad("Прозорість хромакею досі спільна на всі виходи, або немає міграції старих налаштувань");
+  if (/3: \{ titleSize: 64, bodySize: 44, dateSize: 32 \},\s*\n\s*4: \{ titleSize: 64, bodySize: 44, dateSize: 32 \}/.test(SRC.extras) && /sendHTMLToOutputN\(n, getAnnounceHTML\(ann, n\), label\);/.test(SRC.extras) && /id="annSizeTitle3"/.test(ix) && /id="annSizeTitle4"/.test(ix))
+    ok("Розмір тексту оголошень тепер окремо для всіх 4 виходів (раніше вихід 3/4 копіював проектор)");
+  else bad("Вихід 3/4 досі копіює розмір тексту оголошень з проектора замість власного");
+  if (/watermark: \{\s*\n\s*1: \{ text: '', on: false/.test(SRC.extras) && /function setWatermark\(n, key, val\)/.test(SRC.extras) && /function selectWatermarkOutput\(n\)/.test(SRC.extras) && /showWatermark\(state\.watermark\[n\], OUT_KIND\[n\]\)/.test(SRC.extras))
+    ok("Водяний знак тепер окремий для кожного з 4 виходів (раніше одне спільне налаштування на всі)");
+  else bad("Водяний знак досі спільний на всі виходи, не по кожному окремо");
+  // F3/F4 перенесено з захардкодженого switch у index.html в перепризначуване
+  // меню «Клавіші» (toggle-out3/toggle-out4, state.hotkeys) — на macOS ці
+  // клавіші за замовчуванням займає сама система.
+  if (/function toggleOutputN\(n\)/.test(SRC.extras) && /case 'toggle-out3':/.test(ex) && /toggleOutputN\(3\)/.test(ex) && /case 'toggle-out4':/.test(ex) && /toggleOutputN\(4\)/.test(ex))
+    ok("Гарячі клавіші: вихід 3/4 відкриваються/закриваються перепризначуваною дією (не захардкоджений F3/F4)");
+  else bad("Немає перепризначуваних гарячих клавіш для виходу 3/4");
   if (/function readTextCompat/.test(ix) && /windows-1251/.test(ix) && /readTextCompatInto/.test(ix))
     ok("імпорт із резервним кодуванням windows-1251 (мердж доопрацювання)");
   else bad("немає резервного кодування");
-  if (/function exportTranslations/.test(ix) && /function importTranslations/.test(ix) && /church_translations_/.test(ix))
+  if (/function exportTranslations/.test(SRC.extras) && /function importTranslations/.test(SRC.extras) && /church_translations_/.test(SRC.extras))
     ok("експорт/імпорт перекладів Біблії у файл (не втратити при оновленні)");
   else bad("немає збереження перекладів у файл");
   if (/Наступний пункт/.test(SRC.extras)) ok("велика кнопка «Наступний пункт» плану");
@@ -1076,6 +1540,927 @@ head('Виправлення багів');
   if (/function getAllLocalIPs/.test(SRC.main) && /VirtualBox|vEthernet/.test(SRC.main) && /result\.ips/.test(ix))
     ok('синхронізація: обирає реальний LAN-IP (не віртуальний) + показує всі адреси');
   else bad('синхронізація: може показувати не той IP');
+})();
+
+head('Модуляризація (крок 2): вкладки Анімації/Шрифти винесені в src/tabs/g_design/');
+(function () {
+  const fs2 = require('fs');
+  const animPath = path.join(ROOT, 'src/tabs/g_design/animations.js');
+  const fontsPath = path.join(ROOT, 'src/tabs/g_design/fonts.js');
+  if (fs2.existsSync(animPath) && fs2.existsSync(fontsPath))
+    ok('src/tabs/g_design/animations.js і fonts.js існують (продовження модуляризації після typo.js)');
+  else bad('ЗНИКЛИ tabs/g_design/animations.js або fonts.js — крок 2 розбивки коду втрачено');
+  const ANIM_FNS = ['renderAnimationsTab', 'getAnimationCSS', 'applyAnimations', 'applyPresetAnim', 'previewAnimation', 'resetAnimations', 'updateAnimationPreview'];
+  const FONTS_FNS = ['renderFontsTab', 'renderFontsList', 'applyFontSettings', 'loadFonts', 'removeFont', 'updateFontSelectors'];
+  const ex1 = read('src/extras-1.js');
+  // Кожна функція має існувати РІВНО один раз в усьому коді (у своєму
+  // новому файлі), а не в extras-1.js — інакше або дублювання (дві копії
+  // однієї логіки розходяться з часом), або втрата (лишилась «сирота»
+  // без визначення після видалення оригіналу).
+  const dup = ANIM_FNS.concat(FONTS_FNS).filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex1));
+  if (!dup.length) ok('жодна з 13 винесених функцій не задубльована назад в extras-1.js');
+  else bad('Задубльовано назад в extras-1.js: ' + dup.join(', '));
+  const animSrc = fs2.existsSync(animPath) ? fs2.readFileSync(animPath, 'utf8') : '';
+  const fontsSrc = fs2.existsSync(fontsPath) ? fs2.readFileSync(fontsPath, 'utf8') : '';
+  const missAnim = ANIM_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(animSrc));
+  const missFonts = FONTS_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(fontsSrc));
+  if (!missAnim.length && !missFonts.length) ok('усі 13 функцій справді присутні у своїх нових файлах');
+  else bad('Бракує у нових файлах: ' + missAnim.concat(missFonts).join(', '));
+  // Порядок <script> — обидва нові файли МУСЯТЬ бути до extras-4.js
+  // (pv2Init() звертається до цих функцій одразу при старті, в TABS/steps)
+  const ix = SRC.index;
+  const iAnim = ix.indexOf('<script src="tabs/g_design/animations.js">');
+  const iFonts = ix.indexOf('<script src="tabs/g_design/fonts.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iAnim >= 0 && iFonts >= 0 && iExtras4 >= 0 && iAnim < iExtras4 && iFonts < iExtras4)
+    ok('<script> для animations.js і fonts.js стоять ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 3): вкладки Плейлист/PowerPoint винесені в src/tabs/');
+(function () {
+  const fs2 = require('fs');
+  const plPath = path.join(ROOT, 'src/tabs/playlist/playlist.js');
+  const pptPath = path.join(ROOT, 'src/tabs/powerpoint/powerpoint.js');
+  if (fs2.existsSync(plPath) && fs2.existsSync(pptPath))
+    ok('src/tabs/playlist/playlist.js і tabs/powerpoint/powerpoint.js існують (крок 3 модуляризації)');
+  else bad('ЗНИКЛИ tabs/playlist/playlist.js або tabs/powerpoint/powerpoint.js — крок 3 розбивки коду втрачено');
+  const PL_FNS = ['renderPlaylistTab', 'addCurrentToPlaylist', 'runPlaylist', 'clearPlaylist',
+    'savePlaylist', 'loadPlaylist', 'playlistPrev', 'playlistNext', 'playlistSendCurrent',
+    'renderPlaylist', 'previewPlaylistItem', 'sendPlaylistItem', 'removePlaylistItem',
+    'savePlaylistData', 'loadPlaylistData'];
+  const PPT_FNS = ['renderPowerPointTab', 'setPPTtemplate', 'exportToPPTX', 'exportToHTML', 'pptPrevPreview', 'pptNextPreview'];
+  const ex1 = read('src/extras-1.js');
+  const dup = PL_FNS.concat(PPT_FNS).filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex1));
+  if (!dup.length) ok('жодна з 21 винесеної функції (Плейлист/PPT) не задубльована назад в extras-1.js');
+  else bad('Задубльовано назад в extras-1.js: ' + dup.join(', '));
+  const plSrc = fs2.existsSync(plPath) ? fs2.readFileSync(plPath, 'utf8') : '';
+  const pptSrc = fs2.existsSync(pptPath) ? fs2.readFileSync(pptPath, 'utf8') : '';
+  const missPl = PL_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(plSrc));
+  const missPpt = PPT_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(pptSrc));
+  if (!missPl.length && !missPpt.length) ok('усі 21 функцію (Плейлист/PPT) справді присутні у своїх нових файлах');
+  else bad('Бракує у нових файлах: ' + missPl.concat(missPpt).join(', '));
+  const ix = SRC.index;
+  const iPl = ix.indexOf('<script src="tabs/playlist/playlist.js">');
+  const iPpt = ix.indexOf('<script src="tabs/powerpoint/powerpoint.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iPl >= 0 && iPpt >= 0 && iExtras4 >= 0 && iPl < iExtras4 && iPpt < iExtras4)
+    ok('<script> для playlist.js і powerpoint.js стоять ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 4): вкладки Stage Display/Статистика винесені в src/tabs/');
+(function () {
+  const fs2 = require('fs');
+  const stPath = path.join(ROOT, 'src/tabs/stage_display/stage.js');
+  const statsPath = path.join(ROOT, 'src/tabs/statistics/statistics.js');
+  if (fs2.existsSync(stPath) && fs2.existsSync(statsPath))
+    ok('src/tabs/stage_display/stage.js і tabs/statistics/statistics.js існують (крок 4 модуляризації)');
+  else bad('ЗНИКЛИ tabs/stage_display/stage.js або tabs/statistics/statistics.js — крок 4 розбивки коду втрачено');
+  const ST_FNS = ['renderStageTab', 'openStageDisplay', 'closeStageDisplay', 'updateStageDisplay',
+    'setStageMonitor', 'saveStageNotes', 'loadStageNotes', 'renderStageMonitorOptions'];
+  const STATS_FNS = ['renderStatisticsTab', '_journalIcon', 'renderLiveJournal', 'clearLiveJournal',
+    'updateStatistics', 'exportStatisticsExcel', 'saveStatistics', 'loadStatistics'];
+  const ex1 = read('src/extras-1.js');
+  const dup = ST_FNS.concat(STATS_FNS).filter(fn => new RegExp('^(async )?function ' + fn + '\\(', 'm').test(ex1));
+  if (!dup.length) ok('жодна з 16 винесених функцій (Stage/Статистика) не задубльована назад в extras-1.js');
+  else bad('Задубльовано назад в extras-1.js: ' + dup.join(', '));
+  const stSrc = fs2.existsSync(stPath) ? fs2.readFileSync(stPath, 'utf8') : '';
+  const statsSrc = fs2.existsSync(statsPath) ? fs2.readFileSync(statsPath, 'utf8') : '';
+  const missSt = ST_FNS.filter(fn => !new RegExp('^(async )?function ' + fn + '\\(', 'm').test(stSrc));
+  const missStats = STATS_FNS.filter(fn => !new RegExp('^(async )?function ' + fn + '\\(', 'm').test(statsSrc));
+  if (!missSt.length && !missStats.length) ok('усі 16 функцій (Stage/Статистика) справді присутні у своїх нових файлах');
+  else bad('Бракує у нових файлах: ' + missSt.concat(missStats).join(', '));
+  const ix = SRC.index;
+  const iSt = ix.indexOf('<script src="tabs/stage_display/stage.js">');
+  const iStats = ix.indexOf('<script src="tabs/statistics/statistics.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iSt >= 0 && iStats >= 0 && iExtras4 >= 0 && iSt < iExtras4 && iStats < iExtras4)
+    ok('<script> для stage.js і statistics.js стоять ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 5): вкладка Гарячі клавіші винесена в src/tabs/hotkeys/');
+(function () {
+  const fs2 = require('fs');
+  const hkPath = path.join(ROOT, 'src/tabs/hotkeys/hotkeys.js');
+  if (fs2.existsSync(hkPath)) ok('src/tabs/hotkeys/hotkeys.js існує (крок 5 модуляризації)');
+  else bad('ЗНИК tabs/hotkeys/hotkeys.js — крок 5 розбивки коду втрачено');
+  const HK_FNS = ['renderHotkeysTab', 'startHotkeyCapture', 'saveHotkeyProfile', 'resetHotkeys'];
+  const ex1 = read('src/extras-1.js');
+  const dup = HK_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex1));
+  if (!dup.length) ok('жодна з 4 винесених функцій (Гарячі клавіші) не задубльована назад в extras-1.js');
+  else bad('Задубльовано назад в extras-1.js: ' + dup.join(', '));
+  const hkSrc = fs2.existsSync(hkPath) ? fs2.readFileSync(hkPath, 'utf8') : '';
+  const missHk = HK_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(hkSrc));
+  if (!missHk.length) ok('усі 4 функції (Гарячі клавіші) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missHk.join(', '));
+  // MIDI (renderMidiCard і вся підсистема) далі окремо винесено кроком 8 —
+  // див. блок «Модуляризація (крок 8)» нижче; тут лише підтверджуємо, що
+  // воно більше НЕ в extras-1.js (переїхало, не задублювалось).
+  if (!/^function renderMidiCard\(\)/m.test(ex1)) ok('renderMidiCard більше не в extras-1.js (переїхала в tabs/midi/midi.js кроком 8)');
+  else bad('renderMidiCard досі в extras-1.js — мала переїхати кроком 8, регресія');
+  const ix = SRC.index;
+  const iHk = ix.indexOf('<script src="tabs/hotkeys/hotkeys.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iHk >= 0 && iExtras4 >= 0 && iHk < iExtras4)
+    ok('<script> для hotkeys.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Двигун, фаза 2В: пакетування дрібних render-функцій (rafDebounce)');
+(function () {
+  const DEB = [
+    ['src/html-overlay.js', 'renderHTMLOverlayList'],
+    ['src/song-display.js', 'renderSongOrderMini'],
+    ['src/song-edit.js', 'renderAllSongs'],
+    ['src/tabs/media/media.js', 'renderMediaList'],
+    ['src/extras-1.js', 'renderEmergencyPanel'],
+    ['src/background.js', 'renderUserBgGrid'],
+    ['src/background.js', 'renderBuiltinBgGrid']
+  ];
+  const missing = [];
+  const unsafe = [];
+  for (const [rel, fn] of DEB) {
+    const src = read(rel);
+    // Реалізація винесена в _<fn>Now, а <fn> — тонка обгортка
+    if (!new RegExp('function _' + fn + 'Now\\(').test(src)) { missing.push(fn); continue; }
+    if (!new RegExp('_' + fn + 'Deb = rafDebounce\\(_' + fn + 'Now\\)').test(src)) { missing.push(fn); continue; }
+    // КРИТИЧНО: обгортка МУСИТЬ бути function-декларацією (піднімається),
+    // а НЕ `const <fn> = rafDebounce(...)` — const створив би temporal dead
+    // zone і виклик до цього рядка впав би. Цей клас бага в проєкті вже
+    // ловився двічі (loadDisplayToggles), тож фіксуємо тестом.
+    // Ігноруємо коментарі: у самій обгортці є пояснення, чому НЕ можна
+    // робити `const <fn> = rafDebounce(...)` — і без цієї фільтрації
+    // тест чіплявся б саме за текст того пояснення.
+    const code = src.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+    if (new RegExp('const ' + fn + ' = rafDebounce').test(code)) { unsafe.push(fn); continue; }
+    if (!new RegExp('function ' + fn + '\\(\\)').test(code)) { unsafe.push(fn); }
+  }
+  if (!missing.length) ok('усі 7 дрібних render-функцій загорнуто в rafDebounce (склеювання підряд ідучих викликів)');
+  else bad('без пакетування або зламано обгортку: ' + missing.join(', '));
+  if (!unsafe.length) ok('обгортки — function-декларації з лінивою ініціалізацією (hoisting безпечний, без TDZ)');
+  else bad('TDZ-РИЗИК: обгортку зроблено через const — виклик до цього рядка впаде: ' + unsafe.join(', '));
+
+  // updateGraphicsPreview НАВМИСНО не пакетується: воно не лише малює, а
+  // й зчитує значення полів у state. Відкладений виклик означав би, що
+  // наступне надсилання візьме застарілий стан.
+  const ex1 = read('src/extras-1.js');
+  if (/function updateGraphicsPreview\(\)/.test(ex1) && !/_updateGraphicsPreviewDeb/.test(ex1))
+    ok('updateGraphicsPreview навмисно НЕ пакетується (пише в state — відкладення дало б застарілий стан)');
+  else bad('updateGraphicsPreview запаковано — ризик застарілого state при надсиланні');
+})();
+
+head('Двигун, фаза 2: реактивний шар (пакетний перерендер замість ручних renderTabInto)');
+(function () {
+  const fs2 = require('fs');
+  const rPath = path.join(ROOT, 'src/core/reactive.js');
+  if (!fs2.existsSync(rPath)) { bad('ЗНИК src/core/reactive.js — фаза 2 втрачена'); return; }
+  ok('src/core/reactive.js існує');
+  const ix = SRC.index;
+  // Мусить вантажитись ДО extras-1.js і файлів вкладок, які його кличуть
+  const iCore = ix.indexOf('<script src="core/reactive.js">');
+  const iEx1 = ix.indexOf('<script src="extras-1.js">');
+  if (iCore >= 0 && iEx1 >= 0 && iCore < iEx1)
+    ok('<script> core/reactive.js стоїть ДО extras-1.js (markDirty доступний усім, хто його кличе)');
+  else bad('core/reactive.js вантажиться запізно — markDirty буде undefined у вкладках');
+  // Пілот: text_control переведено на markDirty і НЕ лишилось прямих викликів
+  const tc = read('src/tabs/text_control/text_control.js');
+  if (/markDirty\('textcontrol'\)/.test(tc) && !/renderTabInto\('textcontrol'\)/.test(tc))
+    ok('пілот: text_control повністю на markDirty, прямих renderTabInto не лишилось');
+  else bad('пілот text_control або не переведено, або переведено частково (лишились прямі виклики)');
+  // Конвертація завершена: у ВСЬОМУ коді не має лишитись жодного прямого
+  // виклику renderTabInto (крім самого визначення й тексту в console.error).
+  // Інакше частина коду обходила б пакетування — і ми б знову отримали
+  // по 3-4 перемальовки на одну дію там, де це пропустили.
+  try {
+    const glob = ['src/extras-1.js','src/extras-2.js','src/extras-3.js','src/extras-4.js'];
+    const tabFiles = fs2.readdirSync(path.join(ROOT, 'src/tabs'))
+      .flatMap(d => {
+        const dir = path.join(ROOT, 'src/tabs', d);
+        return fs2.statSync(dir).isDirectory()
+          ? fs2.readdirSync(dir).filter(f => f.endsWith('.js')).map(f => 'src/tabs/' + d + '/' + f)
+          : [];
+      });
+    const leftovers = [];
+    for (const rel of glob.concat(tabFiles)) {
+      const src = read(rel);
+      // Прямий виклик: renderTabInto( з рядком або змінною, але НЕ
+      // оголошення функції і НЕ згадка всередині рядка повідомлення.
+      const re = /(^|[^\w.])renderTabInto\(\s*['"a-zA-Z_]/g;
+      let m;
+      while ((m = re.exec(src))) {
+        const line = src.slice(0, m.index).split('\n').length;
+        const text = src.split('\n')[line - 1] || '';
+        if (/function renderTabInto/.test(text)) continue;
+        if (/console\.error/.test(text)) continue;
+        if (/^\s*\/\//.test(text)) continue;
+        leftovers.push(rel + ':' + line);
+      }
+    }
+    if (!leftovers.length) ok('конвертація завершена: жодного прямого renderTabInto у всьому коді (усе через markDirty)');
+    else bad('лишились прямі виклики renderTabInto (обходять пакетування): ' + leftovers.slice(0, 5).join(', '));
+  } catch (e) {
+    bad('перевірка залишків renderTabInto впала: ' + e.message);
+  }
+  // showTab МУСИТЬ кликати flushTabOnShow, інакше вкладка, змінена поки
+  // була схована, покаже застарілий вміст (вміст будується раз при старті).
+  if (/flushTabOnShow\(name\)/.test(ix))
+    ok('showTab кличе flushTabOnShow — схована вкладка не покаже застаріле при відкритті');
+  else bad('showTab НЕ кличе flushTabOnShow — вкладки показуватимуть застарілі дані');
+
+  // ЖИВА поведінкова перевірка — головне, заради чого весь шар:
+  // N викликів поспіль мусять дати РІВНО ОДИН реальний рендер.
+  try {
+    delete require.cache[require.resolve(rPath)];
+    const r = require(rPath);
+    const renders = [];
+    global.isActive = (t) => t === 'vis';
+    global.renderTabInto = (t) => renders.push(t);
+    for (let i = 0; i < 10; i++) r.markDirty('vis');
+    r.flushNow();
+    if (renders.length === 1) ok('10 викликів markDirty підряд → РІВНО 1 перемальовка (склеювання працює)');
+    else bad('склеювання не працює: ' + renders.length + ' перемальовок замість 1');
+
+    const before = renders.length;
+    r.markDirty('hidden-tab');
+    r.flushNow();
+    if (renders.length === before) ok('невидима вкладка не перемальовується дарма (економія на фонових вкладках)');
+    else bad('невидимі вкладки й досі перемальовуються');
+    // КРИТИЧНО для цієї архітектури: showTab лише перемикає CSS-клас, а
+    // вміст вкладок будується ОДИН раз при старті (TABS.forEach). Тому
+    // пропущену «брудну» вкладку ОБОВʼЯЗКОВО треба домалювати при
+    // відкритті — інакше вона покаже застарілі дані.
+    if (r.pendingHiddenCount() === 1) ok('пропущена вкладка не забута — стоїть у черзі на домальовку');
+    else bad('пропущену вкладку забуто — покаже застарілі дані при відкритті');
+    global.isActive = (t) => t === 'hidden-tab';
+    r.flushTabOnShow('hidden-tab');
+    if (renders[renders.length - 1] === 'hidden-tab' && r.pendingHiddenCount() === 0)
+      ok('flushTabOnShow домальовує вкладку при відкритті (захист від застарілого вмісту)');
+    else bad('flushTabOnShow не домальовує — вкладка покаже застаріле');
+
+    // Рендер, що падає, не має зривати решту черги — інакше одна
+    // помилка в одній вкладці зупиняла б оновлення всіх інших.
+    let sideEffect = 0;
+    global.renderTabInto = (t) => { throw new Error('boom'); };
+    r.markDirty('vis');
+    r.markDirtyFn('after', () => { sideEffect++; });
+    r.flushNow();
+    if (sideEffect === 1) ok('падіння одного рендера не зриває решту черги (ізоляція помилок)');
+    else bad('падіння рендера зриває всю чергу — одна помилка заморозить весь UI');
+    delete global.isActive; delete global.renderTabInto;
+  } catch (e) {
+    bad('жива перевірка реактивного шару впала: ' + e.message);
+  }
+})();
+
+head('Двигун, фаза 1Б: перемикач каналу доставки (file:// ↔ app://) з безпечним типовим значенням');
+(function () {
+  const ex = SRC.extras;
+  if (/function overlayChannelIsApp\(\)/.test(ex) && /function setOverlayChannel\(useApp\)/.test(ex) && /function loadOverlayChannel\(\)/.test(ex))
+    ok('overlayChannelIsApp/setOverlayChannel/loadOverlayChannel визначені');
+  else bad('ЗНИК перемикач каналу доставки — фаза 1Б втрачена');
+  // Типове значення МУСИТЬ бути «старий канал»: !! від undefined = false.
+  // Якщо тут колись зʼявиться `!== false` чи подібне — типовим стане новий
+  // канал, і церква отримає неперевірений шлях доставки без попередження.
+  if (/return !!\(state && state\.useAppProtocol\) && !!\(window\.electronAPI && window\.electronAPI\.writeHtmlOverlayApp\)/.test(ex))
+    ok('типово — старий file://-канал; новий лише коли І прапорець увімкнено, І API справді є (є фолбек)');
+  else bad('логіку вибору каналу змінено — можливе типове вмикання неперевіреного каналу');
+  // Усі ТРИ місця доставки мають іти через overlayPath, інакше перемикач
+  // діяв би лише частково (частина контенту на одному каналі, частина на іншому).
+  const ho = read('src/html-overlay.js'), bg = read('src/background.js');
+  if (/overlayPath\(htmlContent\)\.then/.test(ho) && !/electronAPI\.writeHtmlOverlay\(htmlContent\)/.test(ho))
+    ok('html-overlay.js (doSendHTML) іде через overlayPath — перемикач діє й тут');
+  else bad('doSendHTML обходить overlayPath — перемикач діятиме лише частково');
+  if (/overlayPath\(bgHtml\)\.then/.test(bg) && !/electronAPI\.writeHtmlOverlay\(bgHtml\)/.test(bg))
+    ok('background.js (фони) іде через overlayPath — перемикач діє й тут');
+  else bad('фони обходять overlayPath — перемикач діятиме лише частково');
+  // Стан має відновлюватись при старті, інакше перемикач «забувається»
+  if (/loadOverlayChannel,/.test(ex)) ok('loadOverlayChannel є в steps — вибір каналу переживає перезапуск');
+  else bad('loadOverlayChannel не в steps — перемикач скидатиметься при кожному запуску');
+  if (/onchange="setOverlayChannel\(this\.checked\)"/.test(ex))
+    ok('перемикач доступний в UI (вкладка Налаштування) — відкат без перезбірки');
+  else bad('немає UI-перемикача — відкотитись під час служби буде нічим');
+})();
+
+head('Двигун, фаза 1: кастомна привілейована схема app:// (фундамент для contextIsolation/webSecurity)');
+(function () {
+  const fs2 = require('fs');
+  const cpPath = path.join(ROOT, 'src/main/content-protocol.js');
+  if (!fs2.existsSync(cpPath)) { bad('ЗНИК src/main/content-protocol.js — фундамент фази 1 втрачено'); return; }
+  ok('src/main/content-protocol.js існує');
+  const m = SRC.main;
+
+  // registerSchemesAsPrivileged МУСИТЬ бути до app.whenReady() — це
+  // жорстка вимога Electron, інакше схема просто не працює.
+  const iScheme = m.indexOf('contentProtocol.registerScheme(protocol)');
+  // Саме ВИКЛИК app.whenReady().then(, а не згадка в коментарі вище.
+  const iReady = m.indexOf('app.whenReady().then(');
+  if (iScheme >= 0 && iReady >= 0 && iScheme < iReady)
+    ok('registerScheme викликається ДО app.whenReady() (вимога Electron)');
+  else bad('registerScheme після app.whenReady() — схема app:// не працюватиме');
+  if (/contentProtocol\.registerHandler\(protocol\)/.test(m) && /contentProtocol\.register\(ipcMain\)/.test(m))
+    ok('registerHandler + register(ipcMain) викликаються всередині whenReady');
+  else bad('Не зареєстровано обробник схеми або IPC — app:// не віддаватиме контент');
+
+  // Сумісність: старий file://-канал МАЄ лишитись недоторканим, інакше
+  // цей крок перестає бути безпечним «паралельним» каналом.
+  if (/ipcMain\.handle\('write-html-overlay'/.test(m) && /pathToFileURL\(tmpPath\)\.href/.test(m))
+    ok('старий канал write-html-overlay (file://) лишився без змін — нічого не зламано');
+  else bad('старий file://-канал змінено/видалено — це вже не безпечний паралельний крок');
+  if (/writeHtmlOverlayApp:/.test(read('src/preload.js')) && /writeHtmlOverlay:/.test(read('src/preload.js')))
+    ok('preload віддає обидва канали (writeHtmlOverlay + writeHtmlOverlayApp)');
+  else bad('preload не віддає новий канал writeHtmlOverlayApp');
+
+  // ЖИВА функціональна перевірка модуля (не regex): реально
+  // виконуємо обробник і перевіряємо і роботу, і безпеку.
+  try {
+    delete require.cache[require.resolve(cpPath)];
+    const cp = require(cpPath);
+    const os2 = require('os');
+    process.env.CHURCH_USERDATA = os2.tmpdir();
+    let handler = null;
+    cp.registerHandler({ handle: (s, fn) => { handler = fn; } });
+    const id = cp.putContent('<b>x</b>');
+    // Обробник синхронний і повертає Response — читаємо тіло без await,
+    // щоб перевірка лишалась у синхронному потоці smoke-test.
+    const rOk = handler({ url: 'app://content/' + id });
+    const rMissing = handler({ url: 'app://content/zzz' });
+    const rPasswd = handler({ url: 'app://file/' + encodeURIComponent('/etc/passwd') });
+    const rTraversal = handler({ url: 'app://file/' + encodeURIComponent(os2.tmpdir() + '/../../etc/passwd') });
+    if (rOk && (rOk.status === 200 || rOk.status === undefined)) ok('app://content/<id> реально віддає збережений HTML (200)');
+    else bad('app://content не віддає контент');
+    if (rMissing && rMissing.status === 404) ok('неіснуючий id → 404 (прозорий порожній HTML, не падіння)');
+    else bad('неіснуючий id не дає 404');
+    if (rPasswd && rPasswd.status === 403 && rTraversal && rTraversal.status === 403)
+      ok('БЕЗПЕКА: app://file блокує і читання поза дозволеними теками, і обхід через ../');
+    else bad('ДІРА БЕЗПЕКИ: app://file читає файли поза дозволеними теками');
+  } catch (e) {
+    bad('не вдалось завантажити content-protocol.js: ' + e.message);
+  }
+})();
+
+head('Модуляризація (крок 24): Пісня — ЛИШЕ render-функція винесена (songStep/orderAdd лишились на місці)');
+(function () {
+  const fs2 = require('fs');
+  const songPath = path.join(ROOT, 'src/tabs/song/song.js');
+  if (fs2.existsSync(songPath)) ok('src/tabs/song/song.js існує (крок 24 модуляризації)');
+  else bad('ЗНИК tabs/song/song.js — крок 24 розбивки коду втрачено');
+  const ex3 = read('src/extras-3.js'), ex2 = read('src/extras-2.js');
+  if (!/^function renderSongTab\(/m.test(ex3)) ok('renderSongTab не задубльована назад в extras-3.js');
+  else bad('renderSongTab задубльована назад в extras-3.js');
+  const songSrc = fs2.existsSync(songPath) ? fs2.readFileSync(songPath, 'utf8') : '';
+  if (/^function renderSongTab\(/m.test(songSrc)) ok('renderSongTab присутня у song.js');
+  else bad('renderSongTab відсутня у song.js');
+  // Спільна логіка (songStep/orderAdd, обидві в extras-2.js) МАЛА
+  // лишитись на місці — song.js це НЕ повний перенос фічі, лише render.
+  if (/^function songStep\(/m.test(ex2) && /^function orderAdd\(/m.test(ex2))
+    ok('спільна логіка (songStep/orderAdd в extras-2.js) навмисно лишилась на місці — song-display.js/гарячі клавіші не зламаються');
+  else bad('songStep/orderAdd зникли з extras-2.js — регресія, пісні/гарячі клавіші впадуть');
+  const ix = SRC.index;
+  const iSong = ix.indexOf('<script src="tabs/song/song.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iSong >= 0 && iExtras4 >= 0 && iSong < iExtras4)
+    ok('<script> для song.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 22-23): Router/Live — ЛИШЕ render-функції винесено (спільна логіка лишилась на місці)');
+(function () {
+  const fs2 = require('fs');
+  const routerPath = path.join(ROOT, 'src/tabs/router/router.js');
+  const livePath = path.join(ROOT, 'src/tabs/live/live.js');
+  if (fs2.existsSync(routerPath)) ok('src/tabs/router/router.js існує (крок 22)');
+  else bad('ЗНИК tabs/router/router.js — крок 22 розбивки коду втрачено');
+  if (fs2.existsSync(livePath)) ok('src/tabs/live/live.js існує (крок 23)');
+  else bad('ЗНИК tabs/live/live.js — крок 23 розбивки коду втрачено');
+  const ex4 = read('src/extras-4.js'), ex2 = read('src/extras-2.js');
+  if (!/^function renderRouterTab\(/m.test(ex4)) ok('renderRouterTab не задубльована назад в extras-4.js');
+  else bad('renderRouterTab задубльована назад в extras-4.js');
+  if (!/^function renderLiveTab\(/m.test(ex2)) ok('renderLiveTab не задубльована назад в extras-2.js');
+  else bad('renderLiveTab задубльована назад в extras-2.js');
+  const routerSrc = fs2.existsSync(routerPath) ? fs2.readFileSync(routerPath, 'utf8') : '';
+  const liveSrc = fs2.existsSync(livePath) ? fs2.readFileSync(livePath, 'utf8') : '';
+  if (/^function renderRouterTab\(/m.test(routerSrc)) ok('renderRouterTab присутня у router.js');
+  else bad('renderRouterTab відсутня у router.js');
+  if (/^function renderLiveTab\(/m.test(liveSrc)) ok('renderLiveTab присутня у live.js');
+  else bad('renderLiveTab відсутня у live.js');
+  // Спільна логіка (pv2ClearOutput, goLive, undoLast тощо) МАЛА лишитись
+  // на місці — router.js/live.js це НЕ повний перенос фічі, лише render.
+  if (/^function pv2ClearOutput\(/m.test(ex2) && /^function goLive\(/m.test(ex2) && /^function clearLive\(/m.test(ex2) && /^function undoLast\(/m.test(ex2))
+    ok('спільна логіка (pv2ClearOutput/goLive/clearLive/undoLast, усі в extras-2.js) навмисно лишилась на місці');
+  else bad('спільна логіка Router/Live зникла зі свого файлу — регресія, багато інших вкладок впадуть');
+  const ix = SRC.index;
+  const iRouter = ix.indexOf('<script src="tabs/router/router.js">');
+  const iLive = ix.indexOf('<script src="tabs/live/live.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iRouter >= 0 && iLive >= 0 && iExtras4 >= 0 && iRouter < iExtras4 && iLive < iExtras4)
+    ok('<script> для router.js і live.js стоять ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 21): вкладка Налаштування винесена в src/tabs/settings/');
+(function () {
+  const fs2 = require('fs');
+  const setPath = path.join(ROOT, 'src/tabs/settings/settings.js');
+  if (fs2.existsSync(setPath)) ok('src/tabs/settings/settings.js існує (крок 21 модуляризації)');
+  else bad('ЗНИК tabs/settings/settings.js — крок 21 розбивки коду втрачено');
+  const SET1_FNS = ['setShowSongTitle', 'setShowTransName', 'pickCloudSyncFolder', 'syncLibraryToCloud', 'syncLibraryFromCloud', 'setAutoCloudSync'];
+  const SET2_FNS = ['manualCheckUpdates', 'runPreflightCheck'];
+  const SET4_FNS = ['renderSettingsTab', 'applyProfile', 'deleteProfile', 'backupAll', 'restoreAll', 'saveProfile', 'setUi', 'setAutoLaunch', 'uiBeep', 'setTrainingMode', 'clearChangeLog'];
+  const ex1 = read('src/extras-1.js'), ex2 = read('src/extras-2.js'), ex4 = read('src/extras-4.js');
+  const dup1 = SET1_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex1));
+  const dup2 = SET2_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex2));
+  const dup4 = SET4_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex4));
+  if (!dup1.length && !dup2.length && !dup4.length) ok('жодна з 19 винесених функцій (Налаштування) не задубльована назад в extras-1/2/4.js');
+  else bad('Задубльовано назад: ' + dup1.concat(dup2, dup4).join(', '));
+  const setSrc = fs2.existsSync(setPath) ? fs2.readFileSync(setPath, 'utf8') : '';
+  const missSet = SET1_FNS.concat(SET2_FNS, SET4_FNS).filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(setSrc));
+  if (!missSet.length) ok('усі 19 функцій (Налаштування, з трьох файлів-джерел) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missSet.join(', '));
+  const ix = SRC.index;
+  const iSet = ix.indexOf('<script src="tabs/settings/settings.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iSet >= 0 && iExtras4 >= 0 && iSet < iExtras4)
+    ok('<script> для settings.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — dispatch-таблиця renderTabInto впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 19): вкладка План служби винесена в src/tabs/service_planner/');
+(function () {
+  const fs2 = require('fs');
+  const svcPath = path.join(ROOT, 'src/tabs/service_planner/service_planner.js');
+  if (fs2.existsSync(svcPath)) ok('src/tabs/service_planner/service_planner.js існує (крок 19 модуляризації)');
+  else bad('ЗНИК tabs/service_planner/service_planner.js — крок 19 розбивки коду втрачено');
+  const SVC_FNS = ['renderServiceTab', 'svcNewFromTemplate', 'svcLoad', 'svcDuplicate', 'svcDelete',
+    'svcSetColor', 'svcRelink', 'svcSetDuration', 'svcGoTo', 'svcMove', 'svcRemove', 'svcRefreshSongPick',
+    'svcAddSong', 'svcAddBible', 'svcAddSimple', 'svcSaveAs', 'svcSaveAsTemplate', 'svcExport', 'svcImport',
+    'svcClear', 'svcPrev', 'svcNext', 'svcPrint', 'svcGenerateReport', 'svcResetTiming'];
+  const ex3 = read('src/extras-3.js');
+  const dup = SVC_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex3));
+  if (!dup.length) ok('жодна з 25 винесених функцій (План служби) не задубльована назад в extras-3.js');
+  else bad('Задубльовано назад в extras-3.js: ' + dup.join(', '));
+  const svcSrc = fs2.existsSync(svcPath) ? fs2.readFileSync(svcPath, 'utf8') : '';
+  const missSvc = SVC_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(svcSrc));
+  if (!missSvc.length) ok('усі 25 функцій (План служби) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missSvc.join(', '));
+  const ix = SRC.index;
+  const iSvc = ix.indexOf('<script src="tabs/service_planner/service_planner.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iSvc >= 0 && iExtras4 >= 0 && iSvc < iExtras4)
+    ok('<script> для service_planner.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 20): вкладка Шари винесена в src/tabs/layers/');
+(function () {
+  const fs2 = require('fs');
+  const layPath = path.join(ROOT, 'src/tabs/layers/layers.js');
+  if (fs2.existsSync(layPath)) ok('src/tabs/layers/layers.js існує (крок 20 модуляризації)');
+  else bad('ЗНИК tabs/layers/layers.js — крок 20 розбивки коду втрачено');
+  const LAY_FNS = ['renderLayersTab', 'setAlertCfg', 'loadBgVideo', 'clearBgVideo', 'loadBgQueue',
+    'removeBgQueueItem', 'setBgQueueInterval', 'bgQueueStart', 'bgQueueStop', 'loadLogo', 'selectLogoOutput',
+    'setLogoPosition', 'setLogoSize', 'selectWatermarkOutput', 'setWatermark', 'setWatermarkPosition',
+    'toggleWatermark', 'setAlertTargetOutput', 'hideAlert', 'loadBgAudio', 'playBgAudio', 'stopBgAudio', 'setBgVolume'];
+  const ex3 = read('src/extras-3.js');
+  const dup = LAY_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex3));
+  if (!dup.length) ok('жодна з 23 винесених функцій (Шари) не задубльована назад в extras-3.js');
+  else bad('Задубльовано назад в extras-3.js: ' + dup.join(', '));
+  const laySrc = fs2.existsSync(layPath) ? fs2.readFileSync(layPath, 'utf8') : '';
+  const missLay = LAY_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(laySrc));
+  if (!missLay.length) ok('усі 23 функції (Шари) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missLay.join(', '));
+  // toggleFreeze/showLogo/sendAlert — глибоко спільні (Emergency-панель),
+  // МАЛИ лишитись на місці, не переноситись і не задублюватись.
+  const ex3check = read('src/extras-3.js');
+  if (/^function toggleFreeze\(/m.test(ex3check) && /^function showLogo\(/m.test(ex3check) && /^function sendAlert\(/m.test(ex3check))
+    ok('toggleFreeze/showLogo/sendAlert навмисно лишились у extras-3.js (глибоко спільні з Аварійною панеллю)');
+  else bad('Одна з toggleFreeze/showLogo/sendAlert зникла з extras-3.js — регресія');
+  const ix = SRC.index;
+  const iLay = ix.indexOf('<script src="tabs/layers/layers.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iLay >= 0 && iExtras4 >= 0 && iLay < iExtras4)
+    ok('<script> для layers.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 17): вкладка Станції винесена в src/tabs/stations/');
+(function () {
+  const fs2 = require('fs');
+  const stPath = path.join(ROOT, 'src/tabs/stations/stations.js');
+  if (fs2.existsSync(stPath)) ok('src/tabs/stations/stations.js існує (крок 17 модуляризації)');
+  else bad('ЗНИК tabs/stations/stations.js — крок 17 розбивки коду втрачено');
+  const ST3_FNS = ['saveStationCfg', 'loadStationCfg', 'startHost', 'stopHost', 'connectStation', 'disconnectStation', 'renderStationClients'];
+  const ST4_FNS = ['renderStationsTab', 'setStationMode', 'stationsStartPult', 'stationsStopPult'];
+  const ex3 = read('src/extras-3.js'), ex4 = read('src/extras-4.js');
+  const dup3 = ST3_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex3));
+  const dup4 = ST4_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex4));
+  if (!dup3.length && !dup4.length) ok('жодна з 11 винесених функцій (Станції) не задубльована назад в extras-3.js/extras-4.js');
+  else bad('Задубльовано назад: ' + dup3.concat(dup4).join(', '));
+  const stSrc = fs2.existsSync(stPath) ? fs2.readFileSync(stPath, 'utf8') : '';
+  const missSt = ST3_FNS.concat(ST4_FNS).filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(stSrc));
+  if (!missSt.length) ok('усі 11 функцій (Станції, з двох файлів-джерел) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missSt.join(', '));
+  // isClientStation/stationSend/applyStationCommand — глибоко спільні,
+  // МАЛИ лишитись на місці, не переноситись і не задублюватись.
+  if (/^function isClientStation\(/m.test(ex3) && /^function stationSend\(/m.test(ex3) && /^function applyStationCommand\(/m.test(ex3))
+    ok('isClientStation/stationSend/applyStationCommand навмисно лишились на місці (глибоко спільні з goLive-конвеєром)');
+  else bad('Одна з isClientStation/stationSend/applyStationCommand зникла зі свого файлу — регресія');
+  const ix = SRC.index;
+  const iSt = ix.indexOf('<script src="tabs/stations/stations.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iSt >= 0 && iExtras4 >= 0 && iSt < iExtras4)
+    ok('<script> для stations.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 18): вкладка QR-екран винесена в src/tabs/qrscreen/');
+(function () {
+  const fs2 = require('fs');
+  const qrPath = path.join(ROOT, 'src/tabs/qrscreen/qrscreen.js');
+  if (fs2.existsSync(qrPath)) ok('src/tabs/qrscreen/qrscreen.js існує (крок 18 модуляризації)');
+  else bad('ЗНИК tabs/qrscreen/qrscreen.js — крок 18 розбивки коду втрачено');
+  const QR_FNS = ['qrState', 'saveQrScreen', 'setQr', 'setQrSize', 'setQrItem', 'loadQrPhoto',
+    'loadQrBanner', 'composeQrScreen', 'updateQrPreview', 'renderQrOutputRow', 'sendQrScreenTo',
+    'sendQrScreen', 'clearQrScreenFrom', 'qrScreenLogo', 'qrScreenClearLogo', 'qrScreenLogoSize',
+    'qrList', 'qrScreenSave', 'qrScreenLoad', 'qrScreenDelete', 'renderQrScreenTab'];
+  const ex3 = read('src/extras-3.js');
+  const dup = QR_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex3));
+  if (!dup.length) ok('жодна з 20 винесених функцій (QR-екран) не задубльована назад в extras-3.js');
+  else bad('Задубльовано назад в extras-3.js: ' + dup.join(', '));
+  const qrSrc = fs2.existsSync(qrPath) ? fs2.readFileSync(qrPath, 'utf8') : '';
+  const missQr = QR_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(qrSrc));
+  if (!missQr.length) ok('усі 20 функцій (QR-екран) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missQr.join(', '));
+  if (/var qrLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(qrSrc))
+    ok('qrLiveMap переїхав разом із функціями, що його використовують');
+  else bad('qrLiveMap загубився при переносі — sendQrScreenTo/clearQrScreenFrom впадуть');
+  const ix = SRC.index;
+  const iQr = ix.indexOf('<script src="tabs/qrscreen/qrscreen.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iQr >= 0 && iExtras4 >= 0 && iQr < iExtras4)
+    ok('<script> для qrscreen.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 15): вкладка Автоматизація винесена в src/tabs/automation/');
+(function () {
+  const fs2 = require('fs');
+  const autoPath = path.join(ROOT, 'src/tabs/automation/automation.js');
+  if (fs2.existsSync(autoPath)) ok('src/tabs/automation/automation.js існує (крок 15 модуляризації)');
+  else bad('ЗНИК tabs/automation/automation.js — крок 15 розбивки коду втрачено');
+  const AUTO_FNS = ['renderAutomationTab', 'setSchedule', 'removeSchedule', 'restoreSong', 'addSchedule', 'setAutoBackup', 'setLang', 'emptyTrash'];
+  const ex4 = read('src/extras-4.js');
+  const dup = AUTO_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex4));
+  if (!dup.length) ok('жодна з 8 винесених функцій (Автоматизація) не задубльована назад в extras-4.js');
+  else bad('Задубльовано назад в extras-4.js: ' + dup.join(', '));
+  const autoSrc = fs2.existsSync(autoPath) ? fs2.readFileSync(autoPath, 'utf8') : '';
+  const missAuto = AUTO_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(autoSrc));
+  if (!missAuto.length) ok('усі 8 функцій (Автоматизація) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missAuto.join(', '));
+  const ix = SRC.index;
+  const iAuto = ix.indexOf('<script src="tabs/automation/automation.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iAuto >= 0 && iExtras4 >= 0 && iAuto < iExtras4)
+    ok('<script> для automation.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 16): вкладка Додатково (2/3 мова + OBS) винесена в src/tabs/extras_lang_obs/');
+(function () {
+  const fs2 = require('fs');
+  const exPath = path.join(ROOT, 'src/tabs/extras_lang_obs/extras_lang_obs.js');
+  if (fs2.existsSync(exPath)) ok('src/tabs/extras_lang_obs/extras_lang_obs.js існує (крок 16 модуляризації)');
+  else bad('ЗНИК tabs/extras_lang_obs/extras_lang_obs.js — крок 16 розбивки коду втрачено');
+  const EX2_FNS = ['setSecondLang', 'setThirdLang', 'setSecondLangMode', 'setTranspose', 'setAutoTimer'];
+  const EX3_FNS = ['obsConnect', 'obsDisconnect', 'obsSceneIdx', 'obsAct', 'renderExtrasTab'];
+  const ex2 = read('src/extras-2.js'), ex3 = read('src/extras-3.js');
+  const dup2 = EX2_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex2));
+  const dup3 = EX3_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex3));
+  if (!dup2.length && !dup3.length) ok('жодна з 10 винесених функцій (Додатково) не задубльована назад в extras-2.js/extras-3.js');
+  else bad('Задубльовано назад: ' + dup2.concat(dup3).join(', '));
+  const exSrc = fs2.existsSync(exPath) ? fs2.readFileSync(exPath, 'utf8') : '';
+  const missEx = EX2_FNS.concat(EX3_FNS).filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(exSrc));
+  if (!missEx.length) ok('усі 10 функцій (Додатково, з двох файлів-джерел) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missEx.join(', '));
+  const ix = SRC.index;
+  const iEx = ix.indexOf('<script src="tabs/extras_lang_obs/extras_lang_obs.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iEx >= 0 && iExtras4 >= 0 && iEx < iExtras4)
+    ok('<script> для extras_lang_obs.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 13): вкладка Живі субтитри винесена в src/tabs/captions/');
+(function () {
+  const fs2 = require('fs');
+  const capPath = path.join(ROOT, 'src/tabs/captions/captions.js');
+  if (fs2.existsSync(capPath)) ok('src/tabs/captions/captions.js існує (крок 13 модуляризації)');
+  else bad('ЗНИК tabs/captions/captions.js — крок 13 розбивки коду втрачено');
+  const CAP1_FNS = ['initCaptions', 'startCaptions', 'stopCaptions', 'clearCaptions', 'setCaptionLang',
+    'toggleVerseDetect', 'acceptVerseSuggestion', 'dismissVerseSuggestion', 'audioMeterRefreshDevices',
+    'audioMeterStart', 'audioMeterStop', 'setCaptionOutput'];
+  const ex1 = read('src/extras-1.js'), ex3 = read('src/extras-3.js');
+  const dup1 = CAP1_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex1));
+  const dupRender = /^function renderCaptionsTab\(/m.test(ex3);
+  if (!dup1.length && !dupRender) ok('жодна з 13 винесених частин (Живі субтитри) не задубльована назад в extras-1.js/extras-3.js');
+  else bad('Задубльовано назад: ' + dup1.concat(dupRender ? ['renderCaptionsTab'] : []).join(', '));
+  const capSrc = fs2.existsSync(capPath) ? fs2.readFileSync(capPath, 'utf8') : '';
+  const missCap = CAP1_FNS.concat(['renderCaptionsTab']).filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(capSrc));
+  if (!missCap.length) ok('усі 12 функцій + renderCaptionsTab справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missCap.join(', '));
+  if (/let _speechRecognition = null;/.test(capSrc)) ok('_speechRecognition переїхав разом із функціями, що його використовують');
+  else bad('_speechRecognition загубився при переносі');
+  const ix = SRC.index;
+  const iCap = ix.indexOf('<script src="tabs/captions/captions.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iCap >= 0 && iExtras4 >= 0 && iCap < iExtras4)
+    ok('<script> для captions.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 14): вкладка Керування винесена в src/tabs/control/');
+(function () {
+  const fs2 = require('fs');
+  const ctrlPath = path.join(ROOT, 'src/tabs/control/control.js');
+  if (fs2.existsSync(ctrlPath)) ok('src/tabs/control/control.js існує (крок 14 модуляризації)');
+  else bad('ЗНИК tabs/control/control.js — крок 14 розбивки коду втрачено');
+  const CTRL_FNS = ['renderControlTab', 'showBookmark', 'removeBookmark', 'toggleBlackout', 'addBookmark',
+    'setMasterVolume', 'duckAll', 'sermonStop', 'sermonStart', 'lockPanel'];
+  const ex4 = read('src/extras-4.js');
+  const dup = CTRL_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex4));
+  if (!dup.length) ok('жодна з 10 винесених функцій (Керування) не задубльована назад в extras-4.js');
+  else bad('Задубльовано назад в extras-4.js: ' + dup.join(', '));
+  const ctrlSrc = fs2.existsSync(ctrlPath) ? fs2.readFileSync(ctrlPath, 'utf8') : '';
+  const missCtrl = CTRL_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(ctrlSrc));
+  if (!missCtrl.length) ok('усі 10 функцій (Керування) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missCtrl.join(', '));
+  const ix = SRC.index;
+  const iCtrl = ix.indexOf('<script src="tabs/control/control.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iCtrl >= 0 && iExtras4 >= 0 && iCtrl < iExtras4)
+    ok('<script> для control.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — TABS-масив у pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 11): вкладка Трансляція винесена в src/tabs/stream/');
+(function () {
+  const fs2 = require('fs');
+  const stPath = path.join(ROOT, 'src/tabs/stream/stream.js');
+  if (fs2.existsSync(stPath)) ok('src/tabs/stream/stream.js існує (крок 11 модуляризації)');
+  else bad('ЗНИК tabs/stream/stream.js — крок 11 розбивки коду втрачено');
+  const ST_FNS = ['renderStreamTab', 'setLower', 'lowerShow', 'lowerHide'];
+  const ex3 = read('src/extras-3.js');
+  const dup = ST_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex3));
+  if (!dup.length) ok('жодна з 4 винесених функцій (Трансляція) не задубльована назад в extras-3.js');
+  else bad('Задубльовано назад в extras-3.js: ' + dup.join(', '));
+  const stSrc = fs2.existsSync(stPath) ? fs2.readFileSync(stPath, 'utf8') : '';
+  const missSt = ST_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(stSrc));
+  if (!missSt.length) ok('усі 4 функції (Трансляція) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missSt.join(', '));
+  // setLowerChroma — СПІЛЬНА функція (не ексклюзивна для Stream), мала
+  // НАВМИСНО лишитись в extras-1.js, а не переїхати сюди чи задублюватись.
+  const ex1 = read('src/extras-1.js');
+  if (/^function setLowerChroma\(/m.test(ex1) && !/^function setLowerChroma\(/m.test(stSrc))
+    ok('setLowerChroma навмисно лишилась у extras-1.js (спільна з іншою карткою, не переносилась)');
+  else bad('setLowerChroma або зникла з extras-1.js, або задублювалась у stream.js');
+  const ix = SRC.index;
+  const iSt = ix.indexOf('<script src="tabs/stream/stream.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iSt >= 0 && iExtras4 >= 0 && iSt < iExtras4)
+    ok('<script> для stream.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний');
+})();
+
+head('Модуляризація (крок 12): вкладка Мультив\'ю винесена в src/tabs/multiview/');
+(function () {
+  const fs2 = require('fs');
+  const mvPath = path.join(ROOT, 'src/tabs/multiview/multiview.js');
+  if (fs2.existsSync(mvPath)) ok('src/tabs/multiview/multiview.js існує (крок 12 модуляризації)');
+  else bad('ЗНИК tabs/multiview/multiview.js — крок 12 розбивки коду втрачено');
+  const MV_FNS = ['renderMultiviewTab', 'updateMultiviewFrame', 'updateMultiviewFrames'];
+  const ex4 = read('src/extras-4.js');
+  const dup = MV_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex4));
+  if (!dup.length) ok('жодна з 3 винесених функцій (Мультив\'ю) не задубльована назад в extras-4.js');
+  else bad('Задубльовано назад в extras-4.js: ' + dup.join(', '));
+  const mvSrc = fs2.existsSync(mvPath) ? fs2.readFileSync(mvPath, 'utf8') : '';
+  const missMv = MV_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(mvSrc));
+  if (!missMv.length) ok('усі 3 функції (Мультив\'ю) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missMv.join(', '));
+  if (/let _multiviewUpdateTimer = null;/.test(mvSrc)) ok('_multiviewUpdateTimer переїхав разом із функціями, що його використовують');
+  else bad('_multiviewUpdateTimer загубився при переносі');
+  const ix = SRC.index;
+  const iMv = ix.indexOf('<script src="tabs/multiview/multiview.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iMv >= 0 && iExtras4 >= 0 && iMv < iExtras4)
+    ok('<script> для multiview.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — TABS-масив у pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 10): вкладка Монітори винесена в src/tabs/monitors/');
+(function () {
+  const fs2 = require('fs');
+  const mnPath = path.join(ROOT, 'src/tabs/monitors/monitors.js');
+  if (fs2.existsSync(mnPath)) ok('src/tabs/monitors/monitors.js існує (крок 10 модуляризації)');
+  else bad('ЗНИК tabs/monitors/monitors.js — крок 10 розбивки коду втрачено');
+  const MN_FNS = ['renderMonitorsTab', 'bindOutputToDisplay', 'toggleTestPattern', 'setOutputFailover', 'identifyDisplays', 'refreshMonitors'];
+  const ex3 = read('src/extras-3.js');
+  const dup = MN_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex3));
+  if (!dup.length) ok('жодна з 6 винесених функцій (Монітори) не задубльована назад в extras-3.js');
+  else bad('Задубльовано назад в extras-3.js: ' + dup.join(', '));
+  const mnSrc = fs2.existsSync(mnPath) ? fs2.readFileSync(mnPath, 'utf8') : '';
+  const missMn = MN_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(mnSrc));
+  if (!missMn.length) ok('усі 6 функцій (Монітори) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missMn.join(', '));
+  const ix = SRC.index;
+  const iMn = ix.indexOf('<script src="tabs/monitors/monitors.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iMn >= 0 && iExtras4 >= 0 && iMn < iExtras4)
+    ok('<script> для monitors.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 9): Управління текстом винесено в src/tabs/text_control/');
+(function () {
+  const fs2 = require('fs');
+  const tcPath = path.join(ROOT, 'src/tabs/text_control/text_control.js');
+  if (fs2.existsSync(tcPath)) ok('src/tabs/text_control/text_control.js існує (крок 9 модуляризації)');
+  else bad('ЗНИК tabs/text_control/text_control.js — крок 9 розбивки коду втрачено');
+  const TC1_FNS = ['renderTextControlTab', 'applyTextSettingsToOutput', 'changeTextSize', 'setTextAlign',
+    'setTextOutput', 'setTextPosition', 'toggleTextStyle', 'updateTextBgColor', 'updateTextColor',
+    'updateTextSize', 'updateTextPreview'];
+  const TC2_FNS = ['setTextFont', '_applyToTextOutputs', 'setTextStroke', 'setTextStrokeColor', 'setTextScrim',
+    'setTextSafeArea', 'setTextLetterSpacing', 'setTextLineHeight', 'setTextFadeMs', 'setTextBgType',
+    'loadTextBgVideo', 'clearTextBgVideo', 'loadTextBgImage', 'clearTextBgImage'];
+  const ex1 = read('src/extras-1.js'), ex2 = read('src/extras-2.js');
+  const dup1 = TC1_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex1));
+  const dup2 = TC2_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex2));
+  if (!dup1.length && !dup2.length) ok('жодна з 25 винесених функцій (Управління текстом) не задубльована назад в extras-1.js/extras-2.js');
+  else bad('Задубльовано назад: ' + dup1.concat(dup2).join(', '));
+  const tcSrc = fs2.existsSync(tcPath) ? fs2.readFileSync(tcPath, 'utf8') : '';
+  const missTc = TC1_FNS.concat(TC2_FNS).filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(tcSrc));
+  if (!missTc.length) ok('усі 25 функцій (Управління текстом, з двох файлів-джерел) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missTc.join(', '));
+  const ix = SRC.index;
+  const iTc = ix.indexOf('<script src="tabs/text_control/text_control.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iTc >= 0 && iExtras4 >= 0 && iTc < iExtras4)
+    ok('<script> для text_control.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 8): MIDI-підсистема винесена в src/tabs/midi/midi.js');
+(function () {
+  const fs2 = require('fs');
+  const midiPath = path.join(ROOT, 'src/tabs/midi/midi.js');
+  if (fs2.existsSync(midiPath)) ok('src/tabs/midi/midi.js існує (крок 8 модуляризації)');
+  else bad('ЗНИК tabs/midi/midi.js — крок 8 розбивки коду втрачено');
+  const MIDI_FNS = ['loadMidiMap', 'saveMidiMap', 'initMidi', 'onMidiMessage', 'midiStartLearn', 'midiClear', 'renderMidiCard'];
+  const ex1 = read('src/extras-1.js');
+  const dup = MIDI_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex1));
+  if (!dup.length) ok('жодна з 7 винесених функцій (MIDI) не задубльована назад в extras-1.js');
+  else bad('Задубльовано назад в extras-1.js: ' + dup.join(', '));
+  const midiSrc = fs2.existsSync(midiPath) ? fs2.readFileSync(midiPath, 'utf8') : '';
+  const missMidi = MIDI_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(midiSrc));
+  if (!missMidi.length) ok('усі 7 функцій (MIDI) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missMidi.join(', '));
+  if (/const MIDI_ACTIONS = \[/.test(midiSrc)) ok('MIDI_ACTIONS переїхав разом із функціями, що його використовують');
+  else bad('MIDI_ACTIONS загубився при переносі — renderMidiCard/onMidiMessage впадуть');
+  // Хрест-крос: MIDI (renderer-only) і OSC (main-process) — різні речі,
+  // не мали злитись в один файл попри те, що обидва тригери «зовнішнім
+  // контролером».
+  if (!/dgram|ipcMain/.test(midiSrc)) ok('midi.js не містить OSC/main-process коду (dgram/ipcMain) — чисте розділення MIDI vs OSC');
+  else bad('midi.js схоже містить OSC-код — межа між MIDI і OSC розмита');
+  const ix = SRC.index;
+  const iMidi = ix.indexOf('<script src="tabs/midi/midi.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iMidi >= 0 && iExtras4 >= 0 && iMidi < iExtras4)
+    ok('<script> для midi.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Модуляризація (крок 7): OSC-підсистема винесена в src/main/osc.js (перший розкол main.js)');
+(function () {
+  const fs2 = require('fs');
+  const oscPath = path.join(ROOT, 'src/main/osc.js');
+  if (fs2.existsSync(oscPath)) ok('src/main/osc.js існує (крок 7 — перший модуль головного процесу після app-menu.js/office-extract.js)');
+  else bad('ЗНИК src/main/osc.js — крок 7 розбивки коду втрачено');
+  const m = SRC.main;
+  const OSC_IDENT = ['oscServer', 'oscPort', 'oscMap', 'oscLearn', 'padOscString', 'parseOscAddress', 'startOscServer', 'stopOscServer'];
+  const dup = OSC_IDENT.filter(id => new RegExp('\\b(let|const|function) ' + id + '\\b').test(m));
+  if (!dup.length) ok('жодна зі старих OSC-змінних/функцій не лишилась в main.js (усі переїхали)');
+  else bad('OSC-код і досі частково в main.js: ' + dup.join(', '));
+  if (/require\('\.\/src\/main\/osc'\)/.test(m) && /oscModule\.register\(ipcMain, \(\) => mainWin\)/.test(m))
+    ok('main.js підключає osc.js через register(ipcMain, () => mainWin) — гетер, не значення (mainWin ще не існує на момент реєстрації)');
+  else bad('main.js не підключає osc.js правильно — OSC IPC-хендлери не зареєструються');
+  // 5 ipcMain.handle('...osc...') мають БУТИ ВСЕРЕДИНІ osc.js, а не
+  // дублюватись/лишатись у main.js
+  const oscHandlesInMain = (m.match(/ipcMain\.handle\('(start-osc-server|stop-osc-server|osc-learn|osc-clear|osc-get-map)'/g) || []);
+  if (!oscHandlesInMain.length) ok('усі 5 ipcMain.handle для OSC прибрано з main.js (тепер лише в osc.js)');
+  else bad('Задубльовані/незняті OSC-хендлери в main.js: ' + oscHandlesInMain.join(', '));
+  const oscSrc = fs2.existsSync(oscPath) ? fs2.readFileSync(oscPath, 'utf8') : '';
+  const oscHandlesInModule = (oscSrc.match(/ipcMain\.handle\('(start-osc-server|stop-osc-server|osc-learn|osc-clear|osc-get-map)'/g) || []);
+  if (oscHandlesInModule.length === 5) ok('усі 5 ipcMain.handle для OSC присутні всередині osc.js');
+  else bad('У osc.js бракує IPC-хендлерів OSC (знайдено ' + oscHandlesInModule.length + ' з 5)');
+  // Cleanup-виклик при виході більше НЕ читає голу typeof stopOscServer —
+  // це задублена локальна ідентифікація зникла разом з переносом.
+  if (/oscModule\.stopOscServer\(\)/.test(m) && !/typeof stopOscServer === 'function'\) stopOscServer\(\)/.test(m))
+    ok('cleanup при виході викликає oscModule.stopOscServer() (не биту стару typeof-перевірку)');
+  else bad('cleanup при виході досі посилається на видалену локальну stopOscServer — застосунок впаде при закритті вікна');
+})();
+
+head('Модуляризація (крок 6): вкладка Медіа винесена в src/tabs/media/');
+(function () {
+  const fs2 = require('fs');
+  const mdPath = path.join(ROOT, 'src/tabs/media/media.js');
+  if (fs2.existsSync(mdPath)) ok('src/tabs/media/media.js існує (крок 6 модуляризації)');
+  else bad('ЗНИК tabs/media/media.js — крок 6 розбивки коду втрачено');
+  const MD_FNS = ['renderMediaTab', 'loadMediaFiles', 'renderMediaList', 'playMedia', 'removeMedia',
+    'setMediaCategory', 'renderMediaOutBtns', 'clearMediaFrom', 'sendMediaToProjector',
+    'stopMedia', 'toggleMediaPlay', 'loadYouTube'];
+  const ex1 = read('src/extras-1.js');
+  const dup = MD_FNS.filter(fn => new RegExp('^function ' + fn + '\\(', 'm').test(ex1));
+  if (!dup.length) ok('жодна з 12 винесених функцій (Медіа) не задубльована назад в extras-1.js');
+  else bad('Задубльовано назад в extras-1.js: ' + dup.join(', '));
+  const mdSrc = fs2.existsSync(mdPath) ? fs2.readFileSync(mdPath, 'utf8') : '';
+  const missMd = MD_FNS.filter(fn => !new RegExp('^function ' + fn + '\\(', 'm').test(mdSrc));
+  if (!missMd.length) ok('усі 12 функцій (Медіа) справді присутні у новому файлі');
+  else bad('Бракує у новому файлі: ' + missMd.join(', '));
+  if (/var mediaLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(mdSrc))
+    ok('mediaLiveMap переїхала разом із функціями, що її використовують');
+  else bad('mediaLiveMap загубилась при переносі — clearMediaFrom/renderMediaOutBtns впадуть');
+  const ix = SRC.index;
+  const iMd = ix.indexOf('<script src="tabs/media/media.js">');
+  const iExtras4 = ix.indexOf('<script src="extras-4.js">');
+  if (iMd >= 0 && iExtras4 >= 0 && iMd < iExtras4)
+    ok('<script> для media.js стоїть ДО extras-4.js (порядок завантаження коректний)');
+  else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Аудит: адресний вивід/прибирання «Все» — Таймер/Графіка/H2R Lower Third/Титри/Конфеті/Тікер/Медіа');
+(function () {
+  const ex = SRC.extras, tm = read('src/timer.js');
+  // Таймер
+  if (/var timerLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(tm) && /function clearTimerFrom\(n\)/.test(tm) && /pv2ClearOutput\(n\)/.test(tm))
+    ok('Таймер: timerLiveMap + clearTimerFrom(n) через канонічний pv2ClearOutput');
+  else bad('Таймер: зникло відстеження живих виходів або clearTimerFrom');
+  // Графіка
+  if (/var graphicsLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(ex) && /function clearGraphicsFrom\(n\)/.test(ex))
+    ok('Графіка: graphicsLiveMap + clearGraphicsFrom(n) — 🔴-підсвітка й «прибрати»');
+  else bad('Графіка: зникло відстеження живих виходів або clearGraphicsFrom');
+  // H2R Lower Third
+  if (/var h2rLowerLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(ex) && /function renderH2RLowerOutBtns\(\)/.test(ex) && /id="h2rLowerOutBtns"/.test(ex))
+    ok('H2R Lower Third: h2rLowerLiveMap + renderH2RLowerOutBtns() — «На вихід» тепер теж 🔴-підсвічується');
+  else bad('H2R Lower Third: зникло відстеження живих виходів або контейнер #h2rLowerOutBtns');
+  // Титри подяки — раніше прибрати їх не можна було взагалі
+  if (/var creditsLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(ex) && /function clearCredits\(n\)/.test(ex))
+    ok('Титри подяки: creditsLiveMap + clearCredits(n) — раніше прибрати їх не можна було взагалі');
+  else bad('Титри подяки: зникло відстеження живих виходів або clearCredits');
+  // Конфеті — одноразовий ефект, підсвітка тимчасова (знімається сама через ~6.5с)
+  if (/var confettiLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(ex) && /var confettiLiveTimers = \{\};/.test(ex) && /function clearConfetti\(n\)/.test(ex) && /setTimeout\(\(\) => \{ confettiLiveMap\[n\] = false;/.test(ex))
+    ok('Конфеті: confettiLiveMap з автозняттям через ~6.5с (одноразовий ефект, не персистентний стан)');
+  else bad('Конфеті: зникло тимчасове відстеження живих виходів');
+  // Тікер — stopTicker(n) лишився як був (канонічний «прибрати» для цієї фічі), додано трекінг
+  if (/var tickerLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(ex) && /function renderTickerOutBtns\(\)/.test(ex))
+    ok('Тікер: tickerLiveMap + renderTickerOutBtns() — «Прибрати» тепер лише для активних виходів');
+  else bad('Тікер: зникло відстеження живих виходів або renderTickerOutBtns');
+  // Медіа-програвач
+  if (/var mediaLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(ex) && /function clearMediaFrom\(n\)/.test(ex))
+    ok('Медіа-програвач: mediaLiveMap + clearMediaFrom(n) через канонічний pv2ClearOutput');
+  else bad('Медіа-програвач: зникло відстеження живих виходів або clearMediaFrom');
+  // h2r/media/qrscreen рендеряться ОДИН РАЗ при старті (окремий механізм,
+  // не renderTabInto) — усі 7 нових рендер-функцій мусять бути в steps,
+  // інакше кнопки лишаться порожніми до першої дії користувача.
+  const stepsBody = (function () {
+    const a = ex.indexOf('const steps = [');
+    if (a < 0) return '';
+    const open = ex.indexOf('[', a);
+    let depth = 0;
+    for (let i = open; i < ex.length; i++) {
+      if (ex[i] === '[') depth++;
+      else if (ex[i] === ']') { depth--; if (depth === 0) return ex.slice(open + 1, i); }
+    }
+    return '';
+  })();
+  const need = ['renderMediaOutBtns', 'renderGraphicsOutBtns', 'renderH2RLowerOutBtns', 'renderCreditsOutBtns', 'renderConfettiOutBtns', 'renderTickerOutBtns', 'renderQrOutputRow'];
+  if (need.every(n => stepsBody.includes(n)))
+    ok('steps: усі 7 нових рендер-функцій ініціалізуються при старті (h2r/media/qrscreen будуються лише раз)');
+  else bad('steps: бракує однієї з нових рендер-функцій — кнопки на цій вкладці стартують порожніми');
+})();
+
+head('Словник перекладу (CZ/EN)');
+(function() {
+  // Формалізований пошук підрядкових колізій у UI_DICT (tools/check-translation-
+  // collisions.js) — окремий крок, не рахунок регексом по SRC.*, бо сам
+  // будує повний корпус коду й ключі словника. Додано 2026-08-29 після
+  // рев'ю, що знайшло 8 таких багів вручну.
+  try {
+    const { main } = require('./check-translation-collisions.js');
+    if (main() === 0) ok('словник перекладу: підрядкових колізій не знайдено (npm run check-i18n)');
+    else bad('словник перекладу: є підозрілі колізії — прогони npm run check-i18n для деталей');
+  } catch (e) {
+    bad('словник перекладу: перевірка не запустилась → ' + e.message);
+  }
 })();
 
 

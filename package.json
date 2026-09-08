@@ -1,6 +1,6 @@
 {
   "name": "church-projector",
-  "version": "2.3.1",
+  "version": "2.4.4",
   "description": "Церква Прага — Панель керування проектором",
   "main": "main.js",
   "scripts": {
@@ -9,7 +9,8 @@
     "build-win": "electron-builder --win",
     "publish-win": "electron-builder --win --publish always",
     "publish-mac": "electron-builder --mac --publish always",
-    "test": "node tools/smoke-test.js"
+    "test": "node tools/smoke-test.js",
+    "check-i18n": "node tools/check-translation-collisions.js"
   },
   "build": {
     "appId": "com.church.projector",
@@ -24,12 +25,17 @@
         "dmg",
         "zip"
       ],
-      "artifactName": "${name}-${version}-${arch}.${ext}"
+      "artifactName": "${name}-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "NSCameraUsageDescription": "Потрібно для мультивью ATEM через картку захоплення (Виходи → ATEM)."
+      }
     },
     "win": {
       "target": [
-        "nsis"
-      ]
+        "nsis",
+        "zip"
+      ],
+      "artifactName": "${name}-setup-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -48,31 +54,37 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "vasyashkirey-wq",
-        "repo": "church-projector-"
+        "owner": "churchprogramcz-eng",
+        "repo": "church-projector"
       }
     ],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**"
-    ]
+    ],
+    "npmRebuild": false
   },
   "devDependencies": {
-    "electron": "^28.0.0",
+    "electron": "^28.3.3",
     "electron-builder": "^24.0.0"
   },
   "dependencies": {
+    "adm-zip": "^0.5.18",
+    "chokidar": "^3.6.0",
     "electron-updater": "^6.1.0",
     "ffmpeg-static": "^5.2.0",
     "heic-convert": "^2.1.0",
-    "qrcode": "^1.5.4",
+    "qrcode": "^1.5.3",
     "ws": "^8.16.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/vasyashkirey-wq/church-projector-.git"
+    "url": "https://github.com/churchprogramcz-eng/church-projector.git"
   },
   "optionalDependencies": {
     "atem-connection": "^3.8.0",
     "onvif": "^0.7.1"
+  },
+  "allowScripts": {
+    "electron@28.3.3": true
   }
 }

@@ -69,6 +69,57 @@ function loadPDF(input) {
     reader.readAsArrayBuffer(file);
   });
 }
+// PowerPoint (.pptx/.ppt) — конвертуємо в PDF через локально встановлену
+// LibreOffice (main.js), тоді подаємо результат у ТОЙ САМИЙ конвеєр
+// перегляду, яким уже користується loadPDF() вище — жодного окремого
+// показу слайдів PowerPoint не будуємо.
+function loadPowerPoint(input) {
+  var file = input.files[0];
+  if (!file) return;
+  var info = document.getElementById('pdfInfo');
+  info.style.display = 'block';
+  info.textContent = '📽 Конвертую ' + file.name + ' через LibreOffice…';
+  if (!window.electronAPI || !window.electronAPI.convertPptxToPdf) {
+    info.textContent = 'Помилка: конвертація PowerPoint недоступна в цій збірці';
+    return;
+  }
+  pptxNotes = {};   // нова презентація — забуваємо нотатки попередньої
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    // Нотатки видобуваємо ОКРЕМО й не чекаємо на них — вони другорядні, і
+    // якщо видобування впаде (напр. презентація без нотаток узагалі),
+    // показ самих слайдів не повинен через це зупинитись.
+    if (window.electronAPI.extractPptxNotes) {
+      window.electronAPI.extractPptxNotes(e.target.result).then(function(res) {
+        if (res && res.ok) { pptxNotes = res.notes || {}; updateSlideNotesDisplay(); }
+      }).catch(function() {});
+    }
+    window.electronAPI.convertPptxToPdf(e.target.result).then(function(res) {
+      if (!res || !res.ok) {
+        info.textContent = '⚠️ ' + ((res && res.error) || 'Не вдалось конвертувати PowerPoint');
+        return;
+      }
+      loadPDFJS(function() {
+        // res.data — Buffer/Uint8Array з готовим PDF; pdf.js приймає його так
+        // само, як ArrayBuffer із FileReader у loadPDF() вище.
+        pdfjsLib.getDocument({data: res.data}).promise.then(function(pdf) {
+          pdfDoc = pdf;
+          pdfPageCount = pdf.numPages;
+          pdfPageNum = 1;
+          info.textContent = 'Завантажено: ' + file.name + ' (' + pdfPageCount + ' слайдів)';
+          renderPDFThumbs();
+          renderPDFPage(1, document.getElementById('pdfPreviewCanvas'));
+          updateSlideNotesDisplay();
+        }).catch(function(err) {
+          info.textContent = 'Помилка показу: ' + err.message;
+        });
+      });
+    }).catch(function(err) {
+      info.textContent = '⚠️ Помилка конвертації: ' + err.message;
+    });
+  };
+  reader.readAsArrayBuffer(file);
+}
 
 function renderPDFPage(num, canvas, cb) {
   if (!pdfDoc) return;
@@ -111,6 +162,21 @@ function renderPDFThumbs() {
   updateSlideCounter();
 }
 
+// Нотатки доповідача з поточного PowerPoint (якщо файл ними мав) —
+// {номер_слайду: текст}. Порожній об'єкт, якщо завантажено звичайний PDF
+// або презентація без нотаток.
+var pptxNotes = {};
+function updateSlideNotesDisplay() {
+  var box = document.getElementById('pptxNotesBox');
+  if (!box) return;
+  var text = pptxNotes[pdfPageNum];
+  if (text) {
+    box.style.display = 'block';
+    box.textContent = '📝 ' + text;
+  } else {
+    box.style.display = 'none';
+  }
+}
 function selectPDFPage(num) {
   pdfPageNum = num;
   document.querySelectorAll('[id^="pdfthumb-"]').forEach(function(el) {
@@ -118,6 +184,7 @@ function selectPDFPage(num) {
   });
   renderPDFPage(num, document.getElementById('pdfPreviewCanvas'));
   updateSlideCounter();
+  updateSlideNotesDisplay();
 }
 
 function prevSlide() {
@@ -147,6 +214,16 @@ function sendSlideToProjector() {
     sendImageToProjector(dataUrl, 'PDF стор. ' + pdfPageNum, 'pdf');
   });
 }
+// Той самий рендер сторінки PDF, але на обраний вихід (чи кілька) — той самий
+// патерн, що й «📖 Показати на 2 виводи» / «Усі 4 виводи» у Біблії.
+function sendSlideToOutputs(targets) {
+  if (!pdfDoc) return;
+  var offCanvas = document.createElement('canvas');
+  renderPDFPage(pdfPageNum, offCanvas, function() {
+    var dataUrl = offCanvas.toDataURL('image/jpeg', 0.9);
+    sendImageToOutputs(dataUrl, 'PDF стор. ' + pdfPageNum, 'pdf', targets);
+  });
+}
 
 // sourceTag розрізняє ДВІ різні речі, що йдуть через цю саму функцію:
 // PDF-сторінку ('pdf', гортається nextSlide/prevSlide) і ручний слайд з
@@ -155,17 +232,34 @@ function sendSlideToProjector() {
 // Пробіл/Стрілка під час показу РУЧНОГО слайда або нічого не робили
 // (якщо PDF цього сеансу взагалі не відкривали), або — гірше — тихо
 // підміняли слайд на СТАРУ сторінку раніше відкритого PDF.
+// Обгортає dataURL-картинку (сторінка PDF або ручний слайд) у мінімальний
+// HTML — та сама розмітка, якою користуються і одноцільове, і по-вихідне
+// надсилання нижче, щоб не дублювати шаблон.
+function buildImageSlideHTML(dataUrl) {
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
+    'body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;}' +
+    'img{max-width:100%;max-height:100vh;object-fit:contain;}' +
+    '</style></head><body><img src="' + dataUrl + '"></body></html>';
+}
 function sendImageToProjector(dataUrl, label, sourceTag) {
   lastLiveSource = sourceTag || 'slide';
   lastLiveGraphics = false;
   lastLivePlain = false;
   lastLiveMulti = false;
   try { if (typeof state !== 'undefined' && state) state.multiLive = []; } catch (e) {}
-  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
-    'body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;}' +
-    'img{max-width:100%;max-height:100vh;object-fit:contain;}' +
-    '</style></head><body><img src="' + dataUrl + '"></body></html>';
-  sendHTMLToProjector(html, label);
+  sendHTMLToProjector(buildImageSlideHTML(dataUrl), label);
+}
+// По-вихідне надсилання того самого зображення — на конкретний вихід або
+// одразу на кілька (той самий шаблон HTML, що й вище, тим самим механізмом,
+// яким уже користуються оголошення/таймер/QR — sendHTMLToOutputN).
+function sendImageToOutputs(dataUrl, label, sourceTag, targets) {
+  lastLiveSource = sourceTag || 'slide';
+  lastLiveGraphics = false;
+  lastLivePlain = false;
+  lastLiveMulti = false;
+  try { if (typeof state !== 'undefined' && state) state.multiLive = []; } catch (e) {}
+  var html = buildImageSlideHTML(dataUrl);
+  (targets || [1]).forEach(function(n) { sendHTMLToOutputN(n, html, label); });
 }
 
 // ============================================================
@@ -359,6 +453,12 @@ function sendCustomSlide() {
   var dataUrl = canvas.toDataURL('image/jpeg', 0.9);
   var heading = document.getElementById('slideHeading').value.trim();
   sendImageToProjector(dataUrl, heading || 'Слайд');
+}
+function sendCustomSlideTo(targets) {
+  var canvas = document.getElementById('slideCanvas');
+  var dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+  var heading = document.getElementById('slideHeading').value.trim();
+  sendImageToOutputs(dataUrl, heading || 'Слайд', 'slide', targets);
 }
 
 function sendSavedSlide(slide) {

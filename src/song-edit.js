@@ -239,49 +239,35 @@ function renderSongBookOptions() {
     if (books.indexOf(prev) !== -1) sel.value = prev;
   }
 
+  // Той самий список — для фільтра збірників біля головного пошуку («🎵 Пісні»).
+  var selMain = document.getElementById('songBookFilterMain');
+  if (selMain) {
+    var prevMain = selMain.value;
+    selMain.innerHTML = '<option value="">📚 Усі збірники</option>' +
+      books.map(function(b) { return '<option value="' + escHtml(b) + '">' + escHtml(b) + '</option>'; }).join('');
+    if (books.indexOf(prevMain) !== -1) selMain.value = prevMain;
+  }
+
   var dl = document.getElementById('songBookList');
   if (dl) dl.innerHTML = books.map(function(b) { return '<option value="' + escHtml(b) + '">'; }).join('');
 }
 
-// ---- Масовий вибір пісень (для видалення декількох за раз) ----
-var _selectedSongIds = {};       // { songId: true } — позначені пісні
-var _lastRenderedSongIds = [];   // id пісень у ПОТОЧНОМУ відфільтрованому списку
-
-function toggleSongSelect(id, checked) {
-  if (checked) _selectedSongIds[id] = true; else delete _selectedSongIds[id];
-  updateSongBulkDeleteUI();
-  var allBox = document.getElementById('songSelectAllBox');
-  if (allBox) allBox.checked = _lastRenderedSongIds.length > 0 && _lastRenderedSongIds.every(function(i){ return !!_selectedSongIds[i]; });
-}
-
-function toggleSelectAllSongs(checked) {
-  _lastRenderedSongIds.forEach(function(id) { if (checked) _selectedSongIds[id] = true; else delete _selectedSongIds[id]; });
-  renderAllSongs();
-}
-
-function updateSongBulkDeleteUI() {
-  var n = Object.keys(_selectedSongIds).length;
-  var btn = document.getElementById('songBulkDeleteBtn');
-  var cnt = document.getElementById('songSelectedCount');
-  if (cnt) cnt.textContent = n;
-  if (btn) btn.style.display = n ? '' : 'none';
-}
-
-function deleteSelectedSongs() {
-  var ids = Object.keys(_selectedSongIds).map(Number);
-  if (!ids.length) return;
-  if (!confirm('Видалити обрані пісні (' + ids.length + ')? Їх можна відновити з кошика.')) return;
-  ids.forEach(function(id) {
-    var toDel = currentSongs.filter(function(s){ return s.id === id; })[0];
-    if (toDel && typeof trashSong === 'function') trashSong(toDel);
-  });
-  currentSongs = currentSongs.filter(function(s){ return ids.indexOf(s.id) === -1; });
-  saveSongs(currentSongs);
-  _selectedSongIds = {};
-  renderAllSongs();
-}
-
+// Пакетування (rafDebounce — наявний ідіом проєкту, як updateLivePanels):
+// ця функція викликалась із багатьох місць підряд, і кожен виклик повністю
+// перебудовував список. Тепер підряд ідучі виклики склеюються в один
+// перемальовок на кадр.
+// Обгортка — саме function-декларація з ЛІНИВОЮ ініціалізацією, а не
+// `const renderAllSongs = rafDebounce(...)`: const створив би temporal dead zone,
+// і будь-який виклик до цього рядка впав би з «Cannot access before
+// initialization» — рівно той баг, що вже двічі ловився в цьому проєкті
+// (loadDisplayToggles). Function-декларація піднімається (hoisting), тож
+// порядок завантаження файлів більше не має значення.
+var _renderAllSongsDeb = null;
 function renderAllSongs() {
+  if (!_renderAllSongsDeb) _renderAllSongsDeb = rafDebounce(_renderAllSongsNow);
+  return _renderAllSongsDeb.apply(null, arguments);
+}
+function _renderAllSongsNow() {
   renderSongBookOptions();
   var container = document.getElementById('allSongsList');
   container.innerHTML = '';
@@ -326,6 +312,44 @@ function renderAllSongs() {
       '<button class="btn btn-danger btn-sm" onclick="deleteSong('+s.id+')">✕</button>';
     container.appendChild(div);
   });
+}
+
+// ---- Масовий вибір пісень (для видалення декількох за раз) ----
+var _selectedSongIds = {};       // { songId: true } — позначені пісні
+var _lastRenderedSongIds = [];   // id пісень у ПОТОЧНОМУ відфільтрованому списку
+
+function toggleSongSelect(id, checked) {
+  if (checked) _selectedSongIds[id] = true; else delete _selectedSongIds[id];
+  updateSongBulkDeleteUI();
+  var allBox = document.getElementById('songSelectAllBox');
+  if (allBox) allBox.checked = _lastRenderedSongIds.length > 0 && _lastRenderedSongIds.every(function(i){ return !!_selectedSongIds[i]; });
+}
+
+function toggleSelectAllSongs(checked) {
+  _lastRenderedSongIds.forEach(function(id) { if (checked) _selectedSongIds[id] = true; else delete _selectedSongIds[id]; });
+  renderAllSongs();
+}
+
+function updateSongBulkDeleteUI() {
+  var n = Object.keys(_selectedSongIds).length;
+  var btn = document.getElementById('songBulkDeleteBtn');
+  var cnt = document.getElementById('songSelectedCount');
+  if (cnt) cnt.textContent = n;
+  if (btn) btn.style.display = n ? '' : 'none';
+}
+
+function deleteSelectedSongs() {
+  var ids = Object.keys(_selectedSongIds).map(Number);
+  if (!ids.length) return;
+  if (!confirm('Видалити обрані пісні (' + ids.length + ')? Їх можна відновити з кошика.')) return;
+  ids.forEach(function(id) {
+    var toDel = currentSongs.filter(function(s){ return s.id === id; })[0];
+    if (toDel && typeof trashSong === 'function') trashSong(toDel);
+  });
+  currentSongs = currentSongs.filter(function(s){ return ids.indexOf(s.id) === -1; });
+  saveSongs(currentSongs);
+  _selectedSongIds = {};
+  renderAllSongs();
 }
 
 function showMsg(msg, color) {

@@ -72,12 +72,76 @@ function setAtemStatus(connected, text) {
 }
 
 function showAtemControls(show) {
-  ['atemControlCard','atemRecordCard','atemScenesCard','atemMacrosCard'].forEach(function(id) {
+  ['atemControlCard','atemMvCard','atemControlCard2','atemRecordCard','atemScenesCard','atemMacrosCard'].forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = show ? 'block' : 'none';
   });
-  if (show) renderAtemInputs();
+  if (show) { renderAtemInputs(); if (typeof atemMultiviewRefreshDevices === 'function') atemMultiviewRefreshDevices(); }
 }
+
+// ---- Мультивью через картку захоплення (getUserMedia) ----
+// Стандартний веб-API браузера (Chromium, на якому побудований Electron) —
+// НЕ нативний модуль, НЕ мережевий протокол, жодного ризику компіляції.
+// Дешева USB-картка захоплення, підключена до мультивью-виходу ATEM,
+// розпізнається операційною системою як звичайна вебкамера.
+// ---- Захоплення відео через getUserMedia — узагальнено, не лише для ATEM ----
+// Стандартний веб-API браузера (Chromium, на якому побудований Electron) —
+// НЕ нативний модуль, НЕ мережевий протокол, жодного ризику компіляції.
+// Дешева USB-картка захоплення розпізнається операційною системою як
+// звичайна вебкамера. key — унікальний ідентифікатор картки (напр. 'atem',
+// 'h2r'), щоб кілька карток захоплення могли працювати НЕЗАЛЕЖНО й
+// одночасно, кожна зі своєю карткою відео (у більшості випадків достатньо
+// однієї фізичної USB-картки захоплення, підключеної по черзі до різного
+// джерела, але стан кожної картки в інтерфейсі тримається окремо).
+var videoCaptureStreams = {};
+function videoCaptureRefreshDevices(selectId) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  navigator.mediaDevices.enumerateDevices().then(function(devices) {
+    var sel = document.getElementById(selectId);
+    if (!sel) return;
+    var prevValue = sel.value;
+    var videoInputs = devices.filter(function(d) { return d.kind === 'videoinput'; });
+    sel.innerHTML = '<option value="">— обери пристрій захоплення —</option>' +
+      videoInputs.map(function(d, i) {
+        // Назва пристрою (label) браузер показує лише ПІСЛЯ того, як дозвіл
+        // на камеру був наданий хоча б раз — до того буде просто "Пристрій 1" тощо.
+        var name = d.label || ('Пристрій ' + (i + 1));
+        return '<option value="' + d.deviceId + '">' + escHtml(name) + '</option>';
+      }).join('');
+    if (prevValue && videoInputs.some(function(d) { return d.deviceId === prevValue; })) sel.value = prevValue;
+  }).catch(function(e) { console.warn('enumerateDevices не вдався:', e); });
+}
+function videoCaptureStart(key, selectId, videoId) {
+  var sel = document.getElementById(selectId);
+  var video = document.getElementById(videoId);
+  if (!sel || !video || !sel.value) { if (typeof notify === 'function') notify('⚠️ Спершу обери пристрій захоплення'); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { if (typeof notify === 'function') notify('⚠️ Захоплення відео недоступне в цій збірці'); return; }
+  videoCaptureStop(key, videoId);   // якщо вже щось підключено під цим ключем — коректно відключаємо перед новим стартом
+  navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: sel.value } }, audio: false }).then(function(stream) {
+    video.srcObject = stream;
+    video.style.display = 'block';
+    videoCaptureStreams[key] = stream;
+    // Після першого успішного підключення в браузера з'являється дозвіл —
+    // оновлюємо список, щоб побачити РЕАЛЬНІ назви пристроїв, а не "Пристрій 1".
+    videoCaptureRefreshDevices(selectId);
+  }).catch(function(e) {
+    if (typeof notify === 'function') notify('⚠️ Не вдалось підключитись: ' + e.message);
+  });
+}
+function videoCaptureStop(key, videoId) {
+  var video = document.getElementById(videoId);
+  if (videoCaptureStreams[key]) {
+    videoCaptureStreams[key].getTracks().forEach(function(t) { t.stop(); });
+    videoCaptureStreams[key] = null;
+  }
+  if (video) { video.srcObject = null; video.style.display = 'none'; }
+}
+// Тонкі обгортки — лишаємо СТАРІ назви функцій робочими (на випадок, якщо
+// десь у коді/пам'яті користувача лишилось старе ім'я), без дублювання
+// самої логіки захоплення.
+function atemMultiviewRefreshDevices() { videoCaptureRefreshDevices('atemMvDeviceSel'); }
+function atemMultiviewStart() { videoCaptureStart('atem', 'atemMvDeviceSel', 'atemMvVideo'); }
+function atemMultiviewStop() { videoCaptureStop('atem', 'atemMvVideo'); }
 
 function renderAtemInputs() {
   var container = document.getElementById('atemInputBtns');

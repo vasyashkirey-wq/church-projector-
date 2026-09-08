@@ -808,13 +808,18 @@ function gddDetect(html) {
          (/function\s+update\s*\(/.test(html) && /function\s+play\s*\(/.test(html));
 }
 
-// Схема полів: [{key, label, default, type}]
+// Схема полів: [{key, label, default, type, options, min, max, step}]
 function gddSchema(html) {
   const m = html.match(/<script[^>]*application\/json\+gdd[^>]*>([\s\S]*?)<\/script>/i);
   if (!m) return [];
   let schema;
   try { schema = JSON.parse(m[1]); } catch (e) { return []; }
   const props = (schema && schema.properties) || {};
+  // Обов'язкові поля можуть бути позначені двома способами: власним
+  // p.required=true на кожному полі, АБО стандартним для JSON-Schema
+  // масивом на рівні всієї схеми (schema.required: ["key1","key2"]).
+  // Підтримуємо обидва — автори GDD-шаблонів можуть використати будь-який.
+  const requiredList = Array.isArray(schema && schema.required) ? schema.required : [];
   return Object.keys(props).map(key => {
     const p = props[key] || {};
     return {
@@ -822,7 +827,17 @@ function gddSchema(html) {
       label: p.label || key.replace(/^_/, ''),
       def: p.default !== undefined ? String(p.default) : '',
       type: p.gddType || p.type || 'single-line',
-      options: Array.isArray(p.enum) ? p.enum : null
+      options: Array.isArray(p.enum) ? p.enum : null,
+      // Числові межі — приймаємо і власну GDD-назву (min/max/step), і
+      // стандартну JSON-Schema (minimum/maximum), бо різні автори шаблонів
+      // GDD-графіки могли позначати їх по-різному.
+      min: p.min !== undefined ? p.min : (p.minimum !== undefined ? p.minimum : null),
+      max: p.max !== undefined ? p.max : (p.maximum !== undefined ? p.maximum : null),
+      step: p.step !== undefined ? p.step : null,
+      // Обов'язкове поле — САМЕ ОПЕРАТОР вирішує, чи надсилати з порожнім
+      // (не блокуємо), лише попереджаємо: підсвічуємо в панелі й показуємо
+      // застереження при показі/оновленні наживо.
+      required: !!p.required || requiredList.indexOf(key) > -1
     };
   });
 }

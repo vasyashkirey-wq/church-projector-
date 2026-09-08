@@ -33,7 +33,22 @@ function selectSong(song) {
 function songListAddPart(i) { if (typeof orderAdd === 'function') orderAdd(i); renderSongOrderMini(); }
 function songListRemovePart(pos) { if (typeof orderRemoveAt === 'function') orderRemoveAt(pos); renderSongOrderMini(); }
 function songListResetOrder() { if (typeof orderReset === 'function') orderReset(); renderSongOrderMini(); }
+// Пакетування (rafDebounce — наявний ідіом проєкту, як updateLivePanels):
+// ця функція викликалась із багатьох місць підряд, і кожен виклик повністю
+// перебудовував список. Тепер підряд ідучі виклики склеюються в один
+// перемальовок на кадр.
+// Обгортка — саме function-декларація з ЛІНИВОЮ ініціалізацією, а не
+// `const renderSongOrderMini = rafDebounce(...)`: const створив би temporal dead zone,
+// і будь-який виклик до цього рядка впав би з «Cannot access before
+// initialization» — рівно той баг, що вже двічі ловився в цьому проєкті
+// (loadDisplayToggles). Function-декларація піднімається (hoisting), тож
+// порядок завантаження файлів більше не має значення.
+var _renderSongOrderMiniDeb = null;
 function renderSongOrderMini() {
+  if (!_renderSongOrderMiniDeb) _renderSongOrderMiniDeb = rafDebounce(_renderSongOrderMiniNow);
+  return _renderSongOrderMiniDeb.apply(null, arguments);
+}
+function _renderSongOrderMiniNow() {
   var el = document.getElementById('songOrderMini');
   if (!el) return;
   if (!selectedSong) { el.style.display = 'none'; return; }
@@ -106,6 +121,9 @@ function resetSongSelection() {
 function sendToProjector() {
   if (!selectedSong) return;
   var text = selectedSong.verses[selectedVerseIdx];
+  // Кінець пісні (без аранжування): останній куплет — додаємо *** як сигнал
+  // команді/оператору, що це останній слайд.
+  if (selectedVerseIdx === selectedSong.verses.length - 1) text += '\n\n***';
   lastLiveSource = 'song';
   lastLiveMulti = false;
   lastLiveGraphics = false;

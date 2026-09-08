@@ -67,6 +67,10 @@ function applyTheme(theme) {
     bgEl.style.filter = '';
     body.style.background = '#000';
   }
+  // Плавний рух («H2R-стиль» animated background) — той самий клас/keyframes,
+  // що й для по-вихідного кастомного фону (setOutputBg), бо обидві системи
+  // застосовують фон на той самий елемент #proj-bg.
+  bgEl.classList.toggle('bg-animated', !!currentTheme.bgAnimated);
 
   const dim = parseFloat(currentTheme.bgDim) || 0;
   dimEl.style.background = dim > 0 ? `rgba(0,0,0,${dim})` : 'none';
@@ -611,14 +615,27 @@ ipcRenderer.on('set-bg-video', (event, cfg) => {
   reassertChroma();          // якщо ввімкнено хромакей — відео не має його перекривати
 });
 
-// --- Екран логотипа (пауза, перерва) ---
-ipcRenderer.on('show-logo', (event, dataUrl) => {
+// --- Екран логотипа (пауза, перерва — режим "center-full") або маленький
+// значок у кутку ("corner"), залежно від обраної позиції. cfg може бути
+// або самим рядком dataUrl (старий формат — трактуємо як center-full),
+// або об'єктом { dataUrl, position, size }. ---
+ipcRenderer.on('show-logo', (event, cfg) => {
   setTimeout(reassertChroma, 0);
   const layer = document.getElementById('logo-layer');
   const img = document.getElementById('logo-img');
   if (!layer) return;
+  const dataUrl = (cfg && typeof cfg === 'object') ? cfg.dataUrl : cfg;
   if (!dataUrl) { layer.style.display = 'none'; return; }
+  const position = (cfg && typeof cfg === 'object' && cfg.position) || 'center-full';
+  const size = (cfg && typeof cfg === 'object' && cfg.size) || 55;
   if (img) img.src = dataUrl;
+  layer.className = position === 'center-full' ? '' : 'corner ' + position;
+  if (position === 'center-full') {
+    if (img) { img.style.width = ''; img.style.height = ''; }
+  } else if (img) {
+    img.style.width = size + 'px';
+    img.style.height = 'auto';
+  }
   layer.style.display = 'flex';
 });
 
@@ -679,15 +696,16 @@ ipcRenderer.on('alert', (event, cfg) => {
   }
 });
 
-ipcRenderer.on('set-bg', (event, color) => {
+ipcRenderer.on('set-bg', (event, color, animated) => {
   const __reassert = true;
   customBg = color || null;
   const bgEl = document.getElementById('proj-bg');
   if (customBg) {
-    if (bgEl) bgEl.style.background = customBg;
+    if (bgEl) { bgEl.style.background = customBg; bgEl.classList.toggle('bg-animated', !!animated); }
     document.body.style.background = customBg;
   } else {
     // повертаємо фон теми
+    if (bgEl) bgEl.classList.remove('bg-animated');
     applyTheme(currentTheme);
     document.body.style.background = '#000';
   }
@@ -698,10 +716,13 @@ ipcRenderer.on('set-chroma', (event, color) => applyChroma(color));
   ipcRenderer.on('display', (event, data) => {
     if (isFrozen) return;   // кадр заморожено — оновлення не приймаємо
 
-    // Логотип перекриває контент. Якщо оператор надіслав слайд, а логотип
-    // лишився б на екрані — зал не побачив би нічого. Прибираємо автоматично.
+    // Логотип перекриває контент лише в режимі "на весь екран" (center-full).
+    // Якщо оператор надіслав слайд, а логотип лишився б на екрані — зал не
+    // побачив би нічого. Прибираємо автоматично. Режим "у кутку" (corner) —
+    // маленький значок, як водяний знак, — НЕ перекриває нічого, тож його
+    // автоматично не ховаємо (лишається поверх нового контенту, як і мало б).
     const logoLayer = document.getElementById('logo-layer');
-    if (logoLayer && logoLayer.style.display === 'flex' && data && data.type !== 'clear') {
+    if (logoLayer && logoLayer.style.display === 'flex' && !logoLayer.classList.contains('corner') && data && data.type !== 'clear') {
       logoLayer.style.display = 'none';
       ipcRenderer.send('logo-auto-hidden');
     }

@@ -18,5 +18,10 @@
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- ATEM-мультивью через картку захоплення (getUserMedia) — без цього
+         hardened runtime мовчки блокує доступ до камери навіть якщо
+         користувач погодився в системному діалозі. -->
+    <key>com.apple.security.device.camera</key>
+    <true/>
 </dict>
 </plist>

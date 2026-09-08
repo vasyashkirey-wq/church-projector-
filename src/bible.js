@@ -85,7 +85,8 @@ function updateVerses() {
 }
 
 // Показує всі вірші обраної глави одразу, щоб не гортати випадаючий список
-// наосліп — перші ~5 видно без прокрутки, решта глави доступна прокруткою.
+// наосліп — перші ~6-7 видно без прокрутки (max-height у index.html), решта
+// глави доступна прокруткою.
 function renderChapterPreview() {
   var preview = document.getElementById('chapterPreview');
   if (!preview || !currentBibleBook || !currentBibleChapter) return;
@@ -256,7 +257,52 @@ function syncBibleLayoutButtons() {
   if (l) l.className = 'btn btn-sm ' + (cur === 'lower' ? 'btn-primary' : 'btn-ghost');
 }
 
+// Той самий патерн, що вже є для H2R-титрів (renderHTMLOverlayList): ОДНА
+// кнопка на вихід сама підсвічується 🔴, коли вірш зараз в ефірі саме там,
+// а рядок «✕ Прибрати» показує лише ті виходи, де він реально показаний
+// зараз — а не всі 4 завжди. Раніше тут були два статичні ряди (На вихід /
+// Прибрати з) по 4 кнопки кожен, завжди однакові незалежно від стану.
+function bibleLiveOutputTargets() {
+  // targets=[0] («На всі») рахуємо як усі 4 — так само як H2R показує
+  // liveOutputs за фактом, а не за тим, якою кнопкою надіслали.
+  if (!Array.isArray(lastLiveGraphicsTargets)) return [];
+  if (lastLiveGraphicsTargets.indexOf(0) >= 0) return [1, 2, 3, 4];
+  return lastLiveGraphicsTargets.slice();
+}
+function renderBibleOutputRow() {
+  var el = document.getElementById('bibleOutputRow');
+  if (!el) return;
+  var live = bibleLiveOutputTargets();
+  var outBtns = [1, 2, 3, 4].map(function(n) {
+    var isLive = live.indexOf(n) >= 0;
+    var name = (typeof OUT_NAME !== 'undefined' && OUT_NAME[n]) ? OUT_NAME[n] : ('Вихід ' + n);
+    return '<button class="btn ' + (isLive ? 'btn-success' : 'btn-ghost') + ' btn-sm" onclick="sendBibleWithGraphics(' + n + ')" title="Показати на ' + escHtml(name) + '">' +
+      (isLive ? '🔴 ' : '') + escHtml(name) + '</button>';
+  }).join('');
+  var clearBtns = live.map(function(n) {
+    var name = (typeof OUT_NAME !== 'undefined' && OUT_NAME[n]) ? OUT_NAME[n] : ('Вихід ' + n);
+    return '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="clearBibleFrom(' + n + ')" title="Прибрати з ' + escHtml(name) + '">✕ ' + escHtml(name) + '</button>';
+  }).join('');
+  el.innerHTML = '<div class="flex" style="gap:5px;flex-wrap:wrap">' + outBtns + '</div>' +
+    (clearBtns ? '<div class="flex mt8" style="gap:4px;flex-wrap:wrap">' + clearBtns + '</div>' : '');
+}
+
 function sendBibleWithGraphics(target) {
+  // Якщо для ЦЬОГО виходу в картці «Кілька перекладів» уже обрано
+  // переклади — виводимо саме їх (до 3), а не один переклад із картки
+  // «Переклад». Раніше кнопки «Проектор»/«Трансляція» завжди слали лише
+  // один переклад, і щоб отримати три, доводилось окремо шукати кнопку
+  // в картці «Кілька перекладів» нижче — хоча налаштування вже задані.
+  // target === 0 («На всі») лишається однопере кладним: там немає
+  // «свого» виходу, з якого брати набір перекладів.
+  try {
+    if (target !== 0 && state && state.multiTrans &&
+        (state.multiTrans[target] || []).filter(Boolean).length &&
+        typeof sendMultiToOutput === 'function') {
+      sendMultiToOutput(target);
+      return;
+    }
+  } catch (e) {}
   // Запам'ятовуємо, де вже показано: щоб гортання оновлювало ВСІ ці екрани,
   // а не лише той, куди натиснули востаннє.
   if (target === 0) {
@@ -274,10 +320,27 @@ function sendBibleWithGraphics(target) {
 // зараз показує «Трансляція» — на відміну від sendBibleWithGraphics, що
 // приймає лише один вихід за раз.
 function sendBibleGraphicsMulti(targets) {
-  if (targets.indexOf(0) >= 0) lastLiveGraphicsTargets = [0];
-  else lastLiveGraphicsTargets = targets.slice();
-  lastLiveGraphicsTarget = targets[targets.length - 1];
-  bibleGraphicsTo(targets);
+  // Кожен вихід зі своїм набором перекладів («Кілька перекладів») —
+  // виводимо саме його набір; решта йдуть звичайним однопере кладним
+  // шляхом. Так «2 виводи» / «Усі 4 виводи» поводяться так само, як
+  // окремі кнопки виходів вище, а не по-різному.
+  var rest = [];
+  (targets || []).forEach(function(t) {
+    try {
+      if (t !== 0 && state && state.multiTrans &&
+          (state.multiTrans[t] || []).filter(Boolean).length &&
+          typeof sendMultiToOutput === 'function') {
+        sendMultiToOutput(t);
+        return;
+      }
+    } catch (e) {}
+    rest.push(t);
+  });
+  if (!rest.length) return;   // усі цілі пішли через мульти-переклади
+  if (rest.indexOf(0) >= 0) lastLiveGraphicsTargets = [0];
+  else lastLiveGraphicsTargets = rest.slice();
+  lastLiveGraphicsTarget = rest[rest.length - 1];
+  bibleGraphicsTo(rest);
 }
 
 // Повторний вивід під час гортання — на всі екрани, де вірш уже показано
@@ -287,6 +350,30 @@ function bibleReplayGraphics() {
   // true = оновлюємо ЗАЛ напряму. Це повторний вивід того, що вже в ефірі,
   // тому прев'ю тут не потрібне — інакше при гортанні зал завмирав би.
   bibleGraphicsTo(list, true);
+}
+
+// РАНІШЕ прибрати вірш з виходу можна було, лише вручну надіславши туди
+// щось інше — окремої кнопки «прибрати» не було взагалі (той самий пробіл,
+// що виправили в H2R і QR-екрані). pv2ClearOutput(n) — той самий канонічний
+// шлях очищення виходу, що вже використовує H2R (clearHTMLOverlayOutput):
+// правильно згасає (showClear() у projector-preload.js), а не просто
+// замінює на порожню сторінку без переходу, як робив попередній варіант
+// цієї функції. Знімає вихід і з lastLiveGraphicsTargets/state.multiLive,
+// щоб гортання стрілками більше туди не повертало вірш.
+function clearBibleFrom(n) {
+  if (typeof pv2ClearOutput === 'function') pv2ClearOutput(n);
+  try {
+    if (Array.isArray(lastLiveGraphicsTargets)) {
+      lastLiveGraphicsTargets = lastLiveGraphicsTargets.filter(function(t) { return t !== n && t !== 0; });
+      lastLiveGraphics = lastLiveGraphicsTargets.length > 0;
+    }
+    if (state && Array.isArray(state.multiLive)) {
+      state.multiLive = state.multiLive.filter(function(x) { return x !== n; });
+      lastLiveMulti = state.multiLive.length > 0;
+    }
+  } catch (e) {}
+  renderBibleOutputRow();
+  if (typeof refreshMultiTransCard === 'function') refreshMultiTransCard();
 }
 
 function bibleGraphicsTo(targets, _fromGoLive) {
@@ -370,6 +457,7 @@ function bibleGraphicsTo(targets, _fromGoLive) {
   if (!sent) { sendToProjectorWin(text, ref); return; }
 
   if (typeof notify === 'function') notify('✝ ' + (ref || 'Вірш') + ' — з графікою');
+  renderBibleOutputRow();
 }
 
 function sendBibleToProjector() {
@@ -443,3 +531,4 @@ searchBible = function() {
 
 // Ініціалізація списку книг (перенесено зі стартового INIT index.html):
 initBibleBooks();
+renderBibleOutputRow();
