@@ -155,6 +155,10 @@ async function findOutputWindow(app, urlSubstr, tries) {
   record('GDD-подібна графіка (app://, у пам\'яті) → проектор', gddOk, gddNote);
 
   // ---- 4) Фон (background.js) — надсилаємо теми/фон через реальний applyBgToProjector() ----
+  // Спершу прибираємо графіку з попереднього кроку (showClear) — інакше вона,
+  // а не фон, займає весь екран поверх, і скріншот нічого не покаже про фон.
+  await win.evaluate(() => window.electronAPI.sendToProjector('clear', {})).catch(() => {});
+  await win.waitForTimeout(700);
   let bgOk = false, bgNote = '';
   try {
     const bgResult = await win.evaluate(async () => {
@@ -175,10 +179,25 @@ async function findOutputWindow(app, urlSubstr, tries) {
   } catch (e) { bgNote = e.message.split('\n')[0]; }
   record('Фон (тема, IPC set-theme) → проектор', bgOk, bgNote);
 
-  // ---- 5) Слайд (PDF/зображення) — імітуємо через sendImageToProjector з малим data URL ----
+  // ---- 5) Слайд (PDF/зображення) — імітуємо через sendImageToProjector, як
+  // реально робить sendSlideToProjector() з PDF-сторінкою: canvas.toDataURL().
+  // Малюємо видиму картинку (а не 1×1 піксель) — щоб скріншот справді
+  // показував слайд, як і реальна PDF-сторінка.
   let slideOk = false, slideNote = '';
   try {
-    const tinyPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    const tinyPng = await win.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = 960; c.height = 540;
+      const ctx = c.getContext('2d');
+      const g = ctx.createLinearGradient(0, 0, 960, 540);
+      g.addColorStop(0, '#1b3a6b'); g.addColorStop(1, '#0d1b33');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, 960, 540);
+      ctx.fillStyle = '#f0c040';
+      ctx.font = 'bold 64px Georgia, serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('ТЕСТОВИЙ СЛАЙД', 480, 280);
+      return c.toDataURL('image/jpeg', 0.9);
+    });
     const slideResult = await win.evaluate(async (dataUrl) => {
       if (typeof window.sendImageToProjector === 'function') {
         window.sendImageToProjector(dataUrl, 'Тестовий слайд', 'pdf');
