@@ -38,7 +38,12 @@ function sendSongToOutput(n) {
   if (!c) return;
   try {
     var s = state.textSettings[n] || state.textSettings[1];
-    var hasChroma = !!(state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none');
+    // Реальний баг (живе повідомлення): буде число (альфа outputBgAlpha(n)),
+    // а не true/false — buildTextHTML() тепер малює НАПІВПРОЗОРИЙ фон замість
+    // суцільного, інакше пісня в трансляції йшла на чорному тлі, перекриваючи
+    // шар хромакею повністю, і OBS нічого не міг вирізати.
+    var hasChroma = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')
+      ? outputBgAlpha(n) : undefined;
     sendHTMLToOutputN(n, buildTextHTML(s, c, hasChroma), null);
     songLiveMap[n] = true;
     lastLiveSource = 'song';

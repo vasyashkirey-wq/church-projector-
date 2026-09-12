@@ -200,18 +200,33 @@ function buildTextHTML(s, c, hasChroma) {
   // На виході з увімкненим хромакеєм застосовуємо той самий автоматичний
   // мінімум контрасту, що вже є в головній Темі — інакше текст був би
   // «голим» білим на живій камері, поки не налаштуєш вручну.
-  const sw = hasChroma ? Math.max(s.strokeWidth || 0, 2) : (s.strokeWidth || 0);
-  const scrimV = hasChroma ? Math.max(s.scrim || 0, 0.25) : (s.scrim || 0);
+  // hasChroma тепер САМЕ ЧИСЛО — альфа з outputBgAlpha(n) конкретного виходу
+  // (рахує викликач, тут немає n) — а не просто true/false; typeof-перевірка,
+  // а не truthiness, бо 0% (alpha=0) теж валідне, хоч і falsy, значення.
+  const chromaOn = typeof hasChroma === 'number';
+  const sw = chromaOn ? Math.max(s.strokeWidth || 0, 2) : (s.strokeWidth || 0);
+  const scrimV = chromaOn ? Math.max(s.scrim || 0, 0.25) : (s.scrim || 0);
   const outlineShadow = sw
     ? [1, -1].flatMap(x => [1, -1].map(y => `${x * sw}px ${y * sw}px 0 ${s.strokeColor || '#000'}`)).join(',') +
       (s.styles.shadow ? ', 0 2px 12px rgba(0,0,0,.6)' : '')
     : shadow;
   const bgType = s.bgType || 'color';
-  const bgVideoLayer = (bgType === 'video' && s.bgVideo && s.bgVideo.src)
+  // РЕАЛЬНИЙ БАГ (живе повідомлення): ця сторінка — окремий HTML-документ
+  // в iframe #frame, який лежить ПОВЕРХ шару хромакею (#proj-chroma) в
+  // projector.html. Суцільний непрозорий фон (як було: bgCss завжди solid)
+  // просто ПЕРЕКРИВАВ хромакей — пісня йшла в трансляцію на чорному/темному
+  // тлі замість зеленого/синього, і OBS не міг нічого вирізати. getGraphicsHTML()
+  // вже вміє цей трюк (outputBgAlpha) — тут його просто забули застосувати.
+  // На хромакеї відео/фото-фон теж ховаємо: він перекрив би колір хромакею
+  // так само, як суцільний bgCss (той самий принцип, що вже є в
+  // projector-preload.js для set-bg-video/set-chroma).
+  const bgVideoLayer = (!chromaOn && bgType === 'video' && s.bgVideo && s.bgVideo.src)
     ? `<video class="bgvid" autoplay loop muted playsinline src="${esc(s.bgVideo.src)}"></video>` : '';
-  const bgImageLayer = (bgType === 'image' && s.bgImage)
+  const bgImageLayer = (!chromaOn && bgType === 'image' && s.bgImage)
     ? `<div class="bgimg" style="background-image:url('${s.bgImage}')"></div>` : '';
-  const bgCss = bgType === 'color' ? s.bgColor : '#000';
+  const bgCss = chromaOn
+    ? 'rgba(0,0,0,' + hasChroma + ')'
+    : (bgType === 'color' ? s.bgColor : '#000');
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
     body{margin:0;background:${bgCss};min-height:100vh;display:flex;align-items:${align};
          justify-content:center;font-family:${s.fontFamily || 'Georgia, serif'};position:relative;overflow:hidden}
@@ -287,7 +302,8 @@ function pv2PushToOutput(n, content) {
   if (route === 'lang2') {
     const t2 = secondLangText();
     const s2 = state.textSettings[n] || state.textSettings[1];
-    const hasChroma2 = !!(state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none');
+    const hasChroma2 = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')
+      ? outputBgAlpha(n) : undefined;
     sendHTMLToOutputN(n, buildTextHTML(s2, { text: t2 || '—', ref: pv2LastContent ? pv2LastContent.ref : '' }, hasChroma2), null);
     return;
   }
@@ -297,7 +313,8 @@ function pv2PushToOutput(n, content) {
     const idx = (state.preview && typeof state.preview.verseIdx === 'number') ? state.preview.verseIdx : state.selectedVerseIdx;
     const raw = chordsForStage(s, idx);
     const st = state.textSettings[n] || state.textSettings[1];
-    const hasChromaChords = !!(state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none');
+    const hasChromaChords = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')
+      ? outputBgAlpha(n) : undefined;
     sendHTMLToOutputN(n, buildTextHTML(st, {
       text: String(raw).replace(/\[([^\]]+)\]/g, '<b style="color:#f0c040">[$1]</b>'),
       ref: (s ? s.title : '') + (state.transpose ? '  (' + (state.transpose > 0 ? '+' : '') + state.transpose + ')' : '')
@@ -317,7 +334,8 @@ function pv2PushToOutput(n, content) {
     } else {
       c = pv2GraphicsContent();
     }
-    const hasChromaText = !!(state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none');
+    const hasChromaText = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')
+      ? outputBgAlpha(n) : undefined;
     sendHTMLToOutputN(n, buildTextHTML(s, c, hasChromaText), null);
     pv2SetOutputStatus(n, '📝 ' + (c.ref || 'Текст'));
     return;
