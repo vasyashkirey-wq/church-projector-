@@ -551,7 +551,12 @@ function saveMultiTrans() { saveJSON('church_multi_trans', { byOutput: state.mul
 
 // ── Стиль слайда кількох перекладів: окремо для кожного виходу ────────────
 // Проектор (1) і Трансляція (2) можуть мати свій розмір шрифту й розташування.
-const MT_STYLE_DEFAULT = { fontScale: 100, vAlign: 'center', hAlign: 'center' };
+// band: той самий принцип «смуга внизу», що вже є в GDD-шаблоні вірша
+// (templates/gdd/verse.html) — для мульти-перекладу раніше такого вигляду
+// не було взагалі, лише один фіксований «на весь екран», тож на
+// трансляції з відкритим кадром спікера кілька перекладів одразу
+// перекривали половину картинки.
+const MT_STYLE_DEFAULT = { fontScale: 100, vAlign: 'center', hAlign: 'center', band: false };
 function mtStyle(n) {
   return Object.assign({}, MT_STYLE_DEFAULT, (state.multiTransStyle && state.multiTransStyle[n]) || {});
 }
@@ -805,7 +810,7 @@ function renderMultiTransCard() {
         <button class="btn btn-ghost btn-sm" style="padding:1px 7px" onclick="setMultiTransStyle(${n},'fontScale',${st.fontScale - 10})">−</button>
         <span style="min-width:34px;text-align:center">${st.fontScale}%</span>
         <button class="btn btn-ghost btn-sm" style="padding:1px 7px" onclick="setMultiTransStyle(${n},'fontScale',${st.fontScale + 10})">+</button>
-        <select onchange="setMultiTransStyle(${n},'vAlign',this.value)" title="Розташування по вертикалі" style="${selStyle}">
+        <select onchange="setMultiTransStyle(${n},'vAlign',this.value)" title="Розташування по вертикалі (ігнорується в режимі «Смуга внизу»)" ${st.band ? 'disabled' : ''} style="${selStyle}${st.band ? ';opacity:.5' : ''}">
           <option value="top"${st.vAlign === 'top' ? ' selected' : ''}>↑ Зверху</option>
           <option value="center"${st.vAlign === 'center' ? ' selected' : ''}>↕ Центр</option>
           <option value="bottom"${st.vAlign === 'bottom' ? ' selected' : ''}>↓ Знизу</option>
@@ -816,6 +821,10 @@ function renderMultiTransCard() {
           <option value="right"${st.hAlign === 'right' ? ' selected' : ''}>⇥ Право</option>
         </select>
       </div>
+      <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);cursor:pointer;margin-bottom:4px">
+        <input type="checkbox" ${st.band ? 'checked' : ''} onchange="setMultiTransStyle(${n},'band',this.checked)">
+        <span>📽 Смуга внизу (для трансляції з відкритим кадром)</span>
+      </label>
       <button class="btn btn-success btn-sm btn-block" style="margin-top:4px" onclick="sendMultiToOutput(${n})">${live ? '🔴 ' : ''}📖 Показати на «${esc(OUT_NAME[n])}»</button>
       ${live ? `<button class="btn btn-ghost btn-sm btn-block" style="margin-top:3px;color:var(--red)" onclick="clearBibleFrom(${n})">✕ Прибрати з «${esc(OUT_NAME[n])}»</button>` : ''}
     </div>`;

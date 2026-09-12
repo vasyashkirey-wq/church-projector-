@@ -3,6 +3,7 @@
 // на конкретний вихід (sendSongToOutput).
 const { _electron: electron } = require('playwright');
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 const SHOTS_DIR = path.join(__dirname, 'ci-shots');
 fs.mkdirSync(SHOTS_DIR, { recursive: true });
@@ -22,7 +23,11 @@ async function findOutputWindow(app, urlSubstr, tries) {
 
 (async () => {
   const electronPath = require('electron');
-  const app = await electron.launch({ executablePath: electronPath, args: [path.join(__dirname), '--no-sandbox', '--disable-gpu'] });
+  // Ізольований профіль на кожен запуск — інакше localStorage/кеш
+  // накопичуються в спільному userData між прогонами тестів і з часом
+  // ламають щось непов'язане (app://-схему, GPU-кеш) непередбачувано.
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'church-projector-test-'));
+  const app = await electron.launch({ executablePath: electronPath, args: [path.join(__dirname), '--no-sandbox', '--disable-gpu', '--user-data-dir=' + userDataDir] });
   const consoleErrors = [];
   app.on('window', (w) => {
     w.on('console', (msg) => { if (msg.type() === 'error') consoleErrors.push('[' + w.url() + '] ' + msg.text()); });

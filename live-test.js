@@ -5,6 +5,7 @@
 // скріншотить, ловить консольні помилки й window.onerror-банер.
 const { _electron: electron } = require('playwright');
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 
 const SHOTS_DIR = path.join(__dirname, 'shots');

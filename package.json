@@ -14,7 +14,8 @@
     "test-live": "node context-isolation-test.js",
     "test-song-outputs": "node song-outputs-test.js",
     "test-rate-limit": "node rate-limit-test.js",
-    "test-remote-double-fire": "node remote-double-fire-test.js"
+    "test-remote-double-fire": "node remote-double-fire-test.js",
+    "test-band-mode": "node band-mode-test.js"
   },
   "build": {
     "appId": "com.church.projector",

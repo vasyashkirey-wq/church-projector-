@@ -3423,13 +3423,20 @@ function sendMultiTransToProjector() {
 function getMultiTransHTML(ref, blocks, n) {
   // Стиль конкретного виходу (проектор/трансляція мають свій шрифт і розташування).
   // За замовчуванням — той самий вигляд, що й раніше (fontScale 100, по центру).
-  var st = (typeof mtStyle === 'function') ? mtStyle(n) : { fontScale: 100, vAlign: 'center', hAlign: 'center' };
+  var st = (typeof mtStyle === 'function') ? mtStyle(n) : { fontScale: 100, vAlign: 'center', hAlign: 'center', band: false };
+  var band = !!st.band;
   var scale = (st.fontScale || 100) / 100;
-  var baseSize = blocks.length === 1 ? 46 : blocks.length === 2 ? 36 : 28;
+  // «Смуга внизу»: та сама ідея, що вже є в GDD-шаблоні одного вірша
+  // (templates/gdd/verse.html, layout «смуга внизу») — смуга нижча за
+  // весь екран, тож базовий розмір зменшено пропорційно (та сама
+  // пропорція ~0.72, що й там: 64px на весь екран → 46px у смузі).
+  var baseSize = (blocks.length === 1 ? 46 : blocks.length === 2 ? 36 : 28) * (band ? 0.72 : 1);
   var startSize = Math.round(baseSize * scale);
-  var titleSize = Math.round(18 * scale);
-  var refSize = Math.round(24 * scale);
-  var justify = st.vAlign === 'top' ? 'flex-start' : (st.vAlign === 'bottom' ? 'flex-end' : 'center');
+  var titleSize = Math.round(18 * scale * (band ? 0.85 : 1));
+  var refSize = Math.round(24 * scale * (band ? 0.85 : 1));
+  // У смузі вирівнювання по вертикалі завжди «знизу» (сама суть режиму —
+  // лишити верх екрана вільним для камери/сцени), тож vAlign ігнорується.
+  var justify = band ? 'flex-end' : (st.vAlign === 'top' ? 'flex-start' : (st.vAlign === 'bottom' ? 'flex-end' : 'center'));
   var textAlign = (st.hAlign === 'left' || st.hAlign === 'right') ? st.hAlign : 'center';
 
   // Кольори по мовах (циклом): 1-й золотий, 2-й блакитний, 3-й зелений, 4-й теракота.
@@ -3449,17 +3456,23 @@ function getMultiTransHTML(ref, blocks, n) {
   }).join('');
 
   // Фон прозорий — інакше цей слайд перекривав би зелений хромакей на трансляції.
-  // Замість суцільного фону — напівпрозора темна підкладка під текстом:
-  // на проекторі читається поверх теми, на трансляції OBS вирізає зелене довкола.
+  // Не в смузі: напівпрозора темна ПІДКЛАДКА-КАРТКА під текстом, по центру.
+  // У смузі: підкладка — градієнт на всю ширину знизу вгору (як у
+  // verse.html) — щоб верх кадру/сцени лишався повністю чистим, без рамки.
+  var bandHeight = 120 + blocks.length * 130;   // більше перекладів — вища смуга
+  var wrapCss = band
+    ? 'position:absolute;left:0;right:0;bottom:0;width:100%;height:' + bandHeight + 'px;' +
+      'background:linear-gradient(0deg,rgba(6,10,24,.92),rgba(6,10,24,.72) 70%,rgba(6,10,24,0));' +
+      'padding:24px 90px;box-sizing:border-box;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;'
+    : 'width:100%;background:rgba(0,0,0,' + ((typeof outputBgAlpha === 'function') ? outputBgAlpha(n) : 0.62) + ');' +
+      'border-radius:18px;padding:34px 44px;box-sizing:border-box;max-height:100%;overflow:hidden;' +
+      'display:flex;flex-direction:column;justify-content:center;';
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
     'html,body{background:transparent;height:100%;overflow:hidden;}' +
-    'body{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:' + justify + ';height:100vh;padding:40px 80px;box-sizing:border-box;}' +
-    '#ref{color:#c8a84b;font-size:' + refSize + 'px;font-family:Georgia,serif;margin-bottom:28px;letter-spacing:1px;text-align:' + textAlign + ';flex:0 0 auto;}' +
+    'body{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:' + justify + ';height:100vh;padding:' + (band ? '0' : '40px 80px') + ';box-sizing:border-box;position:relative;}' +
+    '#ref{color:#c8a84b;font-size:' + refSize + 'px;font-family:Georgia,serif;margin-bottom:' + (band ? '10' : '28') + 'px;letter-spacing:1px;text-align:' + textAlign + ';flex:0 0 auto;}' +
     '#blocks{text-align:' + textAlign + ';width:100%;overflow:hidden;}' +
-    '#wrap{opacity:0;transition:opacity .3s;width:100%;background:rgba(0,0,0,' +
-      ((typeof outputBgAlpha === 'function') ? outputBgAlpha(n) : 0.62) + ');' +
-      'border-radius:18px;padding:34px 44px;box-sizing:border-box;max-height:100%;overflow:hidden;' +
-      'display:flex;flex-direction:column;justify-content:center;}' +
+    '#wrap{opacity:0;transition:opacity .3s;' + wrapCss + '}' +
     '#wrap.show{opacity:1;}' +
     '</style></head><body>' +
     '<div id="wrap">' +
@@ -3474,8 +3487,12 @@ function getMultiTransHTML(ref, blocks, n) {
     'function fitMultiTrans(){' +
       'var wrap=document.getElementById("wrap");if(!wrap)return;' +
       'var titles=document.querySelectorAll(".mttitle"),texts=document.querySelectorAll(".mttext");' +
+      // У смузі доступна висота — сама смуга (фіксована), а не весь екран,
+      // інакше текст ніколи не зменшився б, поки не почав вилазити за межі
+      // видимої частини (смуга коротша за window.innerHeight).
+      'var avail=' + (band ? bandHeight : 'window.innerHeight') + ';' +
       'var size=' + startSize + ',guard=0;' +
-      'while(wrap.scrollHeight>window.innerHeight && size>14 && guard<40){' +
+      'while(wrap.scrollHeight>avail && size>14 && guard<40){' +
         'size-=2;guard++;' +
         'texts.forEach(function(t){t.style.fontSize=size+"px";});' +
         'titles.forEach(function(t){t.style.fontSize=Math.max(11,Math.round(size*0.62))+"px";});' +

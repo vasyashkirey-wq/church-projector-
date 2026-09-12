@@ -584,7 +584,7 @@ head('Нові фічі: адресний вивід/прибирання (Бі�
   if (/pv2ClearOutput\(n\);[\s\S]{0,600}renderBibleOutputRow\(\);/.test(ex))
     ok('clearBibleFrom використовує канонічний pv2ClearOutput(n) (як H2R), не саморобний порожній HTML');
   else bad('clearBibleFrom не використовує pv2ClearOutput — регресія на саморобний блок-HTML');
-  if (/function renderMultiTransCard[\s\S]{0,50}\{[\s\S]{0,3200}onclick="clearBibleFrom\(\$\{n\}\)"/.test(ex))
+  if (/function renderMultiTransCard[\s\S]{0,50}\{[\s\S]{0,3600}onclick="clearBibleFrom\(\$\{n\}\)"/.test(ex))
     ok('Біблія: картка «Кілька перекладів» теж має «Прибрати з» на кожен активний вихід');
   else bad('Картка «Кілька перекладів» без «Прибрати з» — лишився старий пробіл');
 

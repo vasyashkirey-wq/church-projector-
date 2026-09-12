@@ -6,6 +6,8 @@
 // перевіряє, що стан toggled РІВНО ОДИН раз.
 const { _electron: electron } = require('playwright');
 const path = require('path');
+const os = require('os');
+const fs = require('fs');
 const http = require('http');
 
 function get(url) {
@@ -19,7 +21,11 @@ function record(step, ok, note) { results.push({ step, ok, note }); console.log(
 
 (async () => {
   const electronPath = require('electron');
-  const app = await electron.launch({ executablePath: electronPath, args: [path.join(__dirname), '--no-sandbox', '--disable-gpu'] });
+  // Ізольований профіль на кожен запуск — інакше localStorage/кеш
+  // накопичуються в спільному userData між прогонами тестів і з часом
+  // ламають щось непов'язане (app://-схему, GPU-кеш) непередбачувано.
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'church-projector-test-'));
+  const app = await electron.launch({ executablePath: electronPath, args: [path.join(__dirname), '--no-sandbox', '--disable-gpu', '--user-data-dir=' + userDataDir] });
   const win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForTimeout(2000);

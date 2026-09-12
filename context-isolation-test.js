@@ -5,6 +5,7 @@
 // без console-помилок і без падіння на opaque-origin.
 const { _electron: electron } = require('playwright');
 const path = require('path');
+const os = require('os');
 const fs = require('fs');
 
 const SHOTS_DIR = path.join(__dirname, 'ci-shots');
@@ -41,9 +42,13 @@ async function findOutputWindow(app, urlSubstr, tries) {
 
 (async () => {
   const electronPath = require('electron');
+  // Ізольований профіль на кожен запуск — інакше localStorage/кеш
+  // накопичуються в спільному userData між прогонами тестів і з часом
+  // ламають щось непов'язане (app://-схему, GPU-кеш) непередбачувано.
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'church-projector-test-'));
   const app = await electron.launch({
     executablePath: electronPath,
-    args: [path.join(__dirname), '--no-sandbox', '--disable-gpu'],
+    args: [path.join(__dirname), '--no-sandbox', '--disable-gpu', '--user-data-dir=' + userDataDir],
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' }
   });
 
