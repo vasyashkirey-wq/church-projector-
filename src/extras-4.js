@@ -556,7 +556,10 @@ function saveMultiTrans() { saveJSON('church_multi_trans', { byOutput: state.mul
 // не було взагалі, лише один фіксований «на весь екран», тож на
 // трансляції з відкритим кадром спікера кілька перекладів одразу
 // перекривали половину картинки.
-const MT_STYLE_DEFAULT = { fontScale: 100, vAlign: 'center', hAlign: 'center', band: false };
+// sideBySide: для РІВНО 2 перекладів — оригінал і переклад поряд у двох
+// колонках, а не один під одним. Раніше такого вигляду не було взагалі:
+// або стовпчиком (типово), або на весь екран у форматі однієї мови.
+const MT_STYLE_DEFAULT = { fontScale: 100, vAlign: 'center', hAlign: 'center', band: false, sideBySide: false };
 function mtStyle(n) {
   return Object.assign({}, MT_STYLE_DEFAULT, (state.multiTransStyle && state.multiTransStyle[n]) || {});
 }
@@ -788,7 +791,34 @@ function refreshMultiTransCard() {
     const box = document.getElementById(id);
     if (box) { box.innerHTML = renderMultiTransCard(); found = true; }
   });
+  if (typeof updateAllMultiTransPreviews === 'function') updateAllMultiTransPreviews();
   return found;
+}
+
+// Живе прев'ю картки «Кілька перекладів» — той самий трюк, що вже є для
+// «Оформлення → Графіка» (graphicsPreviewFrame): iframe розміром 1920×1080,
+// зменшений transform:scale(), і .srcdoc = готовий HTML, без жодного IPC —
+// оператор бачить результат (у т.ч. band чи ні) ще ДО показу на реальному
+// проекторі. Картка живе у ДВОХ контейнерах (multiTransBox/multiTransBoxGfx),
+// тож іменований `id` тут не годиться — обидві копії позначені однаковим
+// класом + data-n, оновлюємо ОБИДВІ через querySelectorAll.
+function updateMultiTransPreview(n) {
+  const frames = document.querySelectorAll('iframe.multiTransPreviewFrame[data-n="' + n + '"]');
+  if (!frames.length) return;
+  let ref = (typeof currentBibleRef === 'function') ? currentBibleRef() : '';
+  const failed = [];
+  let blocks = (typeof multiBlocksFor === 'function') ? multiBlocksFor(n, failed) : [];
+  // Ще не обрано вірш/переклади — показуємо приклад, а не порожній чорний
+  // прямокутник: оператор одразу бачить, як виглядатиме шрифт/band.
+  if (!blocks.length) {
+    ref = ref || 'Приклад';
+    blocks = [{ name: 'Приклад', text: 'Так бо полюбив Бог сьвіт, що Сина свого єдинородного дав.', language: '' }];
+  }
+  const html = getMultiTransHTML(ref, blocks, n);
+  frames.forEach(function (f) { f.srcdoc = html; });
+}
+function updateAllMultiTransPreviews() {
+  [1, 2, 3, 4].forEach(updateMultiTransPreview);
 }
 
 function renderMultiTransCard() {
@@ -801,6 +831,7 @@ function renderMultiTransCard() {
     const live = (state.multiLive || []).indexOf(n) >= 0;
     const st = (typeof mtStyle === 'function') ? mtStyle(n) : { fontScale: 100, vAlign: 'center', hAlign: 'center' };
     const selStyle = 'background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;color:var(--text);font-size:11px';
+    const chosenCount = sel.filter(Boolean).length;
     return `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px">
       <div style="font-size:12px;font-weight:600;margin-bottom:4px">${esc(OUT_NAME[n])} ${live ? '<span style="color:var(--green)">● в ефірі</span>' : ''}</div>
       ${[0, 1, 2].map(s => `<select onchange="setMultiTrans(${n},${s},this.value)"
@@ -825,6 +856,13 @@ function renderMultiTransCard() {
         <input type="checkbox" ${st.band ? 'checked' : ''} onchange="setMultiTransStyle(${n},'band',this.checked)">
         <span>📽 Смуга внизу (для трансляції з відкритим кадром)</span>
       </label>
+      ${chosenCount === 2 ? `<label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);cursor:pointer;margin-bottom:4px">
+        <input type="checkbox" ${st.sideBySide ? 'checked' : ''} onchange="setMultiTransStyle(${n},'sideBySide',this.checked)">
+        <span>⬌ Поряд, не стовпчиком (оригінал і переклад пліч-о-пліч)</span>
+      </label>` : ''}
+      <div style="position:relative;width:100%;aspect-ratio:16/9;border:1px solid var(--border);border-radius:4px;overflow:hidden;background:#000;margin-bottom:4px">
+        <iframe class="multiTransPreviewFrame" data-n="${n}" style="position:absolute;top:0;left:0;width:1920px;height:1080px;border:0;transform:scale(0.1719);transform-origin:top left;pointer-events:none"></iframe>
+      </div>
       <button class="btn btn-success btn-sm btn-block" style="margin-top:4px" onclick="sendMultiToOutput(${n})">${live ? '🔴 ' : ''}📖 Показати на «${esc(OUT_NAME[n])}»</button>
       ${live ? `<button class="btn btn-ghost btn-sm btn-block" style="margin-top:3px;color:var(--red)" onclick="clearBibleFrom(${n})">✕ Прибрати з «${esc(OUT_NAME[n])}»</button>` : ''}
     </div>`;

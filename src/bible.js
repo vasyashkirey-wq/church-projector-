@@ -308,6 +308,9 @@ function renderBibleOutputRow() {
     (badge ? '<div class="flex mt8" style="gap:6px;flex-wrap:wrap;align-items:center">' +
       (conflict ? '<b style="font-size:10px;color:var(--red)">⚠ конфлікт режимів — виправлено автоматично</b> ' : '') +
       badge + '</div>' : '');
+  // Вірш міг змінитись (гортання ◀▶, новий пошук) — прев'ю картки «Кілька
+  // перекладів» має показувати САМЕ поточний вірш, а не застарілий.
+  if (typeof updateAllMultiTransPreviews === 'function') updateAllMultiTransPreviews();
 }
 
 // ============================================================

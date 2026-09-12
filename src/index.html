@@ -3443,14 +3443,22 @@ function getMultiTransHTML(ref, blocks, n) {
   // лишити верх екрана вільним для камери/сцени), тож vAlign ігнорується.
   var justify = band ? 'flex-end' : (st.vAlign === 'top' ? 'flex-start' : (st.vAlign === 'bottom' ? 'flex-end' : 'center'));
   var textAlign = (st.hAlign === 'left' || st.hAlign === 'right') ? st.hAlign : 'center';
+  // «Поряд» має сенс лише РІВНО для 2 перекладів (оригінал+переклад) —
+  // для 1 нема з чим порівнювати, для 3+ колонки стали б завузькими.
+  var sideBySide = !!st.sideBySide && blocks.length === 2;
 
   // Кольори по мовах (циклом): 1-й золотий, 2-й блакитний, 3-й зелений, 4-й теракота.
   var MT_COLORS = ['#d8b866', '#6aa9ff', '#5ad19a', '#e08a6a'];
   var blockHTML = blocks.map(function(b, i) {
     var col = MT_COLORS[i % MT_COLORS.length];
-    // роздільник перед кожним наступним перекладом — тонований його кольором
-    var divider = i > 0 ? '<div class="mtdiv" style="width:220px;height:1px;background:linear-gradient(90deg,transparent,' + col + '80,transparent);margin:0 auto 18px"></div>' : '';
-    return divider +
+    // Роздільник між перекладами: стовпчиком — горизонтальна лінія ПЕРЕД
+    // кожним наступним; поряд — вертикальна лінія МІЖ колонками (border
+    // на самій колонці, не окремий елемент — так вона завжди по всій
+    // висоті колонки, а не фіксованої ширини, як горизонтальна).
+    var divider = (i > 0 && !sideBySide)
+      ? '<div class="mtdiv" style="width:220px;height:1px;background:linear-gradient(90deg,transparent,' + col + '80,transparent);margin:0 auto 18px"></div>'
+      : '';
+    var inner = divider +
       (state.showTransName !== false ?
       '<div class="mttitle" style="margin-bottom:4px;font-size:' + titleSize + 'px;color:' + col + ';font-family:Georgia,serif;letter-spacing:1px;font-weight:700">' +
         '<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:' + col + ';margin-right:8px"></span>' +
@@ -3458,13 +3466,18 @@ function getMultiTransHTML(ref, blocks, n) {
         (b.language ? ' <span style="opacity:0.65;font-weight:400;font-size:0.85em">(' + escHtml(String(b.language).toUpperCase()) + ')</span>' : '') +
       '</div>' : '') +
       '<div class="mttext" style="font-size:' + startSize + 'px;color:#fff;line-height:1.45;font-family:Georgia,serif;text-shadow:0 2px 12px rgba(0,0,0,0.9);margin-bottom:20px">' + escHtml(b.text) + '</div>';
+    if (!sideBySide) return inner;
+    var colBorder = i > 0 ? 'border-left:1px solid ' + col + '55;padding-left:40px;margin-left:40px;' : '';
+    return '<div class="mtcol" style="flex:1;min-width:0;' + colBorder + '">' + inner + '</div>';
   }).join('');
 
   // Фон прозорий — інакше цей слайд перекривав би зелений хромакей на трансляції.
   // Не в смузі: напівпрозора темна ПІДКЛАДКА-КАРТКА під текстом, по центру.
   // У смузі: підкладка — градієнт на всю ширину знизу вгору (як у
   // verse.html) — щоб верх кадру/сцени лишався повністю чистим, без рамки.
-  var bandHeight = 120 + blocks.length * 130;   // більше перекладів — вища смуга
+  // «Поряд» займає лише ОДИН «рядок» висоти (обидва переклади в один
+  // рівень), а не по одному на переклад, як стовпчиком.
+  var bandHeight = sideBySide ? 270 : (120 + blocks.length * 130);
   var wrapCss = band
     ? 'position:absolute;left:0;right:0;bottom:0;width:100%;height:' + bandHeight + 'px;' +
       'background:linear-gradient(0deg,rgba(6,10,24,.92),rgba(6,10,24,.72) 70%,rgba(6,10,24,0));' +
@@ -3476,7 +3489,8 @@ function getMultiTransHTML(ref, blocks, n) {
     'html,body{background:transparent;height:100%;overflow:hidden;}' +
     'body{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:' + justify + ';height:100vh;padding:' + (band ? '0' : '40px 80px') + ';box-sizing:border-box;position:relative;}' +
     '#ref{color:#c8a84b;font-size:' + refSize + 'px;font-family:Georgia,serif;margin-bottom:' + (band ? '10' : '28') + 'px;letter-spacing:1px;text-align:' + textAlign + ';flex:0 0 auto;}' +
-    '#blocks{text-align:' + textAlign + ';width:100%;overflow:hidden;}' +
+    '#blocks{text-align:' + textAlign + ';width:100%;overflow:hidden;' +
+      (sideBySide ? 'display:flex;align-items:flex-start;justify-content:center;' : '') + '}' +
     '#wrap{opacity:0;transition:opacity .3s;' + wrapCss + '}' +
     '#wrap.show{opacity:1;}' +
     '</style></head><body>' +
