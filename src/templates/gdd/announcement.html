@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<title>Оголошення</title>
+<script type="application/json+gdd">
+{
+  "properties": {
+    "title":  { "label": "Заголовок",   "type": "single-line", "default": "Оголошення", "required": true },
+    "text":   { "label": "Текст",       "gddType": "multi-line", "default": "Сьогодні після служби —\nспільна вечеря." },
+    "footer": { "label": "Внизу (дата/час)", "type": "single-line", "default": "" },
+    "accent": { "label": "Колір акценту", "gddType": "color", "default": "#c8a84b" },
+    "dim":    { "label": "Затемнення фону, %", "type": "number", "min": 0, "max": 100, "step": 5, "default": 55 }
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden;
+               font-family: Georgia, 'Times New Roman', serif; }
+  /* Підкладка: затемнює те, що під графікою (камеру чи фон), щоб текст
+     читався. Прозорість регулюється полем «Затемнення». */
+  .scrim { position: absolute; inset: 0; background: rgba(6,10,24,.55); }
+  .box { position: absolute; inset: 0; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; text-align: center; padding: 0 160px;
+         animation: in .5s ease both; }
+  .title { color: var(--accent, #c8a84b); font-size: 78px; letter-spacing: .02em;
+           margin-bottom: 40px; text-shadow: 0 2px 14px rgba(0,0,0,.6); }
+  .rule { width: 180px; height: 4px; background: var(--accent, #c8a84b); opacity: .8; margin-bottom: 44px; }
+  .text { color: #fff; font-size: 56px; line-height: 1.45; white-space: pre-wrap;
+          text-shadow: 0 2px 12px rgba(0,0,0,.55); max-width: 1500px; }
+  .footer { margin-top: 56px; color: #cfd6e6; font-size: 34px; letter-spacing: .08em;
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; text-transform: uppercase; }
+  .footer:empty { display: none; }
+  @keyframes in { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="scrim" id="scrim"></div>
+  <div class="box">
+    <div class="title" data-gdd="title">Оголошення</div>
+    <div class="rule"></div>
+    <div class="text" data-gdd="text">Сьогодні після служби —
+спільна вечеря.</div>
+    <div class="footer" data-gdd="footer"></div>
+  </div>
+<script>
+  function update(json) {
+    var d = {};
+    try { d = typeof json === 'string' ? JSON.parse(json) : (json || {}); } catch (e) { return; }
+    if (d.accent) document.documentElement.style.setProperty('--accent', d.accent);
+    var s = document.getElementById('scrim');
+    if (s && d.dim !== undefined && d.dim !== '') {
+      var v = Math.max(0, Math.min(100, parseInt(d.dim, 10) || 0));
+      s.style.background = 'rgba(6,10,24,' + (v / 100) + ')';
+    }
+  }
+  function play() {}
+</script>
+</body>
+</html>

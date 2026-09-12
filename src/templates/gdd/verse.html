@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<title>Вірш із Біблії</title>
+<script type="application/json+gdd">
+{
+  "properties": {
+    "text":   { "label": "Текст вірша", "gddType": "multi-line", "required": true,
+                "default": "Бо так полюбив Бог світ, що дав Сина Свого Однородженого." },
+    "ref":    { "label": "Посилання",   "type": "single-line", "default": "Івана 3:16" },
+    "layout": { "label": "Вигляд",      "enum": ["на весь екран", "смуга внизу"], "default": "на весь екран" },
+    "accent": { "label": "Колір посилання", "gddType": "color", "default": "#c8a84b" },
+    "dim":    { "label": "Затемнення фону, %", "type": "number", "min": 0, "max": 100, "step": 5, "default": 55 }
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden;
+               font-family: Georgia, 'Times New Roman', serif; }
+  .scrim { position: absolute; inset: 0; background: rgba(6,10,24,.55); transition: background .3s; }
+  .box { position: absolute; inset: 0; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; text-align: center; padding: 0 170px;
+         animation: in .5s ease both; }
+  .text { color: #fff; font-size: 64px; line-height: 1.42; white-space: pre-wrap;
+          max-width: 1520px; text-shadow: 0 2px 14px rgba(0,0,0,.6); }
+  .ref { margin-top: 44px; color: var(--accent, #c8a84b); font-size: 40px; letter-spacing: .08em;
+         font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; text-transform: uppercase; }
+  .ref:empty { display: none; }
+
+  /* Смуга внизу — для трансляції: лишає видимою камеру/сцену зверху.
+     Підкладка тоді лише під самою смугою, а не на весь екран. */
+  body.band .scrim { background: transparent; }
+  body.band .box { top: auto; bottom: 0; height: 340px; padding: 0 120px;
+                   background: linear-gradient(0deg, rgba(6,10,24,.92), rgba(6,10,24,.72) 70%, rgba(6,10,24,0)); }
+  body.band .text { font-size: 46px; max-width: 1680px; }
+  body.band .ref { margin-top: 22px; font-size: 30px; }
+
+  @keyframes in { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="scrim" id="scrim"></div>
+  <div class="box">
+    <div class="text" data-gdd="text">Бо так полюбив Бог світ, що дав Сина Свого Однородженого.</div>
+    <div class="ref" data-gdd="ref">Івана 3:16</div>
+  </div>
+<script>
+  function update(json) {
+    var d = {};
+    try { d = typeof json === 'string' ? JSON.parse(json) : (json || {}); } catch (e) { return; }
+    if (d.accent) document.documentElement.style.setProperty('--accent', d.accent);
+    var band = d.layout === 'смуга внизу';
+    document.body.className = band ? 'band' : '';
+    var s = document.getElementById('scrim');
+    // У режимі смуги затемнення на весь екран не потрібне — воно вже
+    // вбудоване в градієнт самої смуги, інакше камера була б перекрита.
+    if (s && !band && d.dim !== undefined && d.dim !== '') {
+      var v = Math.max(0, Math.min(100, parseInt(d.dim, 10) || 0));
+      s.style.background = 'rgba(6,10,24,' + (v / 100) + ')';
+    }
+  }
+  function play() {}
+</script>
+</body>
+</html>

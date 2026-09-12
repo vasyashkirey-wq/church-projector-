@@ -542,7 +542,7 @@ head('Аудит 4.1: output/Stage/identify-вікна не можуть нав�
   else bad('ЗНИКЛА hardenContentWindow — output-вікна знову можуть навігувати на сторонній URL');
   // Порядок у файлі підтверджує, що виклик стоїть у функції СТВОРЕННЯ
   // output-вікна (до loadFile), а не десь у непов'язаному місці.
-  if (/const win = new BrowserWindow\(\{[\s\S]{0,1200}hardenContentWindow\(win\);[\s\S]{0,400}outputWins\[kind\] = win;/.test(m))
+  if (/const win = new BrowserWindow\(\{[\s\S]{0,2400}hardenContentWindow\(win\);[\s\S]{0,400}outputWins\[kind\] = win;/.test(m))
     ok('output-вікно (projector/stream/out3/out4) захищене hardenContentWindow');
   else bad('output-вікно НЕ викликає hardenContentWindow — регресія безпеки 4.1');
   if (/hardenContentWindow\(win\);\s*\n\s*stageWin = win;/.test(m))
@@ -768,7 +768,7 @@ head('PDF/слайди: гортання лишається на PDF, не "пе
   // «Далі — запасний варіант» — вона повторюється і в НЕпов'язаному
   // фолбеку гарячих клавіш плану служби, який лишився в index.html.
   const idxGetThemeLabel2 = SRC.extras.indexOf("'onRemoteCommand/getTheme'");
-  const fallbackRemote = idxGetThemeLabel2 > -1 ? SRC.extras.slice(Math.max(0, idxGetThemeLabel2 - 900), idxGetThemeLabel2) : '';
+  const fallbackRemote = idxGetThemeLabel2 > -1 ? SRC.extras.slice(Math.max(0, idxGetThemeLabel2 - 4000), idxGetThemeLabel2) : '';
   if (slideBeforeSongFallback(fallbackRemote, /cmd\.action === 'next-verse'\)\s*\{\s*nextVerse/))
     ok('index.html: резервний onRemoteCommand теж перевіряє PDF до фолбеку на nextVerse');
   else bad('index.html: резервний onRemoteCommand (extras.js не завантажився) не захищений від PDF-регресії');
@@ -1666,6 +1666,639 @@ head('Модуляризація (крок 5): вкладка Гарячі кл�
   if (iHk >= 0 && iExtras4 >= 0 && iHk < iExtras4)
     ok('<script> для hotkeys.js стоїть ДО extras-4.js (порядок завантаження коректний)');
   else bad('Порядок <script> неправильний — pv2Init() впаде на старті (ReferenceError)');
+})();
+
+head('Пісні: адресний вивід на кожен вихід (як у Біблії/H2R)');
+(function () {
+  const sd = read('src/song-display.js');
+  const FNS = ['songCurrentPayload', 'sendSongToOutput', 'sendSongToOutputs', 'clearSongFrom', 'renderSongOutputRow'];
+  const miss = FNS.filter(f => !new RegExp('function ' + f + '\\(').test(sd));
+  if (!miss.length) ok('усі 5 функцій адресного виводу пісні визначені');
+  else { bad('бракує: ' + miss.join(', ')); return; }
+  if (/var songLiveMap = \{ 1: false, 2: false, 3: false, 4: false \};/.test(sd))
+    ok('songLiveMap веде стан «в ефірі» по виходах');
+  else bad('немає songLiveMap — кнопки не підсвічуватимуться');
+  if (/id="songOutputRow"/.test(SRC.index)) ok('контейнер #songOutputRow є у вкладці Пісні');
+  else bad('немає контейнера — рядок виводу не зʼявиться');
+  // Перевикористання спільного шляху: тоді пісня автоматично отримує
+  // захист від «повернення після очищення» (лічильник у sendHTMLToOutputN).
+  if (/sendHTMLToOutputN\(n, buildTextHTML\(s, c, hasChroma\), null\)/.test(sd))
+    ok('вивід іде через спільні buildTextHTML + sendHTMLToOutputN (той самий вигляд і той самий захист)');
+  else bad('пісня шлеться власним шляхом — вигляд розійдеться, захист не працюватиме');
+  // Кінець пісні має лишатись позначеним і при адресному виводі
+  if (/selectedVerseIdx === selectedSong\.verses\.length - 1\) text \+= '\\n\\n\*\*\*'/.test(sd))
+    ok('маркер *** на останньому куплеті працює й для адресного виводу');
+  else bad('загублено маркер кінця пісні при адресному виводі');
+  // Очищення мусить гасити й індикатор пісні
+  if (/'songLiveMap'/.test(SRC.extras) && /'renderSongOutputRow'/.test(SRC.extras))
+    ok('songLiveMap і його перемальовка є в централізованому скиданні індикаторів');
+  else bad('пісня «висітиме в ефірі» після очищення — songLiveMap не скидається');
+})();
+
+head('Очищення скасовує відправки, що вже готуються (спільний захист усіх фіч)');
+(function () {
+  const ex = SRC.extras;
+  // sendHTMLToOutputN асинхронна: спершу готує HTML (overlayPath), потім
+  // шле у вікно. Без цього захисту команда «clear» долітала першою, а
+  // підготовлений контент — після неї, і повертався на очищений екран.
+  // Через цю функцію йдуть УСІ фічі (QR, H2R, медіа, таймер, графіка,
+  // вірші), тож захист тут лікує їх усі одразу.
+  if (/var _outSendGen = \{ 1: 0, 2: 0, 3: 0, 4: 0 \};/.test(ex))
+    ok('є лічильник поколінь відправки на кожен вихід (_outSendGen)');
+  else { bad('немає _outSendGen — очищення скасовуватиметься відправкою, що в дорозі'); return; }
+  const fn = (ex.match(/function sendHTMLToOutputN\(n, html, label\)[\s\S]*?\n\}/) || [''])[0];
+  if (/var myGen = _outSendGen\[n\];/.test(fn) && /if \(myGen !== _outSendGen\[n\]\) return;/.test(fn))
+    ok('sendHTMLToOutputN відкидає застарілу відправку (перевірка покоління перед sendToOutput)');
+  else bad('sendHTMLToOutputN не перевіряє покоління — контент повертатиметься після очищення');
+  // Перевірка МУСИТЬ бути перед самою відправкою у вікно
+  if (fn.indexOf('if (myGen !== _outSendGen[n]) return;') < fn.indexOf('electronAPI.sendToOutput(OUT_KIND[n]'))
+    ok('перевірка стоїть ПЕРЕД відправкою у вікно');
+  else bad('перевірка після відправки — марна');
+  // Очищення має підвищувати покоління ПЕРШИМ ділом
+  const clr = (ex.match(/function pv2ClearOutput\(n\)[\s\S]*?\n\}/) || [''])[0];
+  if (/_outSendGen\[n\] = \(_outSendGen\[n\] \|\| 0\) \+ 1;/.test(clr) &&
+      clr.indexOf('_outSendGen') < clr.indexOf("'clear'"))
+    ok('очищення скасовує відправки ДО того, як шле команду «clear»');
+  else bad('очищення не скасовує відправки в дорозі — контент повернеться');
+})();
+
+head('Очищення скидає індикатори «в ефірі» ВСІХ фіч');
+(function () {
+  const ex = SRC.extras;
+  const fn = (ex.match(/function resetOutputIndicators\(n\)[\s\S]*?\n\}/) || [''])[0];
+  if (!fn) { bad('немає resetOutputIndicators — фічі «висітимуть в ефірі» після очищення'); return; }
+  ok('resetOutputIndicators визначена');
+  const MAPS = ['qrLiveMap', 'graphicsLiveMap', 'h2rLowerLiveMap', 'timerLiveMap',
+                'mediaLiveMap', 'tickerLiveMap', 'creditsLiveMap', 'confettiLiveMap', 'htmlLiveMap'];
+  const miss = MAPS.filter(m => !fn.includes(m));
+  if (!miss.length) ok('скидає всі 9 індикаторів (QR/графіка/титри/таймер/медіа/тікер/подяки/конфеті/HTML)');
+  else bad('не скидає: ' + miss.join(', '));
+  // htmlLiveMap тримає ІНДЕКС, тож порожнє для неї — null, а не false
+  if (/h\[n\] = null/.test(fn)) ok('htmlLiveMap скидається в null (вона зберігає індекс, не прапорець)');
+  else bad('htmlLiveMap скидається як прапорець — графіка з індексом 0 «залипне»');
+  // Підключення до обох шляхів очищення
+  if (/window\.electronAPI\.sendToOutput\(OUT_KIND\[n\], 'clear', \{\}\);\s*\n\s*resetOutputIndicators\(n\);/.test(ex))
+    ok('pv2ClearOutput (очищення одного виходу) скидає індикатори цього виходу');
+  else bad('pv2ClearOutput не скидає індикатори — кнопка фічі світитиметься 🔴 на порожньому екрані');
+  if (/resetOutputIndicators === 'function'\) resetOutputIndicators\(\);/.test(ex))
+    ok('загальне «Очистити» скидає індикатори всіх виходів');
+  else bad('загальне очищення не скидає індикатори — фічі «висітимуть в ефірі»');
+})();
+
+head('QR-екран: очищення не скасовується асинхронним домальовуванням');
+(function () {
+  const fs2 = require('fs');
+  const q = read('src/tabs/qrscreen/qrscreen.js');
+  // composeQrScreen малює АСИНХРОННО. Без лічильника поколінь callback,
+  // що стартував до очищення, домальовувався ПІСЛЯ нього й повертав QR
+  // на екран — «виключаю, а воно вмикається».
+  if (/var _qrSendGen = \{ 1: 0, 2: 0, 3: 0, 4: 0 \};/.test(q))
+    ok('є лічильник поколінь показу (_qrSendGen)');
+  else { bad('немає _qrSendGen — очищення QR скасовуватиметься фоновим домальовуванням'); return; }
+  if (/const myGen = \+\+_qrSendGen\[n\];/.test(q) && /if \(myGen !== _qrSendGen\[n\]\) return;/.test(q))
+    ok('застарілий результат малювання відкидається (перевірка покоління в callback)');
+  else bad('callback не перевіряє покоління — QR повертатиметься після очищення');
+  // Очищення МУСИТЬ підвищувати лічильник, інакше скасування не працює
+  const clr = (q.match(/function clearQrScreenFrom\(n\)[\s\S]*?\n\}/) || [''])[0];
+  if (/_qrSendGen\[n\] = \(_qrSendGen\[n\] \|\| 0\) \+ 1;/.test(clr) && clr.indexOf('_qrSendGen') < clr.indexOf('pv2ClearOutput'))
+    ok('очищення підвищує лічильник ПЕРШИМ ділом — скасовує показ, що малюється');
+  else bad('очищення не скасовує фонового показу — баг повернеться');
+})();
+
+head('Кілька перекладів + вивід у вкладці Графіка (дублювання без розсинхрону)');
+(function () {
+  const ex = SRC.extras;
+  if (/id="multiTransBoxGfx"/.test(ex)) ok('контейнер #multiTransBoxGfx є у вкладці Графіка');
+  else { bad('немає контейнера у Графіці — картка не зʼявиться'); return; }
+  // Обидва контейнери МУСЯТЬ заповнюватись однією функцією. Якщо колись
+  // зроблять копію розмітки — два списки перекладів заживуть окремо й
+  // розійдуться (той самий клас проблем, що з двома списками виходів).
+  const rf = (ex.match(/function refreshMultiTransCard\(\)[\s\S]*?\n\}/) || [''])[0];
+  if (/\['multiTransBox', 'multiTransBoxGfx'\]/.test(rf) && /renderMultiTransCard\(\)/.test(rf))
+    ok('обидві картки малює ОДНА renderMultiTransCard — дані спільні, розійтись не можуть');
+  else bad('картки малюються по-різному — списки перекладів розсинхронізуються');
+  // Вкладка будується один раз при старті, тож showTab має заповнити її
+  if (/\(name === 'bible' \|\| name === 'graphics'\)[\s\S]{0,80}refreshMultiTransCard/.test(SRC.index))
+    ok('showTab заповнює картку і для Графіки — не стартуватиме порожньою');
+  else bad('showTab не заповнює картку в Графіці — буде порожня до першої дії');
+  // Кнопки виводу
+  if (/sendBibleGraphicsMulti\(\[1,2\]\)/.test(ex) && /sendBibleGraphicsMulti\(\[1,2,3,4\]\)/.test(ex))
+    ok('кнопки «2 виводи» (Проектор+Трансляція) і «Усі 4» на місці');
+  else bad('немає кнопок виводу у вкладці Графіка');
+  // Використовуються ті самі функції, що й у Біблії — не копії
+  if (/onclick="sendBibleWithGraphics\(1\)"/.test(ex) && /onclick="sendBibleWithGraphics\(2\)"/.test(ex))
+    ok('вивід іде через ті самі sendBibleWithGraphics — сторож і звіт працюють і тут');
+  else bad('вивід у Графіці йде повз спільні функції — сторож його не побачить');
+  // Порядок у правій колонці: найчастіші дії під час служби мають бути
+  // НАГОРІ, без прокрутки повз прев’ю й пресети.
+  const gfxBody = (function () {
+    const i = ex.indexOf('function renderGraphicsTab');
+    if (i < 0) return '';
+    let j = ex.indexOf('{', i), d = 0, e = -1;
+    for (let k = j; k < ex.length; k++) {
+      if (ex[k] === '{') d++;
+      else if (ex[k] === '}') { d--; if (d === 0) { e = k; break; } }
+    }
+    return ex.slice(i, e);
+  })();
+  const pMulti = gfxBody.indexOf('multiTransBoxGfx');
+  const pSend = gfxBody.indexOf('Вивести вірш з цим');
+  const pPrev = gfxBody.indexOf('Як це виглядатиме');
+  if (pMulti > -1 && pSend > pMulti && pPrev > pSend)
+    ok('порядок у правій колонці: переклади → вивід → прев’ю (дії нагорі, без прокрутки)');
+  else bad('порядок зʼїхав — кнопки виводу знову за прев’ю, доведеться прокручувати під час служби');
+})();
+
+head('Прев’ю зі змішаними режимами («2 виводи»: кілька перекладів + вірш)');
+(function () {
+  const ex = SRC.extras;
+  // goLive МУСИТЬ віддати обидва режими. Раніше тут був ланцюг else-if:
+  // спрацьовувала лише перша гілка, тож в ефір ішов один екран, а другий
+  // лишався порожнім — «через прев’ю на проектор не йде, напряму працює».
+  const gl = (ex.match(/function goLive\(\)[\s\S]*?\n\}/) || [''])[0];
+  if (!gl) { bad('не знайдено goLive'); return; }
+  if (/else if \(c\.kind === 'htmlraw' && c\.gfxTargets/.test(gl))
+    bad('goLive знову через else-if — при «2 виводи» один екран лишиться порожнім');
+  else if (/var handled = false/.test(gl) && /if \(!handled\)/.test(gl))
+    ok('goLive віддає ОБИДВА режими (мульти-переклади + графіка вірша), не один');
+  else bad('goLive не обробляє обидва режими');
+
+  // stageContent має зливати два виклики однієї дії, інакше прев’ю
+  // збереже лише останній і половина екранів лишиться без вмісту.
+  const sc = (ex.match(/function stageContent\(content\)[\s\S]*?\n\}/) || [''])[0];
+  if (/mergedMulti && mergedGfx/.test(sc) && /_stagedAt/.test(sc))
+    ok('прев’ю зливає multiOutputTarget + gfxTargets у межах однієї дії');
+  else bad('прев’ю затирається — при «2 виводи» збережеться лише один режим');
+  // Але злиття має бути обмежене в часі, інакше два незалежні покази злипнуться
+  if (/Date\.now\(\) - prev\._stagedAt < 500/.test(sc))
+    ok('злиття лише в межах ~0.5с — два незалежні покази не злипнуться в один');
+  else bad('немає часового обмеження злиття — послідовні покази можуть склеїтись');
+})();
+
+head('Прев’ю: getCurrentContent не залежить від відкритої вкладки');
+(function () {
+  const ex = SRC.extras;
+  // Баг 1: вміст визначався за активною вкладкою, тож через прев'ю
+  // (де активна вкладка «Показ») на екран летіло «Контент не обрано».
+  const body = (ex.match(/function getCurrentContent\(\)[\s\S]*?\n\}/) || [''])[0];
+  if (!body) { bad('не знайдено getCurrentContent'); return; }
+  if (/isActive\('songs'\) && state\.selectedSong/.test(body))
+    bad('getCurrentContent знову залежить від активної вкладки — прев’ю даватиме заглушку');
+  else ok('вміст визначається за фактично обраним, не за відкритою вкладкою');
+  // Баг 2: пісня читалась зі state.selectedSong, якої не існує —
+  // пісня живе в глобальній selectedSong (index.html).
+  if (/state\.selectedSong/.test(body))
+    bad('getCurrentContent читає state.selectedSong — такої змінної немає, пісні не братимуться');
+  else if (/typeof selectedSong !== 'undefined'/.test(body))
+    ok('пісня читається з глобальної selectedSong (та, куди її насправді кладе selectSong)');
+  else bad('незрозуміло, звідки береться пісня в getCurrentContent');
+  if (/lastLiveSource === 'song'/.test(body) && /lastLiveSource === 'bible'/.test(body))
+    ok('коли обрано і пісню, і вірш — вирішує остання показана (lastLiveSource)');
+  else bad('немає правила вибору між піснею й віршем поза вкладками');
+  // Оголошення мають лишитись привʼязаними до своєї вкладки
+  if (/isActive\('announce'\)/.test(body))
+    ok('оголошення й далі беруться лише з відкритої вкладки (їх вміст поза нею не має сенсу)');
+  else bad('загублено гілку оголошень');
+})();
+
+head('Пульт з телефону: розширений набір дій + звіт про вивід');
+(function () {
+  const tr = read('src/theme-remote.js');
+  const b = read('src/bible.js');
+  // Дії, яких бракувало на телефоні (бекенд їх уже вмів через HTTP-API)
+  const ACTS = [
+    ["cmd.action === 'blackout'", 'blackout (аварійне гасіння — найважливіше)'],
+    ["cmd.action === 'freeze'", 'freeze'],
+    ["cmd.action === 'logo'", 'логотип на всі'],
+    ["cmd.action === 'restore'", 'відновити все'],
+    ["cmd.action === 'plan-next'", 'план: наступний пункт'],
+    ["cmd.action === 'plan-prev'", 'план: попередній'],
+    ["cmd.action === 'timer-start'", 'таймер: старт'],
+    ["cmd.action === 'timer-stop'", 'таймер: стоп'],
+    ["cmd.action === 'clear-output'", 'прибрати з конкретного виходу']
+  ];
+  const miss = ACTS.filter(([code]) => !tr.includes(code)).map(([, n]) => n);
+  if (!miss.length) ok('пульт розуміє всі ' + ACTS.length + ' нових дій (blackout/freeze/логотип/план/таймер/вихід)');
+  else bad('пульт не розуміє: ' + miss.join(', '));
+  // Усі виклики мають бути захищені typeof — пульт не має падати, якщо
+  // функції немає (вкладку не відкривали, модуль не завантажився).
+  const unguarded = ["toggleBlackout", "toggleFreeze", "svcNext", "svcPrev", "timerStart", "pv2ClearOutput"]
+    .filter(fn => new RegExp("cmd\\.action === '[a-z-]+'\\) \\{ " + fn + "\\(").test(tr));
+  if (!unguarded.length) ok('усі нові дії викликаються через typeof — пульт не впаде без модуля');
+  else bad('дії без захисту typeof (пульт впаде): ' + unguarded.join(', '));
+
+  // Звіт про вивід: без нього «2 виводи» мовчить, і якщо один екран
+  // нічого не отримав, оператор дізнається про це вже із залу.
+  if (/НЕ надіслано/.test(b) && /parts\.push\(nm\(t\) \+ ': кілька перекладів'\)/.test(b))
+    ok('«2 виводи»/«Усі 4» звітують по кожному виходу, включно з «НЕ надіслано»');
+  else bad('немає звіту по виходах — мовчазна часткова відправка лишиться непоміченою');
+  // Кнопки виводу й «прибрати» — в одному рядку (як у H2R)
+  if (/outBtns \+ clearBtns \+ '<\/div>'/.test(b))
+    ok('кнопки виходів і «✕ Прибрати» в одному рядку (однаково з H2R-титрами)');
+  else bad('«прибрати» знову окремим рядком — розходиться з виглядом H2R');
+})();
+
+head('Сторож узгодженості виходів (захист від «на екранах різне»)');
+(function () {
+  const b = read('src/bible.js');
+  if (/function assertOutputConsistency\(justChanged, mode\)/.test(b) && /function outputModeSummary\(\)/.test(b))
+    ok('assertOutputConsistency + outputModeSummary визначені');
+  else { bad('ЗНИК сторож узгодженості виходів'); return; }
+  // Має викликатись на ВСІХ шляхах виводу, інакше захист дірявий
+  const paths = [
+    ["assertOutputConsistency(target, 'multi')", 'sendBibleWithGraphics (мульти-гілка)'],
+    ["assertOutputConsistency(null, multi.length ? 'multi' : 'single')", 'sendBibleGraphicsMulti (найризикованіший)'],
+    ["assertOutputConsistency(null, 'single')", 'bibleGraphicsTo (одиночний)']
+  ];
+  const missing = paths.filter(([code]) => !b.includes(code)).map(([, name]) => name);
+  const inE4 = /assertOutputConsistency\(n, 'multi'\)/.test(SRC.extras);
+  // goLive — окремий шлях: там за одну дію можуть спрацювати ОБИДВА
+  // режими (мульти на один екран, графіка на інший), тож розходження
+  // найімовірніше саме тут.
+  const inGoLive = /assertOutputConsistency\(null, c\.multiOutputTarget \? 'multi' : 'single'\)/.test(SRC.extras);
+  if (!missing.length && inE4 && inGoLive)
+    ok('сторож підключений на всіх 5 шляхах виводу (3 у bible.js + sendMultiToOutput + goLive/прев’ю)');
+  else bad('сторож не підключений: ' + missing.concat(inE4 ? [] : ['sendMultiToOutput'], inGoLive ? [] : ['goLive (прев’ю)']).join(', '));
+  if (/id="bibleOutputRow"/.test(SRC.index) && /конфлікт режимів — виправлено автоматично/.test(b))
+    ok('індикатор режимів у панелі — оператор бачить стан екранів до залу');
+  else bad('немає видимого індикатора режимів');
+
+  // Зведення має покривати ВСІ джерела виводу, а не лише Біблію —
+  // інакше оператор бачить неповну картину по 4 екранах.
+  const SRC_MAPS = ['graphicsLiveMap', 'h2rLowerLiveMap', 'timerLiveMap', 'mediaLiveMap',
+                    'qrLiveMap', 'tickerLiveMap', 'creditsLiveMap', 'confettiLiveMap', 'htmlLiveMap'];
+  const notCovered = SRC_MAPS.filter(m => !b.includes(m));
+  if (!notCovered.length) ok('зведення охоплює всі 9 джерел виводу (графіка/титри/таймер/медіа/QR/рядок/подяки/конфеті/HTML)');
+  else bad('у зведенні бракує джерел: ' + notCovered.join(', '));
+  // htmlLiveMap зберігає ІНДЕКС, а не true/false — читати її як решту було б помилкою
+  if (/htmlLiveMap\[n\] != null/.test(b))
+    ok('htmlLiveMap читається як індекс (!= null), а не як прапорець — інакше графіка з індексом 0 не рахувалась би');
+  else bad('htmlLiveMap читається неправильно — HTML-графіка на виході 0 буде невидима у зведенні');
+
+  // Пісні теж мусять скидати відстеження виходів. Раніше вони скидали
+  // лише прапорці, лишаючи самі СПИСКИ — і після Біблії в мульти-режимі
+  // індикатор показував «кілька перекладів» на екрані, де вже пісня, а
+  // стрілки ◀▶ могли повернути туди вірш.
+  if (/function resetOutputTracking\(source\)/.test(b) &&
+      /lastLiveGraphicsTargets = \[\];[\s\S]{0,200}state\.multiLive = \[\]/.test(b))
+    ok('resetOutputTracking чистить ОБИДВА списки (одиночний + мульти)');
+  else bad('немає resetOutputTracking або він чистить лише один список');
+  const sd = read('src/song-display.js');
+  if (/resetOutputTracking\('song'\)/.test(sd))
+    ok('пісні скидають відстеження виходів (індикатор не бреже після зміни Біблія → пісня)');
+  else bad('пісні не скидають списки — індикатор і стрілки працюватимуть по застарілому стану');
+  // doSend — шлях звичайного тексту на ВСІ виходи (пісня через прев’ю
+  // теж іде сюди). Він заміщає вміст екранів, тож теж має скидати.
+  if (/if \(!isBible && typeof resetOutputTracking === 'function'\) resetOutputTracking\('song'\)/.test(SRC.extras))
+    ok('doSend (пісня на всі виходи, зокрема через прев’ю) скидає відстеження');
+  else bad('doSend не скидає відстеження — після пісні індикатор показуватиме старий вірш');
+  // clearLive («очистити») має робити те саме — перевіряємо, що не зламали
+  if (/lastLiveGraphicsTargets = \[\];[\s\S]{0,200}state\.multiLive = \[\]/.test(SRC.extras))
+    ok('«очистити» теж скидає обидва списки');
+  else bad('«очистити» лишає списки — наступне гортання поверне вірш на очищений екран');
+
+  // ЖИВА перевірка логіки лагодження
+  try {
+    const s = b.indexOf('function assertOutputConsistency');
+    const e = b.indexOf('function sendBibleWithGraphics');
+    const sandbox = {};
+    (new Function('state', 'OUT_NAME', 'console', 'exports',
+      'var lastLiveGraphicsTargets=[],lastLiveGraphics=false,lastLiveMulti=false;' + b.slice(s, e) +
+      'exports.A=assertOutputConsistency; exports.S=outputModeSummary;' +
+      'exports.set=function(a,m){lastLiveGraphicsTargets=a;state.multiLive=m;};' +
+      'exports.get=function(){return {single:lastLiveGraphicsTargets,multi:state.multiLive};};'
+    ))({ multiLive: [] }, { 1: 'A', 2: 'B', 3: 'C', 4: 'D' }, { warn: function () {} }, sandbox);
+
+    sandbox.set([1, 2], [1]);
+    const detected = sandbox.A(1, 'multi') === false;
+    const g1 = sandbox.get();
+    if (detected && g1.single.indexOf(1) < 0 && g1.multi.indexOf(1) >= 0)
+      ok('конфлікт (вихід в обох списках) виявлено й полагоджено на користь останньої дії');
+    else bad('конфлікт не виявлено або полагоджено неправильно: ' + JSON.stringify(g1));
+
+    // «на всі» (0) має розгорнутись, інакше перетин не видно
+    sandbox.set([0], [1]);
+    sandbox.A(null, 'multi');
+    const g2 = sandbox.get();
+    if (g2.single.indexOf(1) < 0 && g2.single.length === 3)
+      ok('режим «на всі» коректно розгортається — вихід у мульти з нього виключається');
+    else bad('режим «на всі» ламає перевірку: ' + JSON.stringify(g2));
+
+    // Нормальний стан чіпати не можна
+    sandbox.set([2], [1]);
+    const clean = sandbox.A(null, 'single') === true;
+    const g3 = sandbox.get();
+    if (clean && g3.single.length === 1 && g3.multi.length === 1)
+      ok('нормальний стан сторож не чіпає (немає хибних спрацювань)');
+    else bad('сторож псує коректний стан: ' + JSON.stringify(g3));
+  } catch (e) {
+    bad('жива перевірка сторожа впала: ' + e.message);
+  }
+})();
+
+head('Вбудовані шаблони графіки (GDD) — файли + підключення');
+(function () {
+  const fs2 = require('fs');
+  const ho = read('src/html-overlay.js');
+  const TPL = ['lower-third', 'announcement', 'countdown', 'verse'];
+  const missing = TPL.filter(t => !fs2.existsSync(path.join(ROOT, 'src/templates/gdd/' + t + '.html')));
+  if (!missing.length) ok('усі 4 файли шаблонів на місці (src/templates/gdd/)');
+  else bad('бракує файлів шаблонів: ' + missing.join(', '));
+  // Файли самі по собі нічого не дають — перевіряємо, що вони ПІДКЛЮЧЕНІ.
+  // Саме тут була помилка: шаблони створили, а в програму не завели.
+  if (/var GDD_TEMPLATES = \[/.test(ho) && /function addGddTemplate\(i\)/.test(ho) && /function renderGddTemplatePicker\(\)/.test(ho))
+    ok('GDD_TEMPLATES + addGddTemplate + renderGddTemplatePicker визначені');
+  else bad('шаблони не підключені в коді — файли лежать мертвим вантажем');
+  if (/id="gddTemplateList"/.test(SRC.index)) ok('контейнер #gddTemplateList є у вкладці HTML');
+  else bad('немає контейнера — кнопки шаблонів нікуди рендерити');
+  // Вкладка html будується ОДИН раз при старті, тож рендер має бути в steps
+  if (/renderGddTemplatePicker,/.test(SRC.extras))
+    ok('renderGddTemplatePicker є в steps — кнопки зʼявляться одразу, а не після дії');
+  else bad('renderGddTemplatePicker не в steps — список шаблонів стартуватиме порожнім');
+  // Кожен шаблон має бути валідним GDD, інакше «⚙ Поля» буде порожня
+  try {
+    const f = read('src/formats.js');
+    const sandbox = {};
+    (new Function('exports', f.slice(f.indexOf('function gddDetect'), f.indexOf('function gddInject')) +
+      '\nexports.schema=gddSchema;'))(sandbox);
+    const broken = [];
+    TPL.forEach(t => {
+      const html = fs2.readFileSync(path.join(ROOT, 'src/templates/gdd/' + t + '.html'), 'utf8');
+      const sch = sandbox.schema(html);
+      if (!sch.length) { broken.push(t + ' (немає схеми)'); return; }
+      // кожне поле має бути або в розмітці (data-gdd), або оброблене в update()
+      const unwired = sch.map(x => x.key).filter(k =>
+        !new RegExp('data-gdd="' + k + '"').test(html) && !new RegExp('d\\.' + k).test(html));
+      if (unwired.length) broken.push(t + ' (поля без привʼязки: ' + unwired.join(',') + ')');
+    });
+    if (!broken.length) ok('усі 4 шаблони — валідний GDD, кожне поле привʼязане до розмітки або update()');
+    else bad('зламані шаблони: ' + broken.join('; '));
+  } catch (e) {
+    bad('перевірка схем шаблонів впала: ' + e.message);
+  }
+})();
+
+head('Імпорт перекладів із локалізованими назвами книг (UA_Ogienko/Czech_CEP тощо)');
+(function () {
+  const f = read('src/formats.js');
+  if (/function fmtParseBibleNamedBooks\(text\)/.test(f)) ok('fmtParseBibleNamedBooks визначена');
+  else { bad('ЗНИК парсер перекладів із локалізованими назвами книг'); return; }
+  // Має бути в обох шляхах диспетчера — і за розширенням, і в переборі
+  if (/json: \[fmtParseBibleJSON, fmtParseBibleNamedBooks\]/.test(f))
+    ok('зареєстрований для .json ПІСЛЯ внутрішнього формату (той має пріоритет)');
+  else bad('не зареєстрований для .json або перехоплює внутрішній формат');
+  if (/const all = \[fmtParseBibleJSON, fmtParseBibleNamedBooks,/.test(f))
+    ok('є в загальному переборі парсерів');
+  else bad('немає в загальному переборі — файл без розширення не розпізнається');
+
+  // ЖИВА перевірка: назви книг МУСЯТЬ перетворюватись на канонічні коди.
+  // Це головне: мульти-переклади шукають ту саму книгу за КОДОМ, тож
+  // «Вiд Iвана», «Jan» і «От Иоанна» мають дати один і той самий joh —
+  // інакше два переклади поруч не зіставляться.
+  try {
+    const sandbox = {};
+    (new Function('exports', f.slice(0, f.indexOf('function fmtParseBibleJSON')) +
+      '\nexports.p=fmtParseBibleNamedBooks; exports.id=fmtBookId;'))(sandbox);
+    if (sandbox.id('Вiд Iвана') === 'joh' && sandbox.id('Jan') === 'joh')
+      ok('назви різними мовами зводяться до одного коду (укр «Вiд Iвана» = чес «Jan» = joh)');
+    else bad('назви книг різними мовами дають різні коди — мульти-переклади не зіставляться');
+
+    const sample = JSON.stringify({
+      translation: 'Тест', abbreviation: 'TST', language: 'uk',
+      books: { 'Вiд Iвана': { '3': { '16': 'Так бо Бог полюбив світ' } },
+               'Буття':     { '1': { '1': 'Напочатку' } } }
+    });
+    const r = sandbox.p(sample);
+    if (r && r.books.joh && r.books.joh['3']['16'] === 'Так бо Бог полюбив світ' && r.books.gen)
+      ok('розбір: книги розкладено за кодами (joh/gen), текст на місці');
+    else bad('розбір дає неправильну структуру: ' + JSON.stringify(r && Object.keys(r.books || {})));
+    if (r && Array.isArray(r._unknownBooks)) ok('нерозпізнані книги повертаються списком (не глухо ігноруються)');
+    else bad('немає списку нерозпізнаних книг — неповний імпорт пройде непомітно');
+    // Внутрішній формат НЕ має перехоплюватись цим парсером
+    const inner = JSON.stringify({ name: 'X', books: { joh: { '3': { '16': 'a' } } } });
+    const ri = sandbox.p(inner);
+    if (!ri || ri.books.joh) ok('внутрішній формат (книги вже за кодами) не ламається цим парсером');
+    else bad('парсер псує внутрішній формат');
+  } catch (e) {
+    bad('жива перевірка імпорту перекладів впала: ' + e.message);
+  }
+})();
+
+head('Публічний API: читання стану + захист від перебору PIN');
+(function () {
+  const m = SRC.main;
+  // GET /api/state — головна прогалина: без неї Stream Deck/Companion
+  // не можуть підсвітити активну кнопку, а автоматизація діє наосліп.
+  if (/if \(action === 'state'\)/.test(m) && /state: lastRemoteState/.test(m))
+    ok('GET /api/state віддає поточний стан (з того ж lastRemoteState, що й веб-пульт)');
+  else bad('немає GET /api/state — зовнішні системи не бачать, що в ефірі');
+  if (/if \(action === 'docs'\)/.test(m) && /stateFields/.test(m))
+    ok('GET /api/docs — самоопис API (щоб документація не розʼїжджалась із кодом)');
+  else bad('немає GET /api/docs');
+  // Стан має містити поля для підсвітки кнопок
+  const ix = SRC.index;
+  if (/blackout: !!\(window\.state && window\.state\.blackout\)/.test(ix) && /outputs: \(function \(\)/.test(ix))
+    ok('у стані є blackout і outputs[] (route/frozen/live) — достатньо для підсвітки кнопок');
+  else bad('стан не містить blackout/outputs — кнопки не знатимуть, що активне');
+  // Rate-limit (пункт аудиту, був відкритий)
+  if (/const API_MAX_FAILS = 10/.test(m) && /function apiNoteFail/.test(m) && /function apiClearFails/.test(m))
+    ok('rate-limit на невдалі PIN визначено (лічильник по IP)');
+  else bad('немає rate-limit — PIN підбирається перебором за хвилини');
+  if (/if \(apiIsBlocked\(req\)\)[\s\S]{0,200}429/.test(m))
+    ok('заблокований клієнт отримує 429 + Retry-After ДО перевірки PIN');
+  else bad('перевірка блокування не підключена на вході в API');
+  if (/apiNoteFail\(req\);[\s\S]{0,200}wrong pin/.test(m) && /apiClearFails\(req\);/.test(m))
+    ok('невдала спроба рахується, успішна — скидає лічильник (оператор з друкарською помилкою не постраждає)');
+  else bad('лічильник спроб не оновлюється правильно');
+
+  // ЖИВА перевірка логіки блокування
+  try {
+    const s = m.indexOf('const API_FAILS');
+    const marker = 'function apiClearFails(req) { API_FAILS.delete(apiClientIp(req)); }';
+    const e = m.indexOf(marker) + marker.length;
+    if (s < 0 || e <= marker.length) throw new Error('не знайдено блок rate-limit у main.js');
+    const sandbox = {};
+    (new Function('exports', m.slice(s, e) +
+      '\nexports.block=apiIsBlocked; exports.fail=apiNoteFail; exports.clear=apiClearFails;'))(sandbox);
+    const req = { socket: { remoteAddress: '1.2.3.4' } };
+    let blockedAt = null;
+    for (let i = 1; i <= 12; i++) {
+      if (!sandbox.block(req)) sandbox.fail(req);
+      else if (!blockedAt) blockedAt = i;
+    }
+    if (blockedAt === 11) ok('блокування спрацьовує рівно після 10 невдалих спроб');
+    else bad('блокування спрацювало на спробі ' + blockedAt + ' (очікувалось 11)');
+    if (!sandbox.block({ socket: { remoteAddress: '9.9.9.9' } }))
+      ok('блокування по IP — сусідній клієнт не постраждав');
+    else bad('заблоковано всіх, а не конкретний IP');
+    sandbox.clear(req);
+    if (!sandbox.block(req)) ok('успішний вхід знімає блокування');
+    else bad('лічильник не скидається після успішного входу');
+  } catch (e) {
+    bad('жива перевірка rate-limit впала: ' + e.message);
+  }
+})();
+
+head('Порядок завантаження: rafDebounce визначений ДО всіх, хто ним користується');
+(function () {
+  const fs2 = require('fs');
+  // Реальний баг, який це ловить: rafDebounce жив у extras-1.js, а
+  // background.js вантажиться раніше й кличе обгорнуту render-функцію
+  // вже на старті (initBgLibrary) — застосунок падав з
+  // «rafDebounce is not defined». Hoisting тут не допомагає: він діє в
+  // межах ОДНОГО файлу, а не між файлами.
+  const order = SRC.index.split('\n')
+    .filter(l => /^<script src="[^"]+\.js"><\/script>/.test(l))
+    .map(l => l.match(/src="([^"]+)"/)[1]);
+  const defAt = order.indexOf('core/reactive.js');
+  if (defAt < 0) { bad('core/reactive.js не підключений у index.html'); return; }
+  const users = order.filter(f => {
+    try {
+      const s = fs2.readFileSync(path.join(ROOT, 'src', f), 'utf8');
+      return /rafDebounce\(/.test(s) && !/function rafDebounce/.test(s);
+    } catch (e) { return false; }
+  });
+  const early = users.filter(u => order.indexOf(u) < defAt);
+  if (!early.length) ok('усі ' + users.length + ' користувачів rafDebounce вантажаться ПІСЛЯ core/reactive.js');
+  else bad('вантажаться ЗАРАНО (впаде на старті): ' + early.join(', '));
+  // Визначення має бути саме в reactive.js і саме в однині
+  const inReactive = /function rafDebounce\(fn\)/.test(read('src/core/reactive.js'));
+  const inExtras1 = /function rafDebounce\(fn\)/.test(read('src/extras-1.js'));
+  if (inReactive && !inExtras1) ok('rafDebounce визначена рівно один раз — у core/reactive.js');
+  else bad(inExtras1 ? 'rafDebounce повернулась в extras-1.js — порядок знову зламається' : 'rafDebounce зникла з core/reactive.js');
+})();
+
+head('Біблія: мульти-переклади й одиночний вивід не конфліктують за один екран');
+(function () {
+  const b = read('src/bible.js');
+  // Вихід, що переходить у мульти-режим, МУСИТЬ зникнути з
+  // lastLiveGraphicsTargets. Інакше він опиняється і там, і в
+  // state.multiLive — і стрілки ◀▶ шлють на нього два різні кадри
+  // підряд: екран блимає й показує не те, що очікує оператор.
+  if (/sendMultiToOutput === 'function'\)[\s\S]{0,700}lastLiveGraphicsTargets = lastLiveGraphicsTargets\.filter[\s\S]{0,200}sendMultiToOutput\(target\)/.test(b))
+    ok('перехід виходу в мульти-режим прибирає його з одно-перекладного списку (без подвійного кадру)');
+  else bad('вихід може опинитись і в lastLiveGraphicsTargets, і в multiLive — стрілки даватимуть різне на екранах');
+  // Дзеркально: bibleGraphicsTo знімає свої цілі з multiLive
+  if (/state\.multiLive = state\.multiLive\.filter\(function\(x\) \{\s*return \(targets \|\| \[\]\)\.indexOf\(x\) < 0/.test(b))
+    ok('одиночний вивід знімає свої екрани з мульти-режиму (дзеркальний бік тієї ж проблеми)');
+  else bad('одиночний вивід не знімає екрани з multiLive — той самий конфлікт у зворотний бік');
+  // sendBibleGraphicsMulti має відстежувати ОБИДВІ групи, інакше
+  // частина екранів випадає зі стану й застигає на старому вірші.
+  const smBody = (b.match(/function sendBibleGraphicsMulti[\s\S]*?\n\}/) || [''])[0];
+  if (/multi\.push\(t\)/.test(smBody) && /if \(multi\.length\) lastLiveMulti = true/.test(smBody) && /if \(rest\.length\) bibleGraphicsTo\(rest\)/.test(smBody))
+    ok('«2 виводи»/«Усі 4»: відстежуються і мульти-, і одно-перекладні цілі (стрілки оновлять усі екрани)');
+  else bad('sendBibleGraphicsMulti губить частину цілей — ті екрани застигнуть при гортанні');
+})();
+
+head('Формат SPS (SongPresenter) — імпорт і експорт');
+(function () {
+  const f = read('src/formats.js');
+  if (/function fmtParseSPS\(text\)/.test(f)) ok('fmtParseSPS визначена (імпорт)');
+  else bad('ЗНИКЛА fmtParseSPS — імпорт .sps не працюватиме');
+  if (/function fmtBuildSPS\(songs, songbookTitle\)/.test(f)) ok('fmtBuildSPS визначена (експорт)');
+  else bad('ЗНИКЛА fmtBuildSPS — експорт у .sps не працюватиме');
+  if (/sps:\s*\[fmtParseSPS\]/.test(f)) ok('.sps зареєстровано в диспетчері fmtParseSongs (за розширенням)');
+  else bad('.sps не в диспетчері — файл не розпізнається за розширенням');
+  // Порядок у загальному переборі: SPS має стояти ПЕРЕД CSV/TXT, інакше
+  // ті «проковтнуть» SPS-файл і повернуть сміття замість пісень.
+  // Беремо саме ПІСЕННИЙ перебір (шукаємо від fmtParseSongs), бо вище у
+  // файлі є ще один `const all` — для біблійних парсерів.
+  const songsDispatch = f.slice(f.indexOf('function fmtParseSongs'));
+  const allLine = (songsDispatch.match(/const all = \[[^\]]+\]/) || [''])[0];
+  if (allLine.indexOf('fmtParseSPS') >= 0 &&
+      allLine.indexOf('fmtParseSPS') < allLine.indexOf('fmtParseSongsCSV') &&
+      allLine.indexOf('fmtParseSPS') < allLine.indexOf('fmtParseSongsTXT'))
+    ok('fmtParseSPS стоїть перед CSV/TXT у переборі — вони не «проковтнуть» SPS-файл');
+  else bad('порядок парсерів змінено: CSV/TXT можуть перехопити SPS і повернути сміття');
+  if (/accept="[^"]*\.sps[^"]*"/.test(SRC.index)) ok('.sps є у списку accept вибору файлів');
+  else bad('.sps немає в accept — файл не вибереться у діалозі');
+
+  // ЖИВА перевірка на справжніх даних: розбір + круговий рейс.
+  try {
+    const i = f.indexOf('function fmtParseSPS');
+    const j = f.indexOf('// TXT: перший непорожній');
+    const sandbox = {};
+    (new Function('exports', f.slice(i, j) + '\nexports.p=fmtParseSPS; exports.b=fmtBuildSPS;'))(sandbox);
+    const sample =
+      '##12\n##Тестовий збірник\n##(c) 2026\n' +
+      '7#$#Назва пісні#$#0#$#соль-мажор#$#Перекладач#$#Автор#$#' +
+      'Куплет 1.@%Рядок один,@%Рядок два.@$Приспів:@%Приспів рядок.#$##$#left#$#\n';
+    const songs = sandbox.p(sample);
+    if (songs && songs.length === 1 && songs[0].title === 'Назва пісні' &&
+        songs[0].verses.length === 2 &&
+        songs[0].verses[0] === 'Куплет 1.\nРядок один,\nРядок два.' &&
+        songs[0].number === '7' && songs[0].key === 'соль-мажор')
+      ok('розбір SPS: назва/номер/тональність/куплети — @% і @$ розкодовано правильно');
+    else bad('розбір SPS дає неправильний результат: ' + JSON.stringify(songs && songs[0]));
+    // Круговий рейс: експорт → імпорт має дати ті самі пісні
+    const back = sandbox.p(sandbox.b(songs, 'Тестовий збірник'));
+    if (back && back.length === 1 && back[0].title === songs[0].title &&
+        back[0].verses.join('|') === songs[0].verses.join('|'))
+      ok('круговий рейс SPS: експорт → імпорт повертає ті самі пісні без втрат');
+    else bad('круговий рейс SPS втрачає дані');
+    // Роздільники не мають потрапити в дані й зламати файл
+    const evil = sandbox.b([{ title: 'A#$#B', verses: ['x@$y@%z'], author: '' }], 'T');
+    if (sandbox.p(evil).length === 1)
+      ok('роздільники (#$#, @$, @%) у самому тексті екрануються — файл не ламається');
+    else bad('роздільник усередині даних ламає експортований файл');
+  } catch (e) {
+    bad('жива перевірка SPS впала: ' + e.message);
+  }
+})();
+
+head('Живий тест (context-isolation-test.js) — наявність і можливість запуску');
+(function () {
+  const fs2 = require('fs');
+  const tPath = path.join(ROOT, 'context-isolation-test.js');
+  if (!fs2.existsSync(tPath)) { bad('ЗНИК context-isolation-test.js — живий регресійний тест втрачено'); return; }
+  ok('context-isolation-test.js на місці');
+  const t = fs2.readFileSync(tPath, 'utf8');
+  let pkg;
+  try { pkg = JSON.parse(read('package.json')); } catch (e) { bad('package.json не парситься: ' + e.message); return; }
+  // Тест вимагає playwright. Якщо його немає в devDependencies, тест
+  // фізично не запуститься після свіжого npm install — і мовчки
+  // «зникне» з обігу, хоча файл лежить у репозиторії.
+  const dev = pkg.devDependencies || {};
+  if (/require\('playwright'\)/.test(t)) {
+    if (dev.playwright) ok('playwright є в devDependencies — живий тест можна запустити після npm install');
+    else bad('context-isolation-test.js вимагає playwright, але його НЕМАЄ в devDependencies — тест не запуститься');
+  }
+  if (pkg.scripts && pkg.scripts['test-live']) ok('є npm-скрипт test-live для запуску живого тесту');
+  else bad('немає скрипта test-live — живий тест доведеться запускати вручну');
+  // Живий тест НЕ має бути в звичайному `npm test`: він потребує
+  // справжнього Electron і дисплея, тож у швидкому прогоні падав би.
+  if (pkg.scripts && !/context-isolation-test/.test(pkg.scripts.test || ''))
+    ok('npm test лишається швидким (без Electron) — живий тест окремою командою');
+  else bad('живий тест потрапив у npm test — швидкий прогін вимагатиме Electron і дисплея');
+})();
+
+head('Аудит 4.1, крок 2: contextIsolation/webSecurity УВІМКНЕНО на output-вікнах');
+(function () {
+  const m = SRC.main;
+  // Перевіряємо саме блок createOutputWindow (output-вікна), а не інші
+  // вікна — у mainWin/Stage ізоляція була увімкнена й раніше.
+  const i = m.indexOf('title: OUTPUT_TITLES[kind]');
+  // Прибираємо коментарі: у самому блоці є пояснення, де згадуються
+  // і contextIsolation:false (як було раніше), і contextIsolation:true
+  // (чому безпечно). Без цієї фільтрації тест ловив би текст пояснення
+  // замість справжнього налаштування — і не помітив би відкату.
+  const block = i >= 0
+    ? m.slice(i, i + 2400).split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n')
+    : '';
+  if (/contextIsolation:\s*true/.test(block)) ok('output-вікна: contextIsolation:true');
+  else bad('РЕГРЕСІЯ БЕЗПЕКИ: contextIsolation на output-вікнах знову false');
+  if (/webSecurity:\s*true/.test(block)) ok('output-вікна: webSecurity:true');
+  else bad('РЕГРЕСІЯ БЕЗПЕКИ: webSecurity на output-вікнах знову false');
+  if (/allowRunningInsecureContent:\s*false/.test(block)) ok('output-вікна: allowRunningInsecureContent:false');
+  else bad('РЕГРЕСІЯ БЕЗПЕКИ: allowRunningInsecureContent знову true');
+  // Передумова, від якої залежить безпечність contextIsolation:true тут:
+  // projector.html не має власних <script>, уся логіка в preload, який
+  // ділить DOM зі сторінкою. Якщо колись у сторінку додадуть скрипт, що
+  // читає window-змінні з preload — воно тихо зламається.
+  const ph = read('src/projector.html');
+  if (!/<script/i.test(ph))
+    ok('projector.html без власних <script> — передумова безпеки contextIsolation:true збережена');
+  else bad('у projector.html зʼявився <script> — перевір, чи не читає він window-змінні з preload (isolated world!)');
 })();
 
 head('Двигун, фаза 2В: пакетування дрібних render-функцій (rafDebounce)');

@@ -332,6 +332,30 @@ if (window.electronAPI) {
       selectVerse(cmd.idx);
       sendToProjector();
     }
+    // ── Розширення пульта ──────────────────────────────────────────
+    // Ці дії вже підтримував HTTP-API, але на телефоні кнопок не було.
+    // Найважливіша — blackout: аварійне гасіння екрана має бути під
+    // рукою в того, хто стоїть у залі, а не лише за ноутбуком.
+    // Усі виклики через typeof: пульт не має падати, якщо якоїсь
+    // функції немає (напр. вкладку ще не відкривали).
+    else if (cmd.action === 'blackout') { if (typeof toggleBlackout === 'function') toggleBlackout(); }
+    else if (cmd.action === 'freeze') { if (typeof toggleFreeze === 'function') toggleFreeze(); }
+    else if (cmd.action === 'logo') { if (typeof emergencyShowLogoAll === 'function') emergencyShowLogoAll(); }
+    else if (cmd.action === 'restore') { if (typeof emergencyRestoreAll === 'function') emergencyRestoreAll(); }
+    // План служби — щоб вести службу з телефона, не лише гортати вірші
+    else if (cmd.action === 'plan-next') { if (typeof svcNext === 'function') svcNext(); }
+    else if (cmd.action === 'plan-prev') { if (typeof svcPrev === 'function') svcPrev(); }
+    else if (cmd.action === 'plan-item' && cmd.idx !== undefined) { if (typeof svcGoTo === 'function') svcGoTo(parseInt(cmd.idx, 10)); }
+    // Таймер проповіді
+    else if (cmd.action === 'timer-start') { if (typeof timerStart === 'function') timerStart(); }
+    else if (cmd.action === 'timer-stop') { if (typeof timerStop === 'function') timerStop(); }
+    else if (cmd.action === 'timer-reset') { if (typeof timerReset === 'function') timerReset(); }
+    // Прибрати з конкретного виходу (1..4) — коли треба зняти графіку
+    // лише з трансляції, а на проекторі лишити
+    else if (cmd.action === 'clear-output' && cmd.n !== undefined) {
+      var _n = parseInt(cmd.n, 10);
+      if (_n >= 1 && _n <= 4 && typeof pv2ClearOutput === 'function') pv2ClearOutput(_n);
+    }
   });
 
   // Load saved theme

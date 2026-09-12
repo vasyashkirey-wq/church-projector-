@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<title>Нижня третина</title>
+<!-- Схема полів: за нею застосунок сам малює форму заповнення.
+     Значення підставляються в елементи з data-gdd="<ключ>". -->
+<script type="application/json+gdd">
+{
+  "properties": {
+    "name":   { "label": "Ім'я",        "type": "single-line", "default": "Олександр", "required": true },
+    "role":   { "label": "Посада/роль", "type": "single-line", "default": "Проповідник" },
+    "accent": { "label": "Колір акценту", "gddType": "color",  "default": "#c8a84b" },
+    "side":   { "label": "Розташування", "enum": ["зліва", "справа"], "default": "зліва" }
+  }
+}
+</script>
+<style>
+  /* Фон ПРОЗОРИЙ — щоб графіка лягала поверх камери на трансляції
+     й поверх фону на проекторі. Не ставити тут background! */
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden;
+               font-family: Georgia, 'Times New Roman', serif; }
+  .wrap { position: absolute; bottom: 140px; left: 120px; }
+  .wrap.right { left: auto; right: 120px; text-align: right; }
+  .bar { display: inline-block; padding: 22px 46px 22px 34px;
+         background: linear-gradient(90deg, rgba(12,18,38,.94), rgba(12,18,38,.72));
+         border-left: 10px solid var(--accent, #c8a84b);
+         box-shadow: 0 10px 40px rgba(0,0,0,.45);
+         /* Поява: плавно виїжджає й проявляється */
+         animation: in .55s cubic-bezier(.2,.8,.2,1) both; }
+  .wrap.right .bar { border-left: 0; border-right: 10px solid var(--accent, #c8a84b); padding: 22px 34px 22px 46px; }
+  .name { color: #fff; font-size: 62px; line-height: 1.05; letter-spacing: .01em;
+          text-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  .role { color: var(--accent, #c8a84b); font-size: 32px; margin-top: 8px;
+          font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; letter-spacing: .06em;
+          text-transform: uppercase; }
+  .role:empty { display: none; }        /* без ролі — не лишаємо порожній рядок */
+  @keyframes in { from { opacity: 0; transform: translateX(-40px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <div class="wrap" id="wrap">
+    <div class="bar">
+      <div class="name" data-gdd="name">Олександр</div>
+      <div class="role" data-gdd="role">Проповідник</div>
+    </div>
+  </div>
+<script>
+  // update() — конвенція GDD: приходить РЯДОК JSON. Текстові поля
+  // застосунок підставляє сам (data-gdd), тут лише те, що потребує
+  // логіки: колір акценту й бік розташування.
+  function update(json) {
+    var d = {};
+    try { d = typeof json === 'string' ? JSON.parse(json) : (json || {}); } catch (e) { return; }
+    if (d.accent) document.documentElement.style.setProperty('--accent', d.accent);
+    var w = document.getElementById('wrap');
+    if (w) w.className = 'wrap' + (d.side === 'справа' ? ' right' : '');
+  }
+  function play() {}   // анімація появи — суто CSS, тут робити нічого
+</script>
+</body>
+</html>

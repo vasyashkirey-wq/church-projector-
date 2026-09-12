@@ -110,9 +110,58 @@ function pv2SendTextToOutputN(n, html, ref) {
   if (!window.electronAPI || !window.electronAPI.sendToOutput) return;
   window.electronAPI.sendToOutput(OUT_KIND[n], 'text', { html: html, ref: ref || '' });
 }
+// Скидає індикатори «в ефірі» ВСІХ фіч для виходу n (або для всіх, якщо
+// n не вказано) і перемальовує їхні рядки кнопок.
+//
+// НАВІЩО: кожна фіча веде власну мапу (qrLiveMap, graphicsLiveMap,
+// h2rLowerLiveMap, timerLiveMap, mediaLiveMap, tickerLiveMap,
+// creditsLiveMap, confettiLiveMap, htmlLiveMap), але очищення виходу їх
+// НЕ чіпало. Через це екран був порожній, а кнопка фічі й далі світилась
+// 🔴 «в ефірі» — і прибрати це можна було лише кнопкою тієї самої фічі.
+// Саме звідси «постійно висить в ефірі, виключаю — а воно вмикається».
+//
+// Мапи читаємо через window і захищено: якщо модуль не завантажений або
+// фічу прибрали, очищення все одно має спрацювати, а не впасти.
+function resetOutputIndicators(n) {
+  var maps = ['qrLiveMap', 'graphicsLiveMap', 'h2rLowerLiveMap', 'timerLiveMap',
+              'mediaLiveMap', 'tickerLiveMap', 'creditsLiveMap', 'confettiLiveMap',
+              'songLiveMap'];
+  maps.forEach(function (name) {
+    try {
+      var m = window[name];
+      if (!m) return;
+      if (n) m[n] = false;
+      else [1, 2, 3, 4].forEach(function (k) { m[k] = false; });
+    } catch (e) {}
+  });
+  // htmlLiveMap зберігає ІНДЕКС графіки, а не true/false — тож порожнє
+  // значення для неї це null, а не false.
+  try {
+    var h = window.htmlLiveMap;
+    if (h) {
+      if (n) h[n] = null;
+      else [1, 2, 3, 4].forEach(function (k) { h[k] = null; });
+    }
+  } catch (e) {}
+  // Перемальовуємо рядки кнопок, щоб 🔴 зникли одразу
+  ['renderQrOutputRow', 'renderSongOutputRow', 'renderGraphicsOutBtns', 'renderH2ROutBtns', 'renderTimerOutBtns',
+   'renderMediaOutBtns', 'renderTickerOutBtns', 'renderCreditsOutBtns', 'renderConfettiOutBtns',
+   'renderHTMLOverlayList', 'renderBibleOutputRow'].forEach(function (fn) {
+    try { if (typeof window[fn] === 'function') window[fn](); } catch (e) {}
+  });
+}
+
 function pv2ClearOutput(n) {
   if (!window.electronAPI || !window.electronAPI.sendToOutput) return;
+  // ПЕРШИМ ділом скасовуємо все, що зараз готується до відправки на цей
+  // вихід. sendHTMLToOutputN асинхронна (спершу готує HTML, потім шле),
+  // і без цього підготовлений контент долетів би ВЖЕ ПІСЛЯ очищення —
+  // екран знову показував би прибране.
+  try {
+    if (typeof _outSendGen !== 'undefined' && _outSendGen) _outSendGen[n] = (_outSendGen[n] || 0) + 1;
+  } catch (e) {}
   window.electronAPI.sendToOutput(OUT_KIND[n], 'clear', {});
+  resetOutputIndicators(n);
   notify('🚫 ' + OUT_NAME[n] + ' очищено');
 }
 
@@ -307,6 +356,13 @@ function pv2AllMirror() {
     const orig = doSend;
     window.doSend = function(text, ref) {
       const isBible = ref && /\d+:\d+/.test(ref);
+      // Звичайний текст іде на ВСІ виходи й заміщає те, що там було
+      // (вірш із графікою чи кілька перекладів). Тож відстеження треба
+      // скинути — інакше індикатор далі показував би «кілька
+      // перекладів» на екрані, де вже пісня, а стрілки ◀▶ могли
+      // повернути туди вірш. Скидаємо лише для ПІСЕНЬ: у біблійних
+      // шляхах списки виставляються навмисно й тут їх стирати не можна.
+      if (!isBible && typeof resetOutputTracking === 'function') resetOutputTracking('song');
       // Для Біблії пишемо посилання на вірш; для пісні — ЧИСТУ назву пісні
       // (а не ref, який містить суфікс слайда «(2/2)» і ламав «недавні пісні»).
       recordStat(isBible ? 'bible' : 'song',
@@ -383,6 +439,35 @@ function setGoingLive(on) {
 
 // Покласти контент у прев'ю (не в ефір)
 function stageContent(content) {
+  // ЗЛИТТЯ ЗМІШАНИХ РЕЖИМІВ.
+  // «2 виводи» (чи «Усі 4»), коли частина екранів показує кілька
+  // перекладів, а частина — один вірш, викликає stageContent ДВІЧІ за
+  // одну дію оператора: раз із multiOutputTarget, раз із gfxTargets.
+  // Проста заміна лишала в прев'ю тільки останній виклик, тож в ефір
+  // ішов один екран, а другий лишався порожнім — «через прев'ю на
+  // проектор не йде, а напряму працює».
+  //
+  // Зливаємо лише в межах ОДНІЄЇ дії оператора (0.5 с) і лише для
+  // htmlraw: інакше два незалежні покази поспіль злиплися б в один.
+  try {
+    var prev = state.preview;
+    var fresh = prev && prev._stagedAt && (Date.now() - prev._stagedAt < 500);
+    if (fresh && content && content.kind === 'htmlraw' && prev.kind === 'htmlraw') {
+      var mergedMulti = content.multiOutputTarget || prev.multiOutputTarget;
+      var mergedGfx = (content.gfxTargets && content.gfxTargets.length) ? content.gfxTargets : prev.gfxTargets;
+      if (mergedMulti && mergedGfx && mergedGfx.length) {
+        content = Object.assign({}, prev, content, {
+          multiOutputTarget: mergedMulti,
+          gfxTargets: mergedGfx,
+          // Підпис має відображати обидва, інакше оператор бачить у
+          // прев'ю лише половину того, що піде в ефір.
+          label: (prev.label || '') && (content.label || '')
+            ? (prev.label + ' + ' + content.label) : (content.label || prev.label)
+        });
+      }
+    }
+  } catch (e) {}
+  content._stagedAt = Date.now();
   state.preview = content;
   updateLivePanels();
 }
@@ -438,22 +523,43 @@ function goLive() {
   }
   setGoingLive(true);
   try {
+    // ВАЖЛИВО: це НЕ ланцюг else-if. «2 виводи» зі змішаними режимами
+    // (на одному екрані кілька перекладів, на іншому — один вірш)
+    // породжує ДВА різні вмісти, і прев'ю має віддати обидва. Раніше
+    // тут стояв else-if: спрацьовувала лише перша гілка, тож в ефір
+    // ішов один екран, а другий лишався порожнім — саме це й було
+    // «через прев'ю на проектор не йде, а напряму працює».
+    var handled = false;
     if (c.kind === 'htmlraw' && c.multiOutputTarget && typeof sendMultiToOutput === 'function') {
       // Кілька перекладів на конкретний вихід: перебудовуємо для АКТУАЛЬНОГО
       // стану вибору перекладів (могли змінитись, поки слайд лежав у прев'ю).
       // multiOutputTarget може бути числом (один вихід) або масивом [1,2] (обидва).
       const targets = Array.isArray(c.multiOutputTarget) ? c.multiOutputTarget : [c.multiOutputTarget];
       targets.forEach(n => sendMultiToOutput(n, true));
+      handled = true;
     }
-    else if (c.kind === 'htmlraw' && c.gfxTargets && c.gfxTargets.length && typeof bibleGraphicsTo === 'function') {
+    if (c.kind === 'htmlraw' && c.gfxTargets && c.gfxTargets.length && typeof bibleGraphicsTo === 'function') {
       // Графіка вірша: віддаємо на ТІ САМІ екрани, які були обрані у прев'ю
       bibleGraphicsTo(c.gfxTargets, true);
+      handled = true;
     }
-    else if (c.kind === 'htmlraw') doSendHTML(c.html, c.label);
-    else doSend(c.rawText != null ? c.rawText : c.html, c.ref);
+    if (!handled) {
+      if (c.kind === 'htmlraw') doSendHTML(c.html, c.label);
+      else doSend(c.rawText != null ? c.rawText : c.html, c.ref);
+    }
   } finally {
     setGoingLive(false);
   }
+  // Сторож узгодженості: саме тут найбільший ризик розходження —
+  // за одну дію могли спрацювати ОБИДВА режими (мульти-переклади на
+  // один екран, графіка вірша на інший), кожен зі своїм списком.
+  // mode визначаємо за тим, що переважало: якщо були мульти-цілі —
+  // на їх користь, бо вони специфічніші за загальну графіку.
+  try {
+    if (typeof assertOutputConsistency === 'function') {
+      assertOutputConsistency(null, c.multiOutputTarget ? 'multi' : 'single');
+    }
+  } catch (e) {}
   pushUndo(state.onAir || { empty: true });   // щоб можна було повернутись
   state.onAir = c;
   updateLivePanels();
@@ -484,6 +590,10 @@ function clearLive() {
   lastLivePlain = false;
   lastLiveMulti = false;
   try { state.multiLive = []; } catch (e) {}
+  // Індикатори «в ефірі» всіх фіч (QR, графіка, титри, таймер, медіа,
+  // тікер, подяки, конфеті, HTML) — інакше екран порожній, а кнопки
+  // далі світяться 🔴 і фіча «висить в ефірі» назавжди.
+  try { if (typeof resetOutputIndicators === 'function') resetOutputIndicators(); } catch (e) {}
   try { if (typeof renderTabInto === 'function') markDirty('layers'); } catch (e) {}
   state.onAir = null;
   if (typeof clearOnAirRecovery === 'function') clearOnAirRecovery();

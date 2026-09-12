@@ -459,6 +459,10 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
                 <button class="btn btn-ghost btn-sm" onclick="resetSongSelection()"
                         title="Прибрати пісню з прев'ю і зняти її з-під стрілок">✕ Скинути прев'ю</button>
               </div>
+              <!-- Адресний вивід пісні — той самий патерн, що у Біблії/H2R:
+                   кнопка на кожен вихід із 🔴, «✕ Прибрати» лише для активних,
+                   і «На всі / 2 виводи / Усі 4» нижче. -->
+              <div id="songOutputRow" class="mt8"></div>
               <div id="songOrderMini" class="mt8" style="display:none;border-top:1px solid var(--border);padding-top:8px"></div>
               <!-- Ті самі глобальні налаштування трансляції, що й у вкладці «Біблія» —
                    стосуються виходу 2 незалежно від того, пісня це чи вірш, тож
@@ -860,6 +864,12 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
           </div>
           <div>
             <div class="card">
+              <div class="card-title">✨ Готові шаблони графіки</div>
+              <div class="card-sub">Не треба робити HTML-файл поза програмою: додай готову заготовку, натисни «⚙ Поля» й заповни текст. Далі — як зі звичайною графікою: вивід на будь-який екран, пресети, збереження.</div>
+              <div id="gddTemplateList" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+            </div>
+
+            <div class="card">
               <div class="card-title">📋 Завантажені overlay файли</div>
               <div style="display:flex;gap:6px;margin-bottom:8px">
                 <button class="btn btn-ghost btn-sm" onclick="exportHtmlOverlays()">📤 Експорт колекції</button>
@@ -918,7 +928,7 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
             <div class="card">
               <div class="card-title">🎵 Імпорт бібліотеки пісень</div>
               <div class="pdf-drop" onclick="document.getElementById('songsImportInput').click()">
-                <input type="file" id="songsImportInput" accept=".json,.txt,.xml,.sng,.csv,.tsv,.cho,.chordpro,.crd,.pro,.pro4,.pro5,.pro6,.pptx,.docx" onchange="importSongsAny(this)" multiple>
+                <input type="file" id="songsImportInput" accept=".json,.txt,.xml,.sng,.sps,.csv,.tsv,.cho,.chordpro,.crd,.pro,.pro4,.pro5,.pro6,.pptx,.docx" onchange="importSongsAny(this)" multiple>
                 <div style="font-size:28px;margin-bottom:6px">🎵</div>
                 <div style="font-size:13px;color:var(--text)">Завантажити JSON бібліотеку пісень</div>
                 <div class="text-muted mt8">Формат: {"library":"Назва","songs":[...]}</div>
@@ -2989,7 +2999,11 @@ function showTab(name) {
   if (name === 'stagedisplay' && typeof renderStageMonitorOptions === 'function') renderStageMonitorOptions();
   if (name === 'bible' && typeof syncBibleLayoutButtons === 'function') syncBibleLayoutButtons();
   if (name === 'bible' && typeof syncStreamGfxToggle === 'function') syncStreamGfxToggle();
-  if (name === 'bible' && typeof refreshMultiTransCard === 'function') refreshMultiTransCard();
+  // Картка «Кілька перекладів» тепер є у ДВОХ вкладках — Біблія і
+  // Оформлення→Графіка. Заповнюємо при відкритті обох, інакше в
+  // Графіці вона стартувала б порожньою (вміст вкладок будується один
+  // раз при старті, showTab лише перемикає CSS-клас).
+  if ((name === 'bible' || name === 'graphics') && typeof refreshMultiTransCard === 'function') refreshMultiTransCard();
   if (name === 'bible') {
     try {
       var v = (state && state.graphicsSettings && state.graphicsSettings.streamOpacity);
@@ -3670,7 +3684,33 @@ function broadcastRemoteState() {
       date: window.state.service.date || '',
       items: (window.state.service.items || []).map(function(it) { return it.title || ''; }),
       idx: window.state.service.idx
-    } : { name: '', date: '', items: [], idx: -1 }
+    } : { name: '', date: '', items: [], idx: -1 },
+    // Стан перемикачів і виходів — щоб зовнішня система (Stream Deck,
+    // Companion, кнопки) могла ПІДСВІЧУВАТИ активні кнопки, а не діяти
+    // наосліп. Без цього API вміє лише командувати, але не бачить, що
+    // зараз відбувається.
+    blackout: !!(window.state && window.state.blackout),
+    outputs: (function () {
+      try {
+        var wsx = (window.state && window.state.outputRoutes) || {};
+        var frozen = (window.state && window.state.frozenOutputs) || {};
+        var live = [];
+        // Куди зараз реально йде вірш/текст: одиночний вивід + мульти-переклади
+        try {
+          if (Array.isArray(window.lastLiveGraphicsTargets)) live = live.concat(window.lastLiveGraphicsTargets);
+          if (window.state && Array.isArray(window.state.multiLive)) live = live.concat(window.state.multiLive);
+        } catch (e) {}
+        return [1, 2, 3, 4].map(function (n) {
+          return {
+            n: n,
+            name: (typeof OUT_NAME !== 'undefined' && OUT_NAME[n]) ? OUT_NAME[n] : ('Вихід ' + n),
+            route: wsx[n] || 'mirror',
+            frozen: !!frozen[n],
+            live: live.indexOf(n) >= 0 || live.indexOf(0) >= 0
+          };
+        });
+      } catch (e) { return []; }
+    })()
   };
   // Наступний вірш Біблії
   if (currentBibleBook && currentBibleChapter && currentBibleVerseNum) {
@@ -4611,6 +4651,11 @@ function _applyImportDecisions() {
 
 <!-- Розширені функції: плейлист, план, медіа, титри, клавіші, статистика та ін. -->
 <link rel="stylesheet" href="extras.css">
+<!-- Реактивний шар (markDirty + rafDebounce). Мусить вантажитись ПЕРШИМ
+     серед логіки: background.js, html-overlay.js, song-*.js і tabs/media
+     обгортають свої render-функції в rafDebounce і викликають їх уже під
+     час старту (initBgLibrary), тож визначення має існувати ДО них. -->
+<script src="core/reactive.js"></script>
 <script src="formats.js"></script>
 <script src="ui-translations.js"></script>
 <script src="qr.js"></script>
@@ -4620,9 +4665,6 @@ function _applyImportDecisions() {
 <script src="html-overlay.js"></script>
 <script src="monitors.js"></script>
 <script src="theme-remote.js"></script>
-<!-- Реактивний шар: пакетний перерендер (markDirty). Вантажиться ПЕРШИМ
-     серед логіки, бо ним користуються файли вкладок нижче. -->
-<script src="core/reactive.js"></script>
 <script src="extras-1.js"></script>
 <script src="extras-2.js"></script>
 <script src="extras-3.js"></script>

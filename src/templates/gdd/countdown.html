@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<title>Зворотний відлік</title>
+<script type="application/json+gdd">
+{
+  "properties": {
+    "label":   { "label": "Напис зверху", "type": "single-line", "default": "Служба починається через" },
+    "minutes": { "label": "Хвилин до початку", "type": "number", "min": 0, "max": 180, "step": 1, "default": 10, "required": true },
+    "after":   { "label": "Напис після нуля", "type": "single-line", "default": "Починаємо" },
+    "accent":  { "label": "Колір цифр", "gddType": "color", "default": "#c8a84b" },
+    "dim":     { "label": "Затемнення фону, %", "type": "number", "min": 0, "max": 100, "step": 5, "default": 45 }
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; width: 1920px; height: 1080px; background: transparent; overflow: hidden;
+               font-family: Georgia, 'Times New Roman', serif; }
+  .scrim { position: absolute; inset: 0; background: rgba(6,10,24,.45); }
+  .box { position: absolute; inset: 0; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; text-align: center; }
+  .label { color: #e8ecf6; font-size: 46px; letter-spacing: .06em; margin-bottom: 26px;
+           font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+           text-shadow: 0 2px 12px rgba(0,0,0,.6); }
+  /* Моноширинні цифри — щоб при зміні часу напис не «стрибав» по ширині */
+  .time { color: var(--accent, #c8a84b); font-size: 210px; line-height: 1;
+          font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
+          text-shadow: 0 4px 30px rgba(0,0,0,.5); }
+  .done { font-size: 120px; }
+  @media (max-width: 1280px) { .time { font-size: 150px; } }
+</style>
+</head>
+<body>
+  <div class="scrim" id="scrim"></div>
+  <div class="box">
+    <div class="label" data-gdd="label">Служба починається через</div>
+    <div class="time" id="time">10:00</div>
+  </div>
+<script>
+  var _end = null, _after = 'Починаємо', _tick = null;
+
+  function _render() {
+    var el = document.getElementById('time');
+    if (!el || _end == null) return;
+    var left = Math.max(0, Math.round((_end - Date.now()) / 1000));
+    if (left <= 0) {
+      el.textContent = _after;
+      el.className = 'time done';
+      if (_tick) { clearInterval(_tick); _tick = null; }   // дійшли до нуля — таймер більше не потрібен
+      return;
+    }
+    var m = Math.floor(left / 60), s = left % 60;
+    el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+    el.className = 'time';
+  }
+
+  function update(json) {
+    var d = {};
+    try { d = typeof json === 'string' ? JSON.parse(json) : (json || {}); } catch (e) { return; }
+    if (d.accent) document.documentElement.style.setProperty('--accent', d.accent);
+    if (d.after) _after = d.after;
+    var s = document.getElementById('scrim');
+    if (s && d.dim !== undefined && d.dim !== '') {
+      var v = Math.max(0, Math.min(100, parseInt(d.dim, 10) || 0));
+      s.style.background = 'rgba(6,10,24,' + (v / 100) + ')';
+    }
+    // Відлік стартує від МОМЕНТУ показу/оновлення. Так оператор може
+    // просто вписати «10» і показати — не рахуючи час закінчення вручну.
+    if (d.minutes !== undefined && d.minutes !== '') {
+      var mins = parseFloat(d.minutes);
+      if (!isNaN(mins)) _end = Date.now() + mins * 60000;
+    }
+    _render();
+  }
+
+  function play() {
+    if (_tick) clearInterval(_tick);
+    _tick = setInterval(_render, 250);   // 250мс: секунда змінюється рівно, без ривків
+    _render();
+  }
+</script>
+</body>
+</html>

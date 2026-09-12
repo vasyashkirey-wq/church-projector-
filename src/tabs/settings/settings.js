@@ -262,11 +262,11 @@ function renderSettingsTab() {
     </div>
 
     <div class="card" style="border-color:${state.useAppProtocol ? 'var(--gold)' : 'var(--border)'}">
-      <div class="card-title">🔬 Канал доставки графіки</div>
-      <div class="card-sub">Технічне налаштування. Живе тестування (H2R-титри, GDD-графіка, фони, слайди PDF/PowerPoint на реальному проекторі) підтвердило: канал app:// працює без помилок, і вікна виводу тепер завжди мають повний захист (contextIsolation/webSecurity увімкнено незалежно від цього перемикача). Старий канал (file://) лишається як швидкий відкат — вмикай його, якщо на конкретній машині щось не так із app://; зміни діють одразу.</div>
+      <div class="card-title">🔬 Канал доставки графіки (експеримент)</div>
+      <div class="card-sub">Технічне налаштування. Захист вікон виводу (contextIsolation/webSecurity) увімкнено завжди — це вже не залежить від цього перемикача. Тут лише спосіб доставки графіки: старий канал через тимчасові файли (типовий, працює роками) чи новий — у пам'яті. Новий перевірено наживо на H2R-титрах, GDD-графіці, фонах і слайдах. Якщо колись щось не покажеться — перемкни назад, зміни діють одразу.</div>
       <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-top:8px">
         <input type="checkbox" ${state.useAppProtocol ? 'checked' : ''} onchange="setOverlayChannel(this.checked)">
-        <b>${state.useAppProtocol ? '🔬 Новий канал (app://) — увімкнено' : 'Старий канал (file://) — типовий, відкат за потреби'}</b>
+        <b>${state.useAppProtocol ? '🔬 Новий канал (app://) — перевіряється' : 'Старий канал (file://) — типовий, перевірений'}</b>
       </label>
     </div>
 

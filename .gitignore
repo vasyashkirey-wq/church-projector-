@@ -10,7 +10,3 @@ _modularization-baseline/
 _extracted/
 claw-code/
 data-*.zip
-shots/
-ci-shots/
-live-test-results.json
-context-isolation-test-results.json

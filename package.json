@@ -10,7 +10,10 @@
     "publish-win": "electron-builder --win --publish always",
     "publish-mac": "electron-builder --mac --publish always",
     "test": "node tools/smoke-test.js",
-    "check-i18n": "node tools/check-translation-collisions.js"
+    "check-i18n": "node tools/check-translation-collisions.js",
+    "test-live": "node context-isolation-test.js",
+    "test-song-outputs": "node song-outputs-test.js",
+    "test-rate-limit": "node rate-limit-test.js"
   },
   "build": {
     "appId": "com.church.projector",
@@ -65,7 +68,8 @@
   },
   "devDependencies": {
     "electron": "^28.3.3",
-    "electron-builder": "^24.0.0"
+    "electron-builder": "^24.0.0",
+    "playwright": "^1.47.0"
   },
   "dependencies": {
     "adm-zip": "^0.5.18",

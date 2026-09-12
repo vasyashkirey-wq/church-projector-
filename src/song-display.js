@@ -3,9 +3,91 @@
 // аранжування-mini) — винесено з index.html. Завантажується ПІСЛЯ
 // song-edit.js. Пошук пісень і fuzzy-двигун лишились в index.html.
 // ============================================================
+// ============================================================
+// ВИВІД ПІСНІ НА КОНКРЕТНИЙ ВИХІД
+//
+// Раніше пісня йшла лише на ВСІ виходи одразу (sendToProjector →
+// sendToProjectorWin). Тепер той самий адресний патерн, що вже є в
+// Біблії/H2R/Медіа/QR: кнопка на кожен вихід, 🔴 коли там в ефірі, і
+// «✕ Прибрати» лише для активних.
+//
+// Свідомо перевикористовуємо buildTextHTML + sendHTMLToOutputN — ті самі,
+// якими користується маршрут «text» у pv2PushToOutput. Тобто пісня на
+// виході виглядатиме точно так само, як досі, і автоматично отримує
+// захист від «повернення після очищення» (лічильник поколінь у
+// sendHTMLToOutputN).
+// ============================================================
+var songLiveMap = { 1: false, 2: false, 3: false, 4: false };
+
+function songCurrentPayload() {
+  if (!selectedSong) return null;
+  var text = selectedSong.verses[selectedVerseIdx];
+  if (text == null) return null;
+  // Кінець пісні — той самий маркер ***, що й у sendToProjector, щоб
+  // команда бачила останній слайд незалежно від способу виводу.
+  if (selectedVerseIdx === selectedSong.verses.length - 1) text += '\n\n***';
+  var w = (typeof withSecondLang === 'function')
+    ? withSecondLang({ html: (typeof stripChords === 'function' ? stripChords(String(text)) : String(text)).replace(/\n/g, '<br>'), ref: '' })
+    : { html: String(text).replace(/\n/g, '<br>'), ref: '' };
+  return { text: w.html, ref: w.ref || '' };
+}
+
+function sendSongToOutput(n) {
+  if (!selectedSong) { if (typeof notify === 'function') notify('⚠️ Спершу обери пісню'); return; }
+  var c = songCurrentPayload();
+  if (!c) return;
+  try {
+    var s = state.textSettings[n] || state.textSettings[1];
+    var hasChroma = !!(state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none');
+    sendHTMLToOutputN(n, buildTextHTML(s, c, hasChroma), null);
+    songLiveMap[n] = true;
+    lastLiveSource = 'song';
+    if (typeof pv2SetOutputStatus === 'function') pv2SetOutputStatus(n, '🎵 ' + (selectedSong.title || 'Пісня'));
+    renderSongOutputRow();
+    if (typeof notify === 'function') notify('🎵 ' + (selectedSong.title || 'Пісня') + ' → ' + OUT_NAME[n]);
+  } catch (e) {
+    console.warn('sendSongToOutput:', e);
+    if (typeof notify === 'function') notify('⚠️ Не вдалось надіслати на ' + OUT_NAME[n]);
+  }
+}
+
+function sendSongToOutputs(targets) {
+  (targets || []).forEach(function (n) { sendSongToOutput(n); });
+}
+
+function clearSongFrom(n) {
+  if (typeof pv2ClearOutput === 'function') pv2ClearOutput(n);
+  songLiveMap[n] = false;
+  renderSongOutputRow();
+}
+
+function renderSongOutputRow() {
+  var el = document.getElementById('songOutputRow');
+  if (!el) return;
+  var outBtns = [1, 2, 3, 4].map(function (n) {
+    var live = !!songLiveMap[n];
+    var nm = (typeof OUT_NAME !== 'undefined' && OUT_NAME[n]) ? OUT_NAME[n] : ('Вихід ' + n);
+    return '<button class="btn ' + (live ? 'btn-success' : 'btn-ghost') + ' btn-sm" onclick="sendSongToOutput(' + n + ')">' +
+      (live ? '🔴 ' : '') + escHtml(nm) + '</button>';
+  }).join('');
+  var clearBtns = [1, 2, 3, 4].filter(function (n) { return songLiveMap[n]; }).map(function (n) {
+    var nm = (typeof OUT_NAME !== 'undefined' && OUT_NAME[n]) ? OUT_NAME[n] : ('Вихід ' + n);
+    return '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="clearSongFrom(' + n + ')">✕ ' + escHtml(nm) + '</button>';
+  }).join('');
+  // Кнопки виходів і «прибрати» в ОДНОМУ рядку — як у Біблії та H2R.
+  el.innerHTML = '<div class="flex" style="gap:5px;flex-wrap:wrap;align-items:center">' + outBtns + clearBtns + '</div>' +
+    '<div class="flex mt8" style="gap:5px;flex-wrap:wrap">' +
+      '<button class="btn btn-primary btn-sm" onclick="sendToProjector()">🖋 На всі</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="sendSongToOutputs([1,2])">2 виводи</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="sendSongToOutputs([1,2,3,4])">Усі 4 виводи</button>' +
+    '</div>';
+}
+
 function selectSong(song) {
   selectedSong = song;
   selectedVerseIdx = 0;
+  // Нова пісня — рядок виводу перемальовуємо (кнопки мають бути активні)
+  if (typeof renderSongOutputRow === 'function') renderSongOutputRow();
   // Якщо для пісні ввімкнено «приспів після кожного» — застосувати аранжування одразу
   if (typeof ensureChorusEach === 'function') ensureChorusEach(song);
   document.getElementById('songTitle').textContent = '🎵 ' + song.title;
@@ -124,9 +206,13 @@ function sendToProjector() {
   // Кінець пісні (без аранжування): останній куплет — додаємо *** як сигнал
   // команді/оператору, що це останній слайд.
   if (selectedVerseIdx === selectedSong.verses.length - 1) text += '\n\n***';
-  lastLiveSource = 'song';
-  lastLiveMulti = false;
-  lastLiveGraphics = false;
+  // Пісня заміщає Біблію на екранах — тож треба скинути ОБИДВА списки
+  // відстеження, а не лише прапорці. Інакше індикатор і стрілки ◀▶
+  // далі вважали б, що на якомусь виході живий вірш.
+  if (typeof resetOutputTracking === 'function') resetOutputTracking('song');
+  else { lastLiveSource = 'song'; lastLiveMulti = false; lastLiveGraphics = false; }
+  // «На всі» — пісня тепер на кожному виході, індикатори мають це показати
+  try { [1,2,3,4].forEach(function(k){ songLiveMap[k] = true; }); renderSongOutputRow(); } catch (e) {}
   if (typeof exitServicePlan === 'function') exitServicePlan();
   sendToProjectorWin(text, '');
 }

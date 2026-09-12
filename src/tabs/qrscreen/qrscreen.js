@@ -12,6 +12,9 @@
 // ============================================================
 
 var qrLiveMap = { 1: false, 2: false, 3: false, 4: false };
+// Лічильник показів на кожен вихід — щоб відкидати результати
+// асинхронного малювання, які застаріли (див. sendQrScreenTo).
+var _qrSendGen = { 1: 0, 2: 0, 3: 0, 4: 0 };
 
 function qrState() {
   if (!state.qrScreen) {
@@ -264,7 +267,17 @@ function sendQrScreenTo(n) {
   if (!hasContent) { notify(q.mode === 'photo' ? '⚠️ Спершу завантаж фото QR' : '⚠️ Введи хоча б одне посилання'); return; }
   q.target = n;
   saveQrScreen();
+  // ГОНКА: composeQrScreen малює картинку АСИНХРОННО (чекає на
+  // завантаження зображень/QR). Якщо за цей час оператор натисне
+  // «✕ Прибрати», очищення виконається одразу, а цей callback
+  // спрацює ПІСЛЯ нього й поверне QR назад — саме звідси «виключаю,
+  // а воно вмикається».
+  // Тому запамʼятовуємо номер спроби: якщо поки малювалось був
+  // ще один показ АБО очищення цього виходу — результат застарілий
+  // і його треба відкинути.
+  const myGen = ++_qrSendGen[n];
   composeQrScreen(full => {
+    if (myGen !== _qrSendGen[n]) return;   // застарілий результат — мовчки викидаємо
     const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
       'html,body{margin:0;height:100vh;background:#000;overflow:hidden}' +
       'img{width:100vw;height:100vh;object-fit:contain}</style></head><body>' +
@@ -279,6 +292,10 @@ function sendQrScreenTo(n) {
 function sendQrScreen() { sendQrScreenTo(qrState().target || 1); }
 
 function clearQrScreenFrom(n) {
+  // Підвищуємо лічильник ПЕРШИМ ділом: цим ми скасовуємо будь-який
+  // показ, що зараз малюється у фоні, — інакше він домалюється й
+  // поверне QR на щойно очищений вихід.
+  _qrSendGen[n] = (_qrSendGen[n] || 0) + 1;
   if (typeof pv2ClearOutput === 'function') pv2ClearOutput(n);
   qrLiveMap[n] = false;
   renderQrOutputRow();

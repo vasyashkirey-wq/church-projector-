@@ -108,17 +108,11 @@ function storageUsageQuick() {
   return { bytes: total, mb: (total / 1048576).toFixed(2) + ' МБ' };
 }
 const fmtTime = s => { const m=Math.floor(s/60), sec=Math.floor(s%60); return (m<10?'0':'')+m+':'+(sec<10?'0':'')+sec; };
-// Відкладає важку операцію до наступного кадру, склеюючи серію викликів в один.
-function rafDebounce(fn) {
-  let pending = false, lastArgs = null;
-  return function(...args) {
-    lastArgs = args;
-    if (pending) return;
-    pending = true;
-    const run = () => { pending = false; fn.apply(null, lastArgs); };
-    (typeof requestAnimationFrame === 'function') ? requestAnimationFrame(run) : setTimeout(run, 16);
-  };
-}
+// rafDebounce ПЕРЕНЕСЕНО в src/core/reactive.js — він вантажиться раніше
+// за всі інші файли. Причина: background.js/html-overlay.js/song-*.js
+// підключені ДО extras-1.js, а їхні render-функції обгорнуті в
+// rafDebounce і викликаються вже на старті (initBgLibrary). Поки
+// визначення жило тут, це падало з «rafDebounce is not defined».
 const isActive = tabId => $('#tab-content-'+tabId) ? $('#tab-content-'+tabId).classList.contains('active') : false;
 const downloadFile = (content, filename, mime) => {
   const blob = new Blob([content], {type: mime+';charset=utf-8'});
@@ -286,20 +280,18 @@ const _overlayCache = new Map(); // html → Promise<filePath|appUrl>
 // Кешуємо саме ПРОМІС, а не готовий шлях: маршрути шлють однаковий HTML
 // на 4 виходи одночасно, і всі 4 виклики стартують до завершення першого запису.
 
-// ── ДВИГУН, фаза 2: перемикач каналу доставки HTML в output-вікна ──
+// ── ДВИГУН, фаза 1: перемикач каналу доставки HTML в output-вікна ──
 // false (типово) = старий, перевірений роками канал: тимчасовий файл +
 //                  file:// URL. Поведінка 1-в-1 як була.
-// true            = кастомна схема app:// (src/main/content-protocol.js):
+// true            = нова кастомна схема app:// (src/main/content-protocol.js):
 //                  HTML тримається в памʼяті, без тимчасових файлів, і має
-//                  нормальне походження.
+//                  нормальне походження — саме це згодом дозволить увімкнути
+//                  contextIsolation/webSecurity на output-вікнах (аудит 4.1).
 //
-// Аудит 4.1 закрито: живе тестування (H2R, GDD, фони, PDF/PPTX-слайди)
-// підтвердило канал app:// без жодної console-помилки, і output-вікна
-// (main.js, createOutputWindow) тепер ЗАВЖДИ мають contextIsolation:true/
-// webSecurity:true — незалежно від цього перемикача. Сам перемикач
-// лишається типовим «вимкнено» й зберігається в налаштуваннях лише як
-// швидкий відкат на конкретному ПК (старий file://-канал), без перезбірки
-// застосунку й без ризику зірвати службу.
+// Перемикач НАВМИСНО з типовим значенням «вимкнено» і зберігається в
+// налаштуваннях: увімкнути можна на одному ПК, перевірити всі типи
+// контенту (H2R, GDD, фони, PDF/PPTX-слайди), і за потреби миттєво
+// відкотитись — без перезбірки застосунку й без ризику зірвати службу.
 function overlayChannelIsApp() {
   try {
     return !!(state && state.useAppProtocol) && !!(window.electronAPI && window.electronAPI.writeHtmlOverlayApp);
@@ -331,6 +323,21 @@ function overlayPath(html) {
   return p;
 }
 
+// Лічильник поколінь відправки НА КОЖЕН ВИХІД.
+//
+// Проблема, яку це закриває: sendHTMLToOutputN асинхронна —
+// overlayPath(html) спершу готує HTML, і лише потім .then() шле його у
+// вікно. Якщо між цими двома моментами оператор очистить вихід,
+// команда «clear» долетить ПЕРШОЮ (вона синхронна), а підготовлений
+// HTML — після неї, і контент повернеться на щойно очищений екран.
+// Виглядало як «прибираю, а воно саме вмикається».
+//
+// Тому очищення виходу підвищує його покоління (див. pv2ClearOutput), а
+// кожна відправка перевіряє, чи її покоління ще актуальне. Це лікує ВСІ
+// фічі одразу — QR, H2R-титри, медіа, таймер, графіку, вірші — бо всі
+// вони йдуть саме через цю функцію.
+var _outSendGen = { 1: 0, 2: 0, 3: 0, 4: 0 };
+
 function sendHTMLToOutputN(n, html, label) {
   if (state.trainingMode) {
     if (label) notify('🎓 Тренування: «' + label + '» → ' + OUT_NAME[n] + ' (не на екрані)');
@@ -342,7 +349,11 @@ function sendHTMLToOutputN(n, html, label) {
   // проходить, тож без цього виклику «на вихід N» (H2R/Медіа/Таймер) не
   // потрапляло в «Журнал ефіру». Знайдено рев'ю коду.
   if (typeof recordStat === 'function') recordStat('html', label);
+  var myGen = _outSendGen[n];
   overlayPath(html).then(filePath => {
+    // Поки готувався HTML, вихід очистили (чи послали туди щось інше) —
+    // цей результат застарів, мовчки викидаємо.
+    if (myGen !== _outSendGen[n]) return;
     window.electronAPI.sendToOutput(OUT_KIND[n], 'html', { filePath: filePath });
   }).catch(err => {
     console.warn('Не вдалось записати HTML-оверлей', err);
@@ -655,20 +666,59 @@ function clearH2R(n) {
 // CCLI-подібний звіт: реальні дати використання кожної пісні (не «сьогодні»
 // для всього), лише пісні (без віршів — CCLI їх не потребує), усі, а не
 // топ-10, і саме за обраний період (раніше перемикач Період нічого не робив).
+// Що зараз обрано для показу. Використовується прев'ю і «В ефір».
+//
+// ДВА БАГИ, ЯКІ ТУТ БУЛИ (обидва давали «Контент не обрано»):
+// 1) Джерело визначалось за тим, яка ВКЛАДКА зараз відкрита
+//    (isActive('bible')). Коли оператор виводив прямо з Біблії — усе
+//    працювало, бо вкладка активна. А через прев'ю активна вкладка
+//    «Показ», тож жодна умова не спрацьовувала й на екран летіла
+//    заглушка. Тепер дивимось на ФАКТИЧНО обраний вміст, а активна
+//    вкладка — лише підказка для вибору між піснею й віршем.
+// 2) Пісня читалась із state.selectedSong, якої не існує: пісня живе в
+//    глобальній selectedSong (index.html). Тобто пісні звідси не
+//    бралися взагалі, за жодних умов.
 function getCurrentContent() {
-const payload = {html: '', ref: ''};
-if(isActive('songs') && state.selectedSong) {
-payload.html = state.selectedSong.verses[state.selectedVerseIdx] || '';
-payload.ref = songRefForDisplay(state.selectedSong.title);
-} else if(isActive('bible')) {
-payload.html = $('#bibleDisplay')?.textContent || '';
-payload.ref = $('#bibleRef')?.textContent || '';
-} else if(isActive('announce')) {
-return {type: 'html', payload: {html: getAnnounceHTML({title: $('#annTitle')?.value, body: $('#annBody')?.value, datetime: $('#annDateTime')?.value, style: $('#annStyle')?.value}), ref: 'Оголошення'}};
-} else {
-payload.html = 'Контент не обрано';
-}
-return {type: 'text', payload};
+  const payload = { html: '', ref: '' };
+
+  // Фактично обране, незалежно від відкритої вкладки
+  const song = (typeof selectedSong !== 'undefined' && selectedSong) ? selectedSong : null;
+  const songIdx = (typeof selectedVerseIdx !== 'undefined') ? selectedVerseIdx : 0;
+  const bibleText = ($('#bibleDisplay')?.textContent || '').trim();
+  const bibleRef = ($('#bibleRef')?.textContent || '').trim();
+  const hasBible = bibleText && bibleText !== '—' && bibleText.indexOf('Оберіть вірш') !== 0;
+
+  // Оголошення — лише коли ця вкладка справді відкрита: там вміст
+  // збирається з полів, які поза вкладкою не мають сенсу.
+  if (isActive('announce')) {
+    return { type: 'html', payload: { html: getAnnounceHTML({
+      title: $('#annTitle')?.value, body: $('#annBody')?.value,
+      datetime: $('#annDateTime')?.value, style: $('#annStyle')?.value }), ref: 'Оголошення' } };
+  }
+
+  // Якщо обрано і пісню, і вірш — вирішуємо так: спершу активна
+  // вкладка, потім те, що виводили останнім (lastLiveSource), і лише
+  // потім — що є в наявності.
+  let preferSong;
+  if (isActive('songs')) preferSong = true;
+  else if (isActive('bible')) preferSong = false;
+  else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'song') preferSong = true;
+  else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible') preferSong = false;
+  else preferSong = !!song && !hasBible;
+
+  if (preferSong && song) {
+    payload.html = song.verses[songIdx] || '';
+    payload.ref = songRefForDisplay(song.title);
+  } else if (hasBible) {
+    payload.html = bibleText;
+    payload.ref = bibleRef;
+  } else if (song) {
+    payload.html = song.verses[songIdx] || '';
+    payload.ref = songRefForDisplay(song.title);
+  } else {
+    payload.html = 'Контент не обрано';
+  }
+  return { type: 'text', payload };
 }
 
 
@@ -1221,12 +1271,36 @@ function renderGraphicsTab() {
     </div>
 
     <div>
+      <!-- ПІДНЯТО НА ВЕРХ правої колонки: це найчастіші дії під час служби
+           (вивести вірш, перемкнути переклади), тож вони мають бути
+           одразу на очах, без прокрутки повз прев'ю й пресети.
+           Кілька перекладів + вивід просто тут, щоб не бігати у вкладку
+           Біблія під час служби. Це ТА САМА картка (renderMultiTransCard),
+           що й там — контейнер інший, дані спільні, тож налаштування не
+           можуть розійтись між двома місцями. -->
+      <div id="multiTransBoxGfx" style="margin-top:10px"></div>
+
+      <div class="card">
+        <div class="card-title">📖 Вивести вірш з цим оформленням</div>
+        <div class="card-sub">Ті самі кнопки, що у вкладці Біблія — вірш береться звідти ж. «2 виводи» — це Проектор + Трансляція.</div>
+        <div class="flex mt8" style="gap:5px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="sendBibleWithGraphics(1)">▶ Проектор</button>
+          <button class="btn btn-ghost btn-sm" onclick="sendBibleWithGraphics(2)">▶ Трансляція</button>
+          <button class="btn btn-primary btn-sm" onclick="sendBibleGraphicsMulti([1,2])">2 виводи (Проектор + Трансляція)</button>
+          <button class="btn btn-ghost btn-sm" onclick="sendBibleGraphicsMulti([1,2,3,4])">Усі 4</button>
+        </div>
+        <div class="flex mt8" style="gap:5px;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="prevBibleVerse()">◀ Вірш</button>
+          <button class="btn btn-ghost btn-sm" onclick="nextBibleVerse()">Вірш ▶</button>
+        </div>
+
       <div class="card">
         <div class="card-title">👁 Як це виглядатиме на екрані</div>
         <div style="position:relative;width:100%;aspect-ratio:16/9;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:#000">
           <iframe id="graphicsPreviewFrame" style="position:absolute;top:0;left:0;width:1920px;height:1080px;border:0;transform:scale(0.28);transform-origin:top left;pointer-events:none"></iframe>
         </div>
         <div class="card-sub" style="margin-top:6px">Прев'ю показує точно той HTML, що піде на екран — у справжньому масштабі 1920×1080.</div>
+      </div>
       </div>
 
       <div class="card">

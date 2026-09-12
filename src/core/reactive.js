@@ -30,6 +30,30 @@
 // системи. Пакетний markDirty дає 80% користі за 5% ризику.
 // ============================================================
 
+// ============================================================
+// rafDebounce — відкладає важку операцію до наступного кадру, склеюючи
+// серію викликів в один.
+//
+// ЖИВЕ САМЕ ТУТ (а не в extras-1.js, де було раніше), бо цей файл
+// підключається ПЕРШИМ серед логіки. Файли background.js,
+// html-overlay.js, song-display.js, song-edit.js, tabs/media/media.js
+// підключені ДО extras-1.js, а їхні render-функції обгорнуті в
+// rafDebounce і викликаються вже під час старту (напр. initBgLibrary).
+// Поки визначення лежало в extras-1.js, застосунок падав на старті з
+// «rafDebounce is not defined» — hoisting не рятує, бо він діє в межах
+// одного файлу, а не між файлами.
+// ============================================================
+function rafDebounce(fn) {
+  let pending = false, lastArgs = null;
+  return function(...args) {
+    lastArgs = args;
+    if (pending) return;
+    pending = true;
+    const run = () => { pending = false; fn.apply(null, lastArgs); };
+    (typeof requestAnimationFrame === 'function') ? requestAnimationFrame(run) : setTimeout(run, 16);
+  };
+}
+
 // Вкладки, які чекають на перемальовку в цьому тику
 const _dirtyTabs = new Set();
 // Вкладки, які стали «брудними», поки були НЕВИДИМІ. Їх не малюємо

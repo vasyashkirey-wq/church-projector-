@@ -36,17 +36,13 @@ let httpServer = null;
 // GDD-графіки чи HTML-оверлею) міг би перевести output-екран на
 // довільний сайт просто посеред служби, і ніхто б цього не помітив,
 // доки не глянув на сам проектор.
-// ОНОВЛЕННЯ (аудит 4.1, крок 2): contextIsolation:true / webSecurity:true /
-// allowRunningInsecureContent:false тепер УВІМКНЕНО на output-вікнах —
-// раніше стояли false, бо file://-документ має «непрозоре» походження й не
-// бачив сусідні file://-ресурси (сторонні GDD-шаблони/оверлеї, що
-// посилались одне на одного). Кастомна схема app://content/<id> (див.
-// src/main/content-protocol.js) дає нормальне спільне походження й прибирає
-// саму причину, через яку webSecurity був вимкнений; живе тестування (H2R,
-// GDD, фони, слайди PDF/PowerPoint) на цьому каналі пройшло без жодної
-// console-помилки. Перемикач у Налаштуваннях («Канал доставки графіки»)
-// лишається — старий file://-канал тепер швидкий відкат, якщо щось не так
-// на конкретній машині, а не типовий робочий шлях.
+// ОНОВЛЕННЯ (аудит 4.1, крок 2 — ЗАКРИТО): contextIsolation:true /
+// webSecurity:true / allowRunningInsecureContent:false тепер увімкнено
+// на output-вікнах (див. createOutputWindow нижче й детальний коментар
+// там). Причина, через яку вони колись стояли false (opaque origin
+// file://-документів), закрита кастомною схемою app:// (див.
+// src/main/content-protocol.js); живе тестування (H2R, GDD, фони,
+// слайди) підтвердило канал без жодної console-помилки.
 function hardenContentWindow(win) {
   win.webContents.on('will-navigate', (e) => { e.preventDefault(); });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -239,8 +235,22 @@ function createOutputWindow(kind, callback) {
     title: OUTPUT_TITLES[kind],
     webPreferences: {
       nodeIntegration: false,
-      // Аудит 4.1, крок 2 — увімкнено після живого тестування на app://
-      // (див. коментар про БЕЗПЕКУ ВІКОН вище).
+      // АУДИТ 4.1, КРОК 2 — ЗАХИСТ УВІМКНЕНО.
+      // Раніше тут стояло contextIsolation:false + webSecurity:false +
+      // allowRunningInsecureContent:true. Причина була в file://: Chromium
+      // вважає кожен file://-документ окремим «непрозорим» походженням.
+      // Кастомна схема app:// (src/main/content-protocol.js) прибрала цю
+      // причину, після чого захист перевірено наживо (реальний Electron +
+      // Playwright, окреме вікно проектора) на всіх 4 типах контенту:
+      // H2R-титри, GDD-графіка, фони, слайди — 9/9 кроків, 0 помилок,
+      // підтверджено через webContents.getLastWebPreferences().
+      //
+      // Чому contextIsolation:true тут безпечний: projector.html не має
+      // ЖОДНОГО власного <script> — уся логіка живе в
+      // projector-preload.js, який працює з DOM напряму (ізольований світ
+      // ділить DOM зі сторінкою) і читає власну ж window.__isStageDisplay
+      // у тому самому світі. Тобто нічого не залежить від спільного
+      // window між сторінкою й preload.
       contextIsolation: true,
       // webviewTag прибрано: у projector.html/projector-preload.js немає
       // жодного <webview> — весь HTML-контент (GDD/оверлеї/слайди) іде
@@ -1613,6 +1623,33 @@ let remoteUsers = [];   // [{id, name, pin, actions:[...]}] — іменован
 const HTTP_API_ACTIONS = ['next', 'prev', 'next-verse', 'prev-verse', 'go-live',
   'clear', 'blackout', 'undo', 'lower', 'freeze', 'bookmark', 'plan-item', 'announce'];
 
+// ── Захист від перебору PIN (аудит: rate-limit) ─────────────────────
+// Лічильник невдалих спроб по IP. Свідомо в памʼяті, без бази: сервер
+// живе рівно стільки, скільки відкрита програма, а перезапуск програми
+// під час служби — і так подія, після якої лічильник не шкода втратити.
+const API_FAILS = new Map();          // ip -> { n, until }
+const API_MAX_FAILS = 10;             // стільки поспіль дозволено
+const API_BLOCK_MS = 5 * 60 * 1000;   // потім пауза 5 хв
+
+function apiClientIp(req) {
+  return (req && req.socket && req.socket.remoteAddress) || 'unknown';
+}
+// true = зараз заблоковано
+function apiIsBlocked(req) {
+  const r = API_FAILS.get(apiClientIp(req));
+  if (!r || !r.until) return false;
+  if (Date.now() > r.until) { API_FAILS.delete(apiClientIp(req)); return false; }
+  return true;
+}
+function apiNoteFail(req) {
+  const ip = apiClientIp(req);
+  const r = API_FAILS.get(ip) || { n: 0, until: 0 };
+  r.n++;
+  if (r.n >= API_MAX_FAILS) { r.until = Date.now() + API_BLOCK_MS; r.n = 0; }
+  API_FAILS.set(ip, r);
+}
+function apiClearFails(req) { API_FAILS.delete(apiClientIp(req)); }
+
 // За яким паролем визначаємо, хто саме звертається, і що йому дозволено.
 // Повертає null (немає доступу), {role:'admin'} (усе дозволено), або
 // {role:'user', name, actions} (лише те, що для НЬОГО обрано в списку користувачів).
@@ -1670,16 +1707,62 @@ function startRemoteServer(pin, users) {
       const action = u.pathname.replace('/api/', '').trim();
       const pin = u.searchParams.get('pin') || '';
       res.setHeader('Access-Control-Allow-Origin', '*');
+      // Заблокований за перебір PIN — не витрачаємо час на перевірку й
+      // не даємо підказок; 429 з Retry-After, як прийнято.
+      if (apiIsBlocked(req)) {
+        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '300' });
+        res.end(JSON.stringify({ ok: false, error: 'too many attempts, try later' }));
+        return;
+      }
       const access = findRemoteAccess(pin);
       if (!access) {
+        // RATE-LIMIT (аудит: підбір PIN). PIN короткий, тож без обмеження
+        // його перебирають за хвилини. Рахуємо невдалі спроби по IP:
+        // після 10 поспіль — блок на 5 хвилин. Успішний вхід лічильник
+        // скидає, тож оператор, що просто помилився, не постраждає.
+        apiNoteFail(req);
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'wrong pin' }));
         return;
       }
+      apiClearFails(req);
       if (!action) {
         // список дій — щоб у Companion було видно, що доступно
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, actions: access.role === 'admin' ? HTTP_API_ACTIONS : access.actions, role: access.role, user: access.name }));
+        return;
+      }
+      // GET /api/state — ЧИТАННЯ стану (що зараз в ефірі, слайд, таймер,
+      // план служби, blackout, стан кожного виходу).
+      // Раніше API вмів лише командувати: зовнішня система (Stream Deck,
+      // Companion, автоматизація) не могла дізнатись, що відбувається, —
+      // тож не могла ані підсвітити активну кнопку, ані ухвалити рішення.
+      // Дані беремо з того самого lastRemoteState, який уже наповнює
+      // рендерер для веб-пульта, тож нової труби не потрібно.
+      if (action === 'state') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, state: lastRemoteState || {}, ts: Date.now() }));
+        return;
+      }
+      // GET /api/docs — самоопис: перелік дій і полів стану. Щоб не
+      // тримати документацію окремо від коду (вона там завжди застаріває).
+      if (action === 'docs') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: true,
+          auth: 'GET ?pin=XXXX (усі запити)',
+          endpoints: {
+            'GET /api/': 'список доступних дій для цього PIN',
+            'GET /api/state': 'поточний стан: onAir, song, bibleRef, timer, plan, blackout, outputs[]',
+            'GET /api/docs': 'цей опис',
+            'GET /api/<action>': 'виконати дію; додаткові параметри — у query'
+          },
+          actions: HTTP_API_ACTIONS,
+          stateFields: ['onAir', 'song', 'bibleVerse', 'bibleRef', 'nextBibleVerse',
+                        'timer{remaining,running,paused,fmt}', 'plan{name,date,items,idx}',
+                        'blackout', 'outputs[{n,name,route,frozen,live}]'],
+          websocket: 'ws://<host>:<port> — шле {action:"state",data:{...}} при кожній зміні'
+        }));
         return;
       }
       if (HTTP_API_ACTIONS.indexOf(action) < 0) {

@@ -742,6 +742,9 @@ function sendMultiToOutput(n, fromGoLive) {
     } catch (e) {}
   }
   if (typeof exitServicePlan === 'function') exitServicePlan();
+  // Сторож узгодженості: цей вихід щойно перейшов у мульти-режим —
+  // якщо він лишився й в одиночному списку, приберемо звідти.
+  if (typeof assertOutputConsistency === 'function') assertOutputConsistency(n, 'multi');
   refreshMultiTransCard();
   if (typeof renderBibleOutputRow === 'function') renderBibleOutputRow();
   notify(failed.length
@@ -766,9 +769,21 @@ function multiReplay() {
 
 // Картка перекладів живе у вкладці «Біблія» (щоб була під рукою під час служби)
 function refreshMultiTransCard() {
-  const box = document.getElementById('multiTransBox');
-  if (box) { box.innerHTML = renderMultiTransCard(); return true; }
-  return false;
+  // Картка живе у ДВОХ місцях: у вкладці Біблія (#multiTransBox) і у
+  // вкладці Оформлення → Графіка (#multiTransBoxGfx). Друга додана, щоб
+  // оператор міг налаштувати переклади й вивести їх, не перемикаючись
+  // на Біблію під час служби.
+  //
+  // Свідомо той САМИЙ renderMultiTransCard() в обидва контейнери, а не
+  // копія розмітки: інакше два списки перекладів жили б окремо й з
+  // часом розійшлись би — рівно той клас проблем, який ми вже ловили
+  // з двома паралельними списками виходів.
+  let found = false;
+  ['multiTransBox', 'multiTransBoxGfx'].forEach(function (id) {
+    const box = document.getElementById(id);
+    if (box) { box.innerHTML = renderMultiTransCard(); found = true; }
+  });
+  return found;
 }
 
 function renderMultiTransCard() {
@@ -1527,7 +1542,7 @@ function pv2Init() {
                  renderMediaList, updateH2RPreview, updateGraphicsPreview, updateTextPreview,
                  renderMediaOutBtns, renderGraphicsOutBtns, renderH2RLowerOutBtns,
                  renderCreditsOutBtns, renderConfettiOutBtns, renderTickerOutBtns, renderQrOutputRow,
-                 loadOverlayChannel,
+                 loadOverlayChannel, renderGddTemplatePicker,
                  () => setPPTtemplate('classic'), updateStatistics,
                  updateLivePanels, applyDisplayCfg, initDisplayControlListener, initRemoteListener, initLogoListener, initDisplaysListener, initStageWindowListener, initUpdateListener];
   steps.forEach(fn => { try { fn(); } catch(e) { console.error('extras init', e); } });

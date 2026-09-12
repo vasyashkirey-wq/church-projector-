@@ -11,6 +11,64 @@ var htmlOverlays = [];
 
 // Завантажені HTML-графіки пам'ятаємо між запусками — інакше перед кожним
 // служінням довелося б заново вибирати файли з теки overlays.
+// ============================================================
+// ВБУДОВАНІ ШАБЛОНИ ГРАФІКИ (GDD)
+//
+// Навіщо: раніше, щоб зробити нову графіку, треба було створити
+// HTML-файл десь поза програмою й імпортувати. Це і є той «поріг
+// гнучкості», через який доводилось звертатись до сторонніх програм.
+// Тепер кілька готових заготовок лежать у самій програмі: обрав —
+// заповнив поля — показав.
+//
+// Кожен шаблон — звичайний GDD-файл (JSON-схема полів + data-gdd у
+// розмітці), тобто далі працює тим самим шляхом, що й будь-яка
+// імпортована графіка: кнопка «Поля», пресети, вивід на будь-який
+// вихід. Нічого спеціального для них у решті коду не потрібно.
+//
+// Завантажуються з диска через fetch (як BUILTIN_TRANSLATIONS у
+// bible-translations.js), а не зашиті в JS — щоб не роздувати скрипти
+// й щоб шаблон можна було підправити, не перезбираючи програму.
+// ============================================================
+var GDD_TEMPLATES = [
+  { file: 'templates/gdd/lower-third.html',  name: 'Нижня третина (ім’я + роль)' },
+  { file: 'templates/gdd/announcement.html', name: 'Оголошення (заголовок + текст)' },
+  { file: 'templates/gdd/countdown.html',    name: 'Зворотний відлік до початку' },
+  { file: 'templates/gdd/verse.html',        name: 'Вірш із Біблії' }
+];
+
+function renderGddTemplatePicker() {
+  var el = document.getElementById('gddTemplateList');
+  if (!el) return;
+  el.innerHTML = GDD_TEMPLATES.map(function (t, i) {
+    return '<button class="btn btn-ghost btn-sm" style="text-align:left" onclick="addGddTemplate(' + i + ')" ' +
+           'title="Додати цей шаблон у список графіки">➕ ' + escHtml(t.name) + '</button>';
+  }).join('');
+}
+
+// Додає шаблон у звичайний список графіки. Далі він нічим не
+// відрізняється від імпортованого файлу.
+function addGddTemplate(i) {
+  var t = GDD_TEMPLATES[i];
+  if (!t) return;
+  fetch(t.file)
+    .then(function (r) { return r.ok ? r.text() : null; })
+    .then(function (html) {
+      if (!html) { notify('⚠️ Не вдалось прочитати шаблон: ' + t.name); return; }
+      // Якщо такий шаблон уже додавали — не плодимо дублі, а робимо
+      // копію з номером: оператор може хотіти дві різні нижні третини.
+      var base = t.name, nameToUse = base, n = 2;
+      while (htmlOverlays.some(function (o) { return (o.displayName || o.name) === nameToUse; })) {
+        nameToUse = base + ' ' + n; n++;
+      }
+      htmlOverlays.push({ name: nameToUse, displayName: nameToUse, content: html });
+      saveHTMLOverlays();
+      if (typeof loadGddParams === 'function') loadGddParams();
+      renderHTMLOverlayList();
+      notify('✅ Додано: ' + nameToUse + ' — натисни «⚙ Поля», щоб заповнити');
+    })
+    .catch(function () { notify('⚠️ Не вдалось прочитати шаблон: ' + t.name); });
+}
+
 function saveHTMLOverlays() {
   try {
     if (!safeSet('church_html_overlays', JSON.stringify(htmlOverlays))) return;
