@@ -1996,6 +1996,66 @@ head('Сторож узгодженості виходів (захист від 
   }
 })();
 
+head('Сторож хромакею на пісні (адресний вивід) — фон не має бути суцільним');
+(function () {
+  // РЕАЛЬНИЙ БАГ (живе повідомлення користувача): buildTextHTML() малював
+  // СУЦІЛЬНИЙ непрозорий фон незалежно від хромакею — вихід «Трансляція»
+  // йшов на чорному тлі замість зеленого/синього, OBS не міг нічого
+  // вирізати. Той самий клас перевірки, що вже є для сторожа узгодженості
+  // виходів вище: не regex «є такий рядок», а РЕАЛЬНИЙ запуск функції з
+  // тестовими даними — інакше майбутнє редагування могло б знову
+  // непомітно повернути суцільний фон.
+  const e2 = read('src/extras-2.js');
+  if (!/function buildTextHTML\(s, c, hasChroma\)/.test(e2)) { bad('buildTextHTML не знайдено — сторож хромакею неможливо перевірити'); return; }
+
+  // 4 виклики мають передавати ЧИСЛО (альфа з outputBgAlpha(n)), а не
+  // true/false — інакше buildTextHTML не відрізнить "хромакей увімкнено"
+  // від "хромакею нема" достатньо надійно (typeof, а не truthiness).
+  const sd2 = read('src/song-display.js');
+  const callSites = [
+    [e2, "hasChroma2 = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')\n      ? outputBgAlpha(n) : undefined", 'lang2'],
+    [e2, "hasChromaChords = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')\n      ? outputBgAlpha(n) : undefined", 'chords'],
+    [e2, "hasChromaText = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')\n      ? outputBgAlpha(n) : undefined", 'text'],
+    [sd2, "hasChroma = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')\n      ? outputBgAlpha(n) : undefined", 'sendSongToOutput']
+  ];
+  const missingCall = callSites.filter(([src, code]) => !src.includes(code)).map(([, , name]) => name);
+  if (!missingCall.length) ok('усі 4 виклики buildTextHTML передають outputBgAlpha(n), а не true/false');
+  else bad('передають boolean замість альфи (regresія хромакею): ' + missingCall.join(', '));
+
+  // ЖИВА перевірка: реальний запуск buildTextHTML з мінімальними моками.
+  try {
+    const s = e2.indexOf('function buildTextHTML');
+    const eBody = e2.indexOf('\n}', s) + 2;
+    const src = e2.slice(s, eBody);
+    const fn = new Function('esc', 'textColorFor', 'AUTOFIT_SCRIPT', src + '\nreturn buildTextHTML;')(
+      (x) => String(x), () => '#fff', ''
+    );
+    const st = { bgColor: '#123456', bgType: 'color', styles: {}, align: 'center', fontFamily: 'Georgia', size: 40 };
+    const content = { text: 'тест', ref: '' };
+
+    const noChroma = fn(st, content, undefined);
+    const hasSolidBg = new RegExp('background:' + st.bgColor.replace('#', '#')).test(noChroma);
+    if (hasSolidBg) ok('БЕЗ хромакею (hasChroma=undefined) — суцільний фон теми, як і раніше');
+    else bad('БЕЗ хромакею фон змінився неочікувано: ' + noChroma.slice(0, 200));
+
+    const withChroma = fn(st, content, 0.62);
+    const hasSolidOnChroma = new RegExp('background:' + st.bgColor.replace('#', '#')).test(withChroma);
+    const hasSemiTransparent = /background:rgba\(0,0,0,0\.62\)/.test(withChroma);
+    if (!hasSolidOnChroma && hasSemiTransparent)
+      ok('З хромакеєм (hasChroma=0.62) — напівпрозорий rgba, СУЦІЛЬНОГО фону теми немає');
+    else bad('З хромакеєм фон і досі суцільний — регресія на "чорний екран замість хромакею": ' + withChroma.slice(0, 300));
+
+    // Крайній випадок: 0% прозорості (alpha=0) — теж валідний хромакей-режим,
+    // а не "хромакею нема" (0 — falsy, легко зламати truthiness-перевіркою).
+    const zeroAlpha = fn(st, content, 0);
+    if (/background:rgba\(0,0,0,0\)/.test(zeroAlpha))
+      ok('Крайній випадок alpha=0 теж розпізнається як хромакей (typeof, не truthiness)');
+    else bad('alpha=0 помилково трактується як "хромакею нема" — falsy-пастка: ' + zeroAlpha.slice(0, 200));
+  } catch (e) {
+    bad('жива перевірка buildTextHTML впала: ' + e.message);
+  }
+})();
+
 head('Вбудовані шаблони графіки (GDD) — файли + підключення');
 (function () {
   const fs2 = require('fs');
