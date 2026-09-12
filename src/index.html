@@ -121,6 +121,11 @@ html, body { height:100%; background:var(--bg); color:var(--text); font-family:'
 
 /* SEND BAR */
 .send-bar { background:var(--panel); border-top:1px solid var(--border); padding:14px 20px; display:flex; align-items:center; gap:12px; }
+/* Привертає увагу до "🔴 В ЕФІР", доки в прев'ю щось чекає показу
+   (staged-режим) — інакше кнопка непомітна серед решти й оператор не
+   розуміє, чому натискання "На проектор" нічого не змінило на екрані. */
+@keyframes pulseAttention { 0%,100% { box-shadow:0 0 0 0 rgba(62,207,142,.55); } 50% { box-shadow:0 0 0 6px rgba(62,207,142,0); } }
+.pulse-attention { animation:pulseAttention 1.4s ease-in-out infinite; }
 .send-preview { flex:1; background:var(--panel2); border-radius:7px; padding:8px 12px; font-size:13px; color:var(--text2); min-height:38px; }
 .send-preview b { color:var(--text); }
 
@@ -1897,6 +1902,16 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
     <!-- SEND BAR -->
     <div class="send-bar">
       <div class="send-preview" id="sendPreview" data-no-translate>Нічого не виводиться</div>
+      <!-- РЕАЛЬНИЙ БАГ (живе відтворення): типово liveMode="staged" +
+           splitCfg.on=true — тож "На проектор" для щойно встановленої
+           програми найчастіше лише СТАВИТЬ у прев'ю (stageContent), а не
+           показує в залі. Раніше єдина кнопка "🔴 В ЕФІР →" жила ЛИШЕ на
+           вкладці "Ефір" (tabs/live/live.js) — оператор, що працює з
+           будь-якої іншої вкладки (Пісні/Біблія), не мав звідки натиснути
+           "в ефір" і бачив: клацнув — і нічого не з'явилось на екрані.
+           Тепер та сама дія (goLive()) доступна з ПОСТІЙНОЇ панелі —
+           видно й клікабельно з будь-якої вкладки. -->
+      <button class="btn btn-success" id="sendBarGoLive" onclick="goLive()" title="Показати те, що зараз у прев'ю, на реальному екрані">🔴 В ЕФІР</button>
       <button class="btn btn-danger" onclick="clearProjector()">✕ Очистити</button>
     </div>
   </div>

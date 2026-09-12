@@ -562,6 +562,10 @@ function goLive() {
   } catch (e) {}
   pushUndo(state.onAir || { empty: true });   // щоб можна було повернутись
   state.onAir = c;
+  // state.preview ніколи не скидався тут — "У прев'ю"-індикатор (постійна
+  // нижня панель, кнопка "В ЕФІР") лишався б підсвіченим/показаним
+  // НАЗАВЖДИ навіть ПІСЛЯ того, як контент уже показано в залі.
+  state.preview = null;
   updateLivePanels();
   hostBroadcastState();
   notify('🔴 В ЕФІРІ: ' + (c.label || c.ref || 'слайд'));
@@ -755,6 +759,23 @@ function _updateLivePanels() {
 
   const dot = $('#liveDot');
   if (dot) dot.style.color = state.onAir ? 'var(--red)' : 'var(--text2)';
+
+  // Постійна нижня панель (#sendPreview, видима з будь-якої вкладки) має
+  // явно показувати "чекає в прев'ю" — інакше при staged-режимі оператор
+  // бачить там СТАРИЙ напис від попереднього показу (doSend перезаписує
+  // sendPreview лише коли контент дійсно ЙДЕ в ефір) і не розуміє, чому
+  // на екрані нічого не змінилось. Кнопку "🔴 В ЕФІР" підсвічуємо, доки
+  // є що показати — щоб було видно, що дія ще не завершена.
+  const sendPrev = $('#sendPreview');
+  const goLiveBtn = $('#sendBarGoLive');
+  if (state.preview && sendPrev) {
+    const esc2 = (typeof escHtml === 'function') ? escHtml : function(s) { return s; };
+    sendPrev.innerHTML = '<b style="color:var(--gold)">📋 У прев\'ю:</b> ' + esc2(state.preview.label || state.preview.ref || 'слайд') + ' — натисни «В ЕФІР»';
+  }
+  if (goLiveBtn) {
+    goLiveBtn.classList.toggle('pulse-attention', !!state.preview);
+    goLiveBtn.style.opacity = state.preview ? '1' : '.55';
+  }
 }
 
 // ---- Перехоплення відправки: у режимі staged все спершу йде в прев'ю ----

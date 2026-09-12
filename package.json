@@ -18,7 +18,8 @@
     "test-band-mode": "node band-mode-test.js",
     "test-song-graphics": "node song-graphics-test.js",
     "test-multitrans-preview": "node multitrans-preview-test.js",
-    "test-all-outputs": "node all-outputs-test.js"
+    "test-all-outputs": "node all-outputs-test.js",
+    "test-projector-only-default": "node projector-only-default-test.js"
   },
   "build": {
     "appId": "com.church.projector",
