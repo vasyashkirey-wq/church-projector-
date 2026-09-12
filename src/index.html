@@ -3426,14 +3426,19 @@ function getMultiTransHTML(ref, blocks, n) {
   var st = (typeof mtStyle === 'function') ? mtStyle(n) : { fontScale: 100, vAlign: 'center', hAlign: 'center', band: false };
   var band = !!st.band;
   var scale = (st.fontScale || 100) / 100;
-  // «Смуга внизу»: та сама ідея, що вже є в GDD-шаблоні одного вірша
-  // (templates/gdd/verse.html, layout «смуга внизу») — смуга нижча за
-  // весь екран, тож базовий розмір зменшено пропорційно (та сама
-  // пропорція ~0.72, що й там: 64px на весь екран → 46px у смузі).
-  var baseSize = (blocks.length === 1 ? 46 : blocks.length === 2 ? 36 : 28) * (band ? 0.72 : 1);
+  // «Смуга внизу»: НЕ зменшуємо базовий розмір тексту (як спершу зробили
+  // за аналогією з verse.html) — там смуга ФІКСОВАНОЇ висоти (340px)
+  // незалежно від вмісту, тож зменшення розміру було єдиним способом
+  // влізти. Тут висота смуги (bandHeight нижче) сама росте з кількістю
+  // перекладів під ЦЕЙ розмір шрифту, тож додаткове зменшення лише
+  // робило текст дрібнішим без потреби — на проекторі з 3 перекладами
+  // виходило ~20px, це нечитабельно вже за кілька метрів від екрана.
+  // Якщо конкретний вірш все ж не влазить — fitMultiTrans() нижче сам
+  // трошки зменшить, з розумною нижньою межею.
+  var baseSize = blocks.length === 1 ? 46 : blocks.length === 2 ? 36 : 28;
   var startSize = Math.round(baseSize * scale);
-  var titleSize = Math.round(18 * scale * (band ? 0.85 : 1));
-  var refSize = Math.round(24 * scale * (band ? 0.85 : 1));
+  var titleSize = Math.round(18 * scale);
+  var refSize = Math.round(24 * scale);
   // У смузі вирівнювання по вертикалі завжди «знизу» (сама суть режиму —
   // лишити верх екрана вільним для камери/сцени), тож vAlign ігнорується.
   var justify = band ? 'flex-end' : (st.vAlign === 'top' ? 'flex-start' : (st.vAlign === 'bottom' ? 'flex-end' : 'center'));
@@ -3491,8 +3496,14 @@ function getMultiTransHTML(ref, blocks, n) {
       // інакше текст ніколи не зменшився б, поки не почав вилазити за межі
       // видимої частини (смуга коротша за window.innerHeight).
       'var avail=' + (band ? bandHeight : 'window.innerHeight') + ';' +
+      // Нижня межа 14px (стара) на реальному проекторі з відстані в кілька
+      // метрів вже нечитабельна. minSize рахуємо від стартового розміру —
+      // 55% від нього, але не менше 22px: якщо навіть це не влазить,
+      // краще трохи обрізати текст (overflow:hidden на #wrap), ніж
+      // показати щось, що ніхто в залі не прочитає.
+      'var minSize=Math.max(22,Math.round(' + startSize + '*0.55));' +
       'var size=' + startSize + ',guard=0;' +
-      'while(wrap.scrollHeight>avail && size>14 && guard<40){' +
+      'while(wrap.scrollHeight>avail && size>minSize && guard<40){' +
         'size-=2;guard++;' +
         'texts.forEach(function(t){t.style.fontSize=size+"px";});' +
         'titles.forEach(function(t){t.style.fontSize=Math.max(11,Math.round(size*0.62))+"px";});' +
