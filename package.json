@@ -13,7 +13,8 @@
     "check-i18n": "node tools/check-translation-collisions.js",
     "test-live": "node context-isolation-test.js",
     "test-song-outputs": "node song-outputs-test.js",
-    "test-rate-limit": "node rate-limit-test.js"
+    "test-rate-limit": "node rate-limit-test.js",
+    "test-remote-double-fire": "node remote-double-fire-test.js"
   },
   "build": {
     "appId": "com.church.projector",

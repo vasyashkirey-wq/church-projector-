@@ -1293,6 +1293,7 @@ function renderGraphicsTab() {
           <button class="btn btn-ghost btn-sm" onclick="prevBibleVerse()">◀ Вірш</button>
           <button class="btn btn-ghost btn-sm" onclick="nextBibleVerse()">Вірш ▶</button>
         </div>
+      </div>
 
       <div class="card">
         <div class="card-title">👁 Як це виглядатиме на екрані</div>
@@ -1300,7 +1301,6 @@ function renderGraphicsTab() {
           <iframe id="graphicsPreviewFrame" style="position:absolute;top:0;left:0;width:1920px;height:1080px;border:0;transform:scale(0.28);transform-origin:top left;pointer-events:none"></iframe>
         </div>
         <div class="card-sub" style="margin-top:6px">Прев'ю показує точно той HTML, що піде на екран — у справжньому масштабі 1920×1080.</div>
-      </div>
       </div>
 
       <div class="card">

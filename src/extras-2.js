@@ -144,7 +144,7 @@ function resetOutputIndicators(n) {
     }
   } catch (e) {}
   // Перемальовуємо рядки кнопок, щоб 🔴 зникли одразу
-  ['renderQrOutputRow', 'renderSongOutputRow', 'renderGraphicsOutBtns', 'renderH2ROutBtns', 'renderTimerOutBtns',
+  ['renderQrOutputRow', 'renderSongOutputRow', 'renderGraphicsOutBtns', 'renderH2RLowerOutBtns', 'renderTimerOutBtns',
    'renderMediaOutBtns', 'renderTickerOutBtns', 'renderCreditsOutBtns', 'renderConfettiOutBtns',
    'renderHTMLOverlayList', 'renderBibleOutputRow'].forEach(function (fn) {
     try { if (typeof window[fn] === 'function') window[fn](); } catch (e) {}

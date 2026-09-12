@@ -313,7 +313,12 @@ if (window.electronAPI) {
     // пісню замість вірша, перекриваючи те, що щойно правильно надіслав інший.
     // Дії, які extras.js уже обробляє повністю, тут пропускаємо.
     var extrasHandlesRemote = (typeof state !== 'undefined' && state && typeof state.liveMode !== 'undefined');
-    var overlapping = ['next-verse', 'prev-verse', 'clear', 'select-verse'];
+    // 'blackout'/'freeze'/'plan-item' додались в обидва обробники пізніше
+    // (розширення пульта, нижче) — без них у цьому списку обидва
+    // спрацьовували на кожен натиск і toggleBlackout()/toggleFreeze()
+    // скасовували самі себе (ввімкнув-вимкнув в один тік), а plan-item
+    // викликався двічі.
+    var overlapping = ['next-verse', 'prev-verse', 'clear', 'select-verse', 'blackout', 'freeze', 'plan-item'];
     if (extrasHandlesRemote && overlapping.indexOf(cmd.action) >= 0) return;
 
     // Далі — запасний варіант (той самий порядок дій, що й раніше),
