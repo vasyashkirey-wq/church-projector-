@@ -659,7 +659,7 @@ function loadSongSize() {
 // «Пісні»). Точково по одному виходу — setOutputSongSize нижче.
 function songSizeStep(delta) {
   const base = state.songSize[1] || 58;
-  const next = Math.max(20, Math.min(140, base + delta));
+  const next = Math.max(20, Math.min(300, base + delta));
   [1, 2, 3, 4].forEach(function(n) { state.songSize[n] = next; });
   saveSongSize();
   applySongSize();
@@ -689,7 +689,7 @@ function syncSongFontSizeDisplay() {
 function setOutputSongSize(n, delta) {
   if (!window.electronAPI || !window.electronAPI.setLockedSize) return;
   var base = state.songSize[n] || 58;
-  var next = Math.max(20, Math.min(140, base + delta));
+  var next = Math.max(20, Math.min(300, base + delta));
   state.songSize[n] = next;
   saveSongSize();
   window.electronAPI.setLockedSize(next, OUT_KIND[n]);
