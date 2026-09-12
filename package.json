@@ -20,7 +20,8 @@
     "test-multitrans-preview": "node multitrans-preview-test.js",
     "test-all-outputs": "node all-outputs-test.js",
     "test-projector-only-default": "node projector-only-default-test.js",
-    "test-chroma-song": "node chroma-song-test.js"
+    "test-chroma-song": "node chroma-song-test.js",
+    "test-font-lock": "node font-lock-test.js"
   },
   "build": {
     "appId": "com.church.projector",

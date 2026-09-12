@@ -2056,6 +2056,94 @@ head('Сторож хромакею на пісні (адресний вивід
   }
 })();
 
+head('Сторож стабільного розміру шрифту (set-fit-group) — не мірять сховане #text-wrap');
+(function () {
+  // РЕАЛЬНИЙ БАГ (живе тестування): "📏 Зафіксувати розмір під поточну
+  // пісню" (і автоматичне спрацювання при зміні пісні) рахує scrollHeight
+  // тексту всередині #text-wrap. Але #text-wrap за замовчуванням
+  // display:none (CSS) — і лишається таким, доки showText() ЖОДНОГО разу
+  // не показав щось на цьому виході. Для ПЕРШОЇ пісні свіжої сесії (щойно
+  // відкрили вихід і одразу тиснуть "На проектор") set-fit-group рахує
+  // розмір ДО першого показу — прихований контейнер завжди має
+  // scrollHeight=0, тож ДОВГИЙ куплет, який реально не влазить, "фіксується"
+  // на базовому розмірі (напр. 58px) — і текст обрізається на екрані.
+  // Другий і наступні виклики в тій же сесії проблеми не мали (контейнер
+  // вже видимий) — тому баг непомітний, доки хтось не почне службу з
+  // довгої першої пісні. Перевіряємо РЕАЛЬНИЙ запуск обробника
+  // 'set-fit-group' із мінімальною DOM-заглушкою, що моделює саме це:
+  // #text-wrap стартує прихованим.
+  const pp = SRC.projPreload;
+  const s = pp.indexOf('let autoFitEnabled = true;');
+  const e = pp.indexOf("ipcRenderer.on('set-fit-group'", s);
+  const eEnd = pp.indexOf('\n});', e) + 4;
+  if (s < 0 || e < 0) { bad('не знайдено fitTextToScreen/set-fit-group у projector-preload.js — сторож неможливо перевірити'); return; }
+  const src = pp.slice(s, eEnd);
+
+  try {
+    // Мінімальна модель DOM: #text-wrap має "CSS-типове" значення display,
+    // яке діє, доки хтось не поставить inline style.display напряму —
+    // так само, як насправді (CSS display:none, showText() ставить inline
+    // 'block'). scrollHeight імітує реальний рендер: 0, якщо резолвлений
+    // display — 'none' (елемент поза layout), інакше росте з довжиною
+    // тексту й падає зі зменшенням шрифту — так фактичний цикл
+    // fitTextToScreen() справді має що зменшувати.
+    function resolvedDisplay(el) { return el.style.display !== '' ? el.style.display : el._cssDefaultDisplay; }
+    const wrap = { style: { display: '' }, _cssDefaultDisplay: 'none' };
+    const refEl = { offsetHeight: 0 };
+    const body = {
+      innerHTML: '', style: {},
+      get scrollHeight() {
+        if (resolvedDisplay(wrap) === 'none') return 0;
+        const fontSize = parseFloat(body.style.fontSize) || 58;
+        return Math.round(String(body.innerHTML).length * fontSize * 0.6);
+      },
+      scrollWidth: 0
+    };
+    const els = { 'text-wrap': wrap, 'text-body': body, 'text-ref': refEl };
+    const document_ = { getElementById: (id) => els[id] || null };
+    const window_ = { innerWidth: 1280, innerHeight: 800, addEventListener: () => {} };
+    const getComputedStyle_ = (el) => ({ display: resolvedDisplay(el) });
+    const handlers = {};
+    const ipcRenderer_ = { on: (ch, cb) => { handlers[ch] = cb; } };
+    const console_ = { log: () => {}, warn: () => {} };
+
+    (new Function('document', 'window', 'getComputedStyle', 'ipcRenderer', 'console', 'currentTheme',
+      src
+    ))(document_, window_, getComputedStyle_, ipcRenderer_, console_, { fontSize: 58 });
+
+    const longSlide = 'Дуже довгий рядок тексту, який на базовому розмірі шрифту точно не влазить у доступну висоту екрана виходу'.repeat(6);
+
+    // Сценарій 1: #text-wrap ЩЕ ПРИХОВАНИЙ (як на першому показі свіжої
+    // сесії) — саме тут був баг.
+    wrap.style.display = '';
+    handlers['set-fit-group'](null, [longSlide]);
+    const sizeWhileHidden = parseFloat(body.style.fontSize);
+    if (sizeWhileHidden < 58)
+      ok('set-fit-group рахує розмір ПРАВИЛЬНО, навіть якщо #text-wrap ще не показувався (перша пісня сесії)');
+    else bad('РЕГРЕСІЯ: на прихованому #text-wrap set-fit-group "фіксує" базовий розмір ' + sizeWhileHidden + 'px — довгий куплет обріже на екрані');
+
+    // Сценарій 2 (не має зламатись): #text-wrap ВЖЕ видимий (друга й далі
+    // пісня сесії) — має рахувати так само коректно.
+    wrap.style.display = 'block';
+    body.style.fontSize = '';
+    handlers['set-fit-group'](null, [longSlide]);
+    const sizeWhileVisible = parseFloat(body.style.fontSize);
+    if (sizeWhileVisible < 58)
+      ok('set-fit-group так само коректно рахує, коли #text-wrap вже видимий (друга+ пісня сесії)');
+    else bad('set-fit-group не зменшує розмір навіть при видимому #text-wrap: ' + sizeWhileVisible + 'px');
+
+    // Приховане #text-wrap має повернутись у прихований стан після
+    // вимірювання (не лишати вихід видимим передчасно, до showText/.show).
+    wrap.style.display = '';
+    handlers['set-fit-group'](null, [longSlide]);
+    if (resolvedDisplay(wrap) === 'none')
+      ok('після вимірювання #text-wrap повертається у прихований стан (не блимає передчасно)');
+    else bad('#text-wrap лишився видимим після set-fit-group — можливий передчасний спалах контенту');
+  } catch (e) {
+    bad('жива перевірка сторожа стабільного розміру шрифту впала: ' + e.message);
+  }
+})();
+
 head('Вбудовані шаблони графіки (GDD) — файли + підключення');
 (function () {
   const fs2 = require('fs');

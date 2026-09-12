@@ -288,9 +288,22 @@ ipcRenderer.on('set-fit-group', (event, slides) => {
   lockedSize = null;
   if (!slides || !slides.length || !autoFitEnabled) return;
 
+  const wrap = document.getElementById('text-wrap');
   const body = document.getElementById('text-body');
   const refEl = document.getElementById('text-ref');
-  if (!body) return;
+  if (!body || !wrap) return;
+
+  // #text-wrap за замовчуванням display:none (CSS), доки showText() жодного
+  // разу не показав на цьому виході текст. Якщо це ПЕРША пісня в сесії й
+  // set-fit-group рахує розмір ДО першого показу — body.scrollHeight
+  // усередині прихованого контейнера завжди читається як 0, і будь-який
+  // текст, навіть той, що явно не влазить, "вважається" таким, що влазить
+  // на базовому розмірі. Тимчасово вмикаємо layout (display:block), не
+  // чіпаючи opacity — CSS і так тримає його 0, доки немає класу .show,
+  // тож видимого блимання не буде.
+  const savedDisplay = wrap.style.display;
+  const wasHidden = getComputedStyle(wrap).display === 'none';
+  if (wasHidden) wrap.style.display = 'block';
 
   const savedHTML = body.innerHTML;
   const base = currentTheme.fontSize || 58;
@@ -305,6 +318,7 @@ ipcRenderer.on('set-fit-group', (event, slides) => {
   });
 
   body.innerHTML = savedHTML;
+  if (wasHidden) wrap.style.display = savedDisplay;
   lockedSize = minSize;
   body.style.fontSize = lockedSize + 'px';
   console.log('Розмір зафіксовано на всю пісню:', lockedSize + 'px');
