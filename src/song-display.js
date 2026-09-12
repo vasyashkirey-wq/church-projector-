@@ -55,6 +55,73 @@ function sendSongToOutputs(targets) {
   (targets || []).forEach(function (n) { sendSongToOutput(n); });
 }
 
+// ============================================================
+// ПІСНЯ З ОФОРМЛЕННЯМ («Графіка») — той самий движок getGraphicsHTML,
+// яким уже користується Біблія (bibleGraphicsTo в bible.js), а не голий
+// themed-текст (buildTextHTML вище). Пісня отримує той самий фон/шаблон/
+// анімацію, що оператор уже налаштував у «Оформлення → Графіка» —
+// замість того, щоб пісня й вірші виглядали по-різному без причини.
+// Свідомо НЕ окремий GDD-шаблон (templates/gdd/verse.html): getGraphicsHTML
+// вже вміє layout «lower» (смуга внизу, камера видно) — той самий випадок,
+// що для мульти-перекладу довелося будувати окремо, тут уже готовий.
+// ============================================================
+function songTextForGraphics() {
+  if (!selectedSong) return null;
+  var text = selectedSong.verses[selectedVerseIdx];
+  if (text == null) return null;
+  if (selectedVerseIdx === selectedSong.verses.length - 1) text += '\n\n***';
+  return (typeof stripChords === 'function') ? stripChords(String(text)) : String(text);
+}
+
+function songGraphicsTo(targets, _fromGoLive) {
+  if (!selectedSong) { if (typeof notify === 'function') notify('⚠️ Спершу обери пісню'); return; }
+  var text = songTextForGraphics();
+  if (!text) return;
+  var ref = selectedSong.title || '';
+
+  if (typeof getGraphicsHTML !== 'function') {
+    if (typeof notify === 'function') notify('Графіка недоступна — вивів звичайним текстом');
+    sendToProjectorWin(text, ref);
+    return;
+  }
+
+  lastLiveSource = 'song';
+  lastLiveGraphics = true;
+  if (typeof exitServicePlan === 'function') exitServicePlan();
+
+  var html0 = esc(String(text || '')).replace(/\n/g, '<br>');
+
+  // Режим «Спершу прев'ю» — той самий обхід, що й bibleGraphicsTo: кнопка
+  // «З графікою» не має проскакувати повз прев'ю, коли решта показу так робить.
+  if (!_fromGoLive && typeof state !== 'undefined' && state &&
+      state.liveMode === 'staged' && !state.goingLive && typeof stageContent === 'function') {
+    stageContent({
+      kind: 'htmlraw',
+      html: getGraphicsHTML(html0, ref),
+      label: (ref || 'Пісня') + ' — з графікою',
+      ref: ref,
+      gfxTargets: (targets || []).slice()
+    });
+    if (typeof notify === 'function') notify('📋 У прев\'ю — натисни «В ЕФІР»');
+    return;
+  }
+
+  var sent = 0;
+  (targets || []).forEach(function (t) {
+    var aT;
+    try {
+      if (t > 0 && state && state.outputChroma && state.outputChroma[t] && state.outputChroma[t] !== 'none' && typeof outputBgAlpha === 'function') {
+        aT = outputBgAlpha(t);
+      }
+    } catch (e) {}
+    var ht = getGraphicsHTML(html0, ref, aT);
+    if (t === 0 && typeof doSendHTML === 'function') { doSendHTML(ht, 'Пісня з графікою'); sent++; }
+    else if (t > 0 && typeof sendHTMLToOutputN === 'function') { sendHTMLToOutputN(t, ht, 'Пісня з графікою'); sent++; }
+  });
+  if (!sent) { sendToProjectorWin(text, ref); return; }
+  if (typeof notify === 'function') notify('🎵 ' + (ref || 'Пісня') + ' — з графікою');
+}
+
 function clearSongFrom(n) {
   if (typeof pv2ClearOutput === 'function') pv2ClearOutput(n);
   songLiveMap[n] = false;
@@ -80,6 +147,10 @@ function renderSongOutputRow() {
       '<button class="btn btn-primary btn-sm" onclick="sendToProjector()">🖋 На всі</button>' +
       '<button class="btn btn-ghost btn-sm" onclick="sendSongToOutputs([1,2])">2 виводи</button>' +
       '<button class="btn btn-ghost btn-sm" onclick="sendSongToOutputs([1,2,3,4])">Усі 4 виводи</button>' +
+    '</div>' +
+    '<div class="flex mt8" style="gap:5px;flex-wrap:wrap">' +
+      '<button class="btn btn-success btn-sm" onclick="songGraphicsTo([0])" title="Той самий фон/шаблон, що вже налаштовано в Оформлення → Графіка">🎨 З графікою (на всі)</button>' +
+      '<button class="btn btn-ghost btn-sm" onclick="songGraphicsTo([1,2])">🎨 2 виводи</button>' +
     '</div>';
 }
 
