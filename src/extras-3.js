@@ -6,63 +6,9 @@
 const STATION_PORT = 4242;
 let stationWs = null;
 
-function saveStationCfg() {
-  saveJSON(STORAGE_KEYS.station, {
-    mode: state.station.mode, ip: state.station.ip,
-    pin: state.station.pin, name: state.station.name
-  });
-}
-function loadStationCfg() {
-  const c = loadJSON(STORAGE_KEYS.station);
-  if (c) Object.assign(state.station, c, { connected: false, clients: [] });
-}
-
 function isClientStation() { return state.station.mode === 'client' && state.station.connected; }
 
 // ---- ХОСТ ----
-function startHost() {
-  if (!window.electronAPI || !window.electronAPI.startSyncServer) return;
-  const pin = ($('#stationPin') && $('#stationPin').value.trim()) || '';
-  state.station.pin = pin;
-  state.station.mode = 'host';
-  saveStationCfg();
-  window.electronAPI.startSyncServer(pin).then(res => {
-    state.station.ip = res.ip;
-    renderTabInto('stations');
-    notify('🖥 Хост запущено: ' + res.ip + ':' + res.port + (pin ? ' (пароль увімкнено)' : ''));
-  }).catch(err => {
-    state.station.mode = 'solo';
-    renderTabInto('stations');
-    notify('✗ Хост не стартував: ' + (err && err.message ? err.message : 'помилка'));
-  });
-  // Помилки сервера (зайнятий порт тощо) приходять окремою подією
-  if (window.electronAPI.onStationError) {
-    window.electronAPI.onStationError(err => {
-      state.station.mode = 'solo';
-      renderTabInto('stations');
-      notify('✗ ' + (err.message || 'Сервер не запустився'));
-    });
-  }
-  // Хост слухає команди від клієнтів і виконує їх у себе
-  if (window.electronAPI.onStationCommand) {
-    window.electronAPI.onStationCommand(cmd => applyStationCommand(cmd));
-  }
-  if (window.electronAPI.onStationClients) {
-    window.electronAPI.onStationClients(list => {
-      state.station.clients = list || [];
-      renderStationClients();
-    });
-  }
-}
-function stopHost() {
-  if (window.electronAPI && window.electronAPI.stopSyncServer) window.electronAPI.stopSyncServer();
-  state.station.mode = 'solo';
-  state.station.clients = [];
-  saveStationCfg();
-  renderTabInto('stations');
-  notify('Хост зупинено');
-}
-
 // Команда з іншої станції — виконуємо як свою
 function applyStationCommand(cmd) {
   if (!cmd || !cmd.action) return;
@@ -83,7 +29,7 @@ function applyStationCommand(cmd) {
     case 'plan-item': if (typeof svcGoTo === 'function') svcGoTo(parseInt(p.idx, 10) || 0); break;
     case 'announce':  if (typeof sendSavedAnnounce === 'function') sendSavedAnnounce(parseInt(p.id, 10)); break;
     case 'gdd':       if (window.electronAPI.gddCommand) window.electronAPI.gddCommand(null, p.action, p.data); break;
-    case 'alert':     if (window.electronAPI.sendAlert) window.electronAPI.sendAlert(p.cfg || null, null); break;
+    case 'alert':     if (window.electronAPI.sendAlert) window.electronAPI.sendAlert(p.cfg || null, p.kind || null); break;
     case 'freeze':    if (typeof toggleFreeze === 'function') toggleFreeze(); break;
     default: return;
   }
@@ -107,87 +53,13 @@ const hostBroadcastState = rafDebounce(function() {
 });
 
 // ---- КЛІЄНТ ----
-function connectStation() {
-  const ip = ($('#stationIp') && $('#stationIp').value.trim()) || state.station.ip;
-  const pin = ($('#stationPinClient') && $('#stationPinClient').value.trim()) || '';
-  const name = ($('#stationName') && $('#stationName').value.trim()) || 'Панель 2';
-  if (!ip) { notify('⚠️ Вкажи IP хоста'); return; }
-
-  state.station.ip = ip; state.station.pin = pin; state.station.name = name; state.station.mode = 'client';
-  state.station._manualDisconnect = false;
-  saveStationCfg();
-
-  if (stationWs) { try { stationWs.close(); } catch(e) {} }
-  try {
-    stationWs = new WebSocket('ws://' + ip + ':' + STATION_PORT);
-  } catch (e) { notify('✗ Не вдалось підключитись'); return; }
-
-  stationWs.onopen = () => {
-    stationWs.send(JSON.stringify({ type: 'hello', pin: pin, name: name, role: 'panel' }));
-  };
-  stationWs.onmessage = e => {
-    let msg; try { msg = JSON.parse(e.data); } catch (err) { return; }
-    if (msg.type === 'welcome') {
-      state.station.connected = true;
-      _stationRetry = 0;
-      uiBeep();
-      renderTabInto('stations');
-      notify('✓ Підключено до хоста ' + ip);
-    } else if (msg.type === 'denied') {
-      state.station.connected = false;
-      renderTabInto('stations');
-      notify('✗ ' + (msg.reason || 'Відмовлено'));
-    } else if (msg.type === 'state' && msg.data) {
-      // Показуємо, що зараз у залі — навіть якщо ти за другим ПК
-      const d = msg.data;
-      state.onAir = d.onAir ? { kind: 'text', html: d.onAir.html || '', ref: d.onAir.ref, label: d.onAir.label } : null;
-      _updateLivePanels();
-      const lbl = $('#stationHostState');
-      if (lbl) lbl.textContent = d.onAir ? ('В ефірі: ' + (d.onAir.label || '')) : 'Ефір порожній';
-    }
-  };
-  stationWs.onclose = () => {
-    state.station.connected = false;
-    renderTabInto('stations');
-    // Автоперепідключення: хост міг перезапуститись або мережа моргнути.
-    // Без цього друга панель мовчки «вмирала» посеред служіння.
-    if (state.station.mode === 'client' && !state.station._manualDisconnect) {
-      _stationRetry = Math.min((_stationRetry || 0) + 1, 10);
-      const wait = Math.min(1000 * _stationRetry, 8000);
-      notify('↻ Зв\'язок втрачено — перепідключення через ' + Math.round(wait / 1000) + ' с');
-      clearTimeout(_stationRetryTimer);
-      _stationRetryTimer = setTimeout(() => connectStation(), wait);
-    }
-  };
-  stationWs.onerror = () => { /* onclose спрацює слідом */ };
-}
 let _stationRetry = 0, _stationRetryTimer = null;
-function disconnectStation() {
-  state.station._manualDisconnect = true;
-  clearTimeout(_stationRetryTimer);
-  if (stationWs) { try { stationWs.close(); } catch(e) {} stationWs = null; }
-  state.station.connected = false;
-  state.station.mode = 'solo';
-  saveStationCfg();
-  renderTabInto('stations');
-}
 // Клієнт шле команду хосту замість локального виводу
 function stationSend(action, payload) {
   if (!stationWs || stationWs.readyState !== 1) { notify('⚠️ Немає зв\'язку з хостом'); return false; }
   stationWs.send(JSON.stringify({ type: 'cmd', action: action, payload: payload || {} }));
   return true;
 }
-
-function renderStationClients() {
-  const el = $('#stationClientsList');
-  if (!el) return;
-  const list = state.station.clients || [];
-  el.innerHTML = list.length
-    ? list.map(c => `<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)">
-        <span style="color:var(--green)">●</span> ${esc(c.name)} <span style="color:var(--text2)">(${esc(c.role)})</span></div>`).join('')
-    : '<div style="font-size:11px;color:var(--text2)">Ніхто ще не підключився</div>';
-}
-
 
 // ---- Пульти на телефонах ----
 // ВАДА, яку це виправляє: після появи режиму «спершу прев'ю» команди з пульта
@@ -247,7 +119,7 @@ function initRemoteListener() {
           const v = state.selectedSong.verses[cmd.idx];
           if (v != null) {
             stageContent({ kind:'text', rawText:v, html:hallText(v).replace(/\n/g,'<br>'),
-                           ref:state.selectedSong.title || '', label:(state.selectedSong.title||'')+' — куплет '+(cmd.idx+1), verseIdx:cmd.idx });
+                           ref:songRefForDisplay(state.selectedSong.title), label:(state.selectedSong.title||'')+' — куплет '+(cmd.idx+1), verseIdx:cmd.idx });
             goLive();
           }
         }
@@ -272,132 +144,16 @@ function initRemoteListener() {
 
 
 // ---- Вкладка «Мова / Музиканти / OBS» ----
-function renderExtrasTab() {
-  const langs = bibleTranslationsList();
-  const langOpts = ['<option value="">— вимкнено —</option>']
-    .concat(langs.map(t => `<option value="${t.id}"${state.secondLang === t.id ? ' selected' : ''}>${esc(t.name)}</option>`))
-    .join('');
-  const langOpts3 = ['<option value="">— вимкнено —</option>']
-    .concat(langs.map(t => `<option value="${t.id}"${state.thirdLang === t.id ? ' selected' : ''}>${esc(t.name)}</option>`))
-    .join('');
-  const days = ['Неділя','Понеділок','Вівторок','Середа','Четвер','П\'ятниця','Субота']
-    .map((d, i) => `<option value="${i}"${Number(state.autoTimer.weekday) === i ? ' selected' : ''}>${d}</option>`).join('');
-  const o = state.obs || {};
-  const sceneBtns = (o.scenes || []).map((s, si) =>
-    `<button class="btn ${s === o.current ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="obsSceneIdx(${si})">${esc(s)}</button>`).join(' ');
-  const song = state.selectedSong;
-
-  return `
-  ${renderStorageCard()}
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🌐 Кілька мов на екрані</div>
-      <div class="card-sub">Той самий вірш іншими мовами — під основним текстом (до трьох разом) або на окремий екран.</div>
-      <div style="font-size:11px;color:var(--text2);margin-top:6px">Друга мова</div>
-      <select onchange="setSecondLang(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">${langOpts}</select>
-      <div style="font-size:11px;color:var(--text2);margin-top:6px">Третя мова (необов'язково)</div>
-      <select onchange="setThirdLang(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">${langOpts3}</select>
-      <div style="display:flex;gap:4px;margin-top:6px">
-        <button class="btn ${state.secondLangMode === 'under' ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setSecondLangMode('under')">Під основним текстом</button>
-        <button class="btn ${state.secondLangMode === 'output' ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setSecondLangMode('output')">На окремий екран</button>
-      </div>
-      ${state.secondLangMode === 'output' ? '<div class="card-sub" style="margin-top:4px">У вкладці «Виходи» постав потрібному екрану маршрут <b>«Друга мова»</b>.</div>' : ''}
-      ${!langs.length ? '<div class="card-sub" style="color:var(--red);margin-top:4px">Спершу імпортуй другий переклад у вкладці «Імпорт даних».</div>' : ''}
-    </div>
-
-    <div class="card">
-      <div class="card-title">🎸 Акорди для музикантів</div>
-      <div class="card-sub">${song ? (songHasChords(song) ? '✓ У пісні «' + esc(song.title) + '» є акорди' : 'У поточній пісні акорди не знайдені (формат ChordPro: [Am])') : 'Обери пісню'}</div>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:8px">
-        <button class="btn btn-ghost btn-sm" onclick="setTranspose((state.transpose||0)-1)">−1</button>
-        <span id="transposeLabel" style="min-width:36px;text-align:center;font-size:14px;font-weight:700;color:var(--gold)">${state.transpose > 0 ? '+' : ''}${state.transpose || 0}</span>
-        <button class="btn btn-ghost btn-sm" onclick="setTranspose((state.transpose||0)+1)">+1</button>
-        <button class="btn btn-ghost btn-sm" onclick="setTranspose(0)">Скинути</button>
-      </div>
-      <div class="card-sub" style="margin-top:6px">У залі акорди <b>не показуються</b> — лише на екрані музикантів (маршрут «Акорди» у вкладці «Виходи»).</div>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">⏱ Автостарт відліку до служби</div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
-        <input type="checkbox" ${state.autoTimer.on ? 'checked' : ''} onchange="setAutoTimer('on', this.checked)">
-        Вмикати таймер автоматично
-      </label>
-      <div style="display:flex;gap:6px;margin-top:6px">
-        <select onchange="setAutoTimer('weekday', this.value)" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px">${days}</select>
-        <input type="time" value="${state.autoTimer.time}" onchange="setAutoTimer('time', this.value)"
-               style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px;color:var(--text);font-size:11px">
-      </div>
-      <div style="font-size:12px;color:var(--text2);margin-top:6px">Вмикати за <b>${state.autoTimer.minsBefore}</b> хв до початку</div>
-      <input type="range" min="1" max="30" value="${state.autoTimer.minsBefore}" oninput="setAutoTimer('minsBefore', parseInt(this.value,10))" style="width:100%">
-    </div>
-
-    <div class="card">
-      <div class="card-title">🎥 OBS Studio ${o.connected ? '<span style="color:var(--green)">● підключено</span>' : '<span style="color:var(--text2)">● офлайн</span>'}</div>
-      <div class="card-sub">Увімкни в OBS: Інструменти → WebSocket Server Settings.</div>
-      <div style="display:flex;gap:4px;margin-top:6px">
-        <input id="obsUrl" type="text" value="${esc((o.url) || 'ws://127.0.0.1:4455')}" placeholder="ws://127.0.0.1:4455"
-               style="flex:2;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;font-family:monospace">
-        <input id="obsPass" type="password" value="${esc(o.password || '')}" placeholder="пароль"
-               style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px">
-      </div>
-      <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">
-        <button class="btn btn-primary btn-sm" onclick="obsConnect()">🔗 Підключити</button>
-        ${o.connected ? '<button class="btn btn-ghost btn-sm" onclick="obsDisconnect()">Відключити</button>' : ''}
-        ${o.connected ? '<button class="btn btn-ghost btn-sm" onclick="obsAct(\'record-start\')">⏺ Запис</button><button class="btn btn-ghost btn-sm" onclick="obsAct(\'record-stop\')">⏹ Стоп</button>' : ''}
-        ${o.connected ? '<button class="btn btn-ghost btn-sm" onclick="obsAct(\'stream-start\')">📡 Ефір</button><button class="btn btn-ghost btn-sm" onclick="obsAct(\'stream-stop\')">⏹ Стоп ефіру</button>' : ''}
-      </div>
-      ${sceneBtns ? '<div style="margin-top:8px"><div style="font-size:12px;color:var(--text2);margin-bottom:4px">Сцени</div><div style="display:flex;gap:4px;flex-wrap:wrap">' + sceneBtns + '</div></div>' : ''}
-    </div>
-  </div>`;
-}
-
 // ---- OBS ----
-function obsConnect() {
-  const url = ($('#obsUrl') && $('#obsUrl').value.trim()) || 'ws://127.0.0.1:4455';
-  const pass = ($('#obsPass') && $('#obsPass').value) || '';
-  state.obs = Object.assign({}, state.obs, { url: url, password: pass });
-  saveJSON(STORAGE_KEYS.live + '_obs', { url: url, password: pass });
-  if (!window.electronAPI || !window.electronAPI.obsConnect) return;
-  window.electronAPI.obsConnect(url, pass).then(r => {
-    if (r.ok) {
-      state.obs = Object.assign({}, state.obs, { connected: true, scenes: r.scenes || [], current: r.current || '' });
-      notify('🎥 OBS підключено' + (r.scenes && r.scenes.length ? ' — сцен: ' + r.scenes.length : ''));
-    } else {
-      state.obs = Object.assign({}, state.obs, { connected: false });
-      notify('✗ ' + (r.error || 'OBS не підключився'));
-    }
-    renderTabInto('extras');
-  }).catch(() => notify('✗ OBS недоступний'));
-}
-function obsDisconnect() {
-  if (window.electronAPI && window.electronAPI.obsDisconnect) window.electronAPI.obsDisconnect();
-  state.obs = Object.assign({}, state.obs, { connected: false });
-  renderTabInto('extras');
-}
 function obsScene(name) { obsAct('scene', name); }
 // За індексом — щоб апостроф у назві сцени не розривав onclick
-function obsSceneIdx(i) {
-  const s = (state.obs && state.obs.scenes) ? state.obs.scenes[i] : null;
-  if (s) obsScene(s);
-}
-function obsAct(action, value) {
-  if (!window.electronAPI || !window.electronAPI.obsAction) return;
-  window.electronAPI.obsAction(action, value).then(r => {
-    if (!r.ok) notify('✗ OBS: ' + (r.error || 'помилка'));
-    else if (action === 'scene') { state.obs.current = value; renderTabInto('extras'); notify('🎥 Сцена: ' + value); }
-    else notify('🎥 ' + action);
-  }).catch(() => {});
-}
 function initObsListener() {
   const saved = loadJSON(STORAGE_KEYS.live + '_obs');
   state.obs = Object.assign({ connected: false, scenes: [], current: '' }, saved || {});
   if (window.electronAPI && window.electronAPI.onObsState) {
     window.electronAPI.onObsState(s => {
       state.obs = Object.assign({}, state.obs, s);
-      if (isActive('extras')) renderTabInto('extras');
+      if (isActive('extras')) markDirty('extras');
     });
   }
 }
@@ -410,6 +166,17 @@ function loadLayers() {
   const c = loadJSON(STORAGE_KEYS.live + '_layers');
   if (!c) return;
   state.logo = c.logo || null;
+  if (c.logoSettings) {
+    // "on" свідомо НЕ відновлюємо при старті (як і раніше — логотип-заставку
+    // ніколи не показувало автоматично після перезапуску, лише пам'ятало
+    // саму картинку). Позицію/розмір — відновлюємо, щоб не губились налаштування.
+    [1, 2, 3, 4].forEach(function(n) {
+      if (c.logoSettings[n]) {
+        state.logoSettings[n].position = c.logoSettings[n].position || state.logoSettings[n].position;
+        state.logoSettings[n].size = c.logoSettings[n].size || state.logoSettings[n].size;
+      }
+    });
+  }
   state.bgVideo = c.bgVideo || null;
   state.bgQueue = c.bgQueue || [];
   state.bgQueueInterval = c.bgQueueInterval || 30;
@@ -443,6 +210,7 @@ function saveLayers() {
   const v = (state.bgVideo && !state.bgVideo.session) ? state.bgVideo : null;
   saveJSON(STORAGE_KEYS.live + '_layers', {
     logo: state.logo,          // логотип — картинка, невелика, можна тримати як dataURL
+    logoSettings: state.logoSettings,
     bgVideo: v,                // лише шлях до файлу
     bgQueue: (state.bgQueue || []).filter(x => !x.session),
     bgQueueInterval: state.bgQueueInterval || 30,
@@ -453,69 +221,14 @@ function saveLayers() {
 }
 
 // ---- Відео-фон під текстом ----
-function loadBgVideo(input) {
-  const f = input.files[0];
-  if (!f) return;
-
-  // Беремо ШЛЯХ до файлу, а не base64: відео на 50 МБ у dataURL — це ~67 МБ,
-  // що миттєво переповнює localStorage (ліміт ~5 МБ) і з'їдає пам'ять.
-  if (f.path) {
-    // Непідтримувані формати (MOV/MKV…) спершу конвертуємо у MP4, тоді вантажимо
-    ensureSupportedMedia(f.path, function(cpath) {
-      const fileUrl = pathToFileUrl(cpath);
-      state.bgVideo = { src: fileUrl, name: f.name, speed: 1 };
-      saveLayers();
-      applyBgVideo();
-      renderTabInto('layers');
-      notify('🎬 Відео-фон: ' + f.name);
-    });
-  } else {
-    // Поза Electron шляху немає — вантажимо в пам'ять лише на сеанс, без збереження
-    state.bgVideo = { src: URL.createObjectURL(f), name: f.name, speed: 1, session: true };
-    applyBgVideo();
-    renderTabInto('layers');
-    notify('🎬 Відео-фон (лише на цей сеанс): ' + f.name);
-  }
-  input.value = '';
-}
 function applyBgVideo(kind) {
   if (!window.electronAPI || !window.electronAPI.setBgVideo) return;
   const v = state.bgVideo;
   window.electronAPI.setBgVideo(v ? { src: v.src, loop: true, speed: v.speed || 1 } : null, kind || null);
 }
-function clearBgVideo() {
-  state.bgVideo = null;
-  saveLayers();
-  applyBgVideo();
-  renderTabInto('layers');
-  notify('Відео-фон вимкнено');
-}
-
 // ---- Черга відео-фонів з авто-перемиканням по таймеру ----
 // (кілька роликів по черзі — напр. фон до служби, що сам змінюється)
 let _bgQueueTimer = null;
-function loadBgQueue(input) {
-  const files = Array.from(input.files || []);
-  if (!files.length) return;
-  state.bgQueue = state.bgQueue || [];
-  state.bgQueue.push(...files.filter(f => f.path).map(f => ({ src: pathToFileUrl(f.path), name: f.name })));
-  state.bgQueueIdx = state.bgQueueIdx || 0;
-  saveLayers();
-  renderTabInto('layers');
-  notify('🎬 Додано в чергу: ' + files.length);
-  input.value = '';
-}
-function removeBgQueueItem(i) {
-  if (!state.bgQueue) return;
-  state.bgQueue.splice(i, 1);
-  saveLayers();
-  renderTabInto('layers');
-}
-function setBgQueueInterval(sec) {
-  state.bgQueueInterval = Math.max(5, parseInt(sec, 10) || 30);
-  saveLayers();
-  if (_bgQueueTimer) { bgQueueStop(); bgQueueStart(); } // перезапустити з новим інтервалом
-}
 function bgQueueAdvance() {
   const q = state.bgQueue || [];
   if (!q.length) return;
@@ -523,99 +236,59 @@ function bgQueueAdvance() {
   state.bgVideo = Object.assign({ speed: 1 }, q[state.bgQueueIdx]);
   saveLayers();
   applyBgVideo();
-  renderTabInto('layers');
+  markDirty('layers');
 }
-function bgQueueStart() {
-  const q = state.bgQueue || [];
-  if (!q.length) { notify('⚠️ Спочатку додай ролики в чергу'); return; }
-  state.bgQueueIdx = 0;
-  state.bgVideo = Object.assign({ speed: 1 }, q[0]);
-  applyBgVideo();
-  state.bgQueueRunning = true;
-  _bgQueueTimer = setInterval(bgQueueAdvance, (state.bgQueueInterval || 30) * 1000);
-  saveLayers();
-  renderTabInto('layers');
-  notify('🔁 Ротація фонів увімкнена (кожні ' + (state.bgQueueInterval || 30) + ' с)');
-}
-function bgQueueStop() {
-  if (_bgQueueTimer) { clearInterval(_bgQueueTimer); _bgQueueTimer = null; }
-  state.bgQueueRunning = false;
-  saveLayers();
-  renderTabInto('layers');
-  notify('Ротацію фонів зупинено');
-}
-
 // ---- Логотип / заморозка ----
-function loadLogo(input) {
-  const f = input.files[0];
-  if (!f) return;
-  const ext = (String(f.name).split('.').pop() || '').toLowerCase();
-  const isHeic = ['heic', 'heif', 'tif', 'tiff'].indexOf(ext) >= 0;
-  // Перевірку 2МБ пропускаємо для HEIC/TIFF — вони сконвертуються у менший JPG
-  if (!isHeic && f.size > 2 * 1024 * 1024) {
-    notify('⚠️ Логотип завеликий (' + Math.round(f.size / 1048576) + ' МБ). Стисни до 2 МБ — інакше переповниться сховище.');
-    input.value = '';
-    return;
-  }
-  loadImageAsDataURL(f, function(dataURL) {
-    state.logo = dataURL;
-    saveLayers();
-    renderTabInto('layers');
-    notify('🖼 Логотип збережено');
-  });
-  input.value = '';
-}
-function showLogo(on) {
+// Показ логотипа — ОКРЕМИЙ для кожного з 4 виходів. position визначає режим:
+// 'center-full' — на весь екран (як заставка паузи, перекриває контент,
+// автоматично ховається при новому слайді); кутова позиція — маленький
+// значок, як водяний знак, лишається поверх контенту завжди.
+function showLogo(n, on) {
   if (!window.electronAPI || !window.electronAPI.showLogo) return;
   if (on && !state.logo) { notify('⚠️ Спершу завантаж логотип'); return; }
-  window.electronAPI.showLogo(on ? state.logo : null);
-  state.logoOn = !!on;
-  renderTabInto('layers');
-  notify(on ? '🖼 Логотип на екрані' : 'Логотип прибрано');
+  const s = state.logoSettings[n];
+  window.electronAPI.showLogo(on ? { dataUrl: state.logo, position: s.position, size: s.size } : null, OUT_KIND[n]);
+  s.on = !!on;
+  markDirty('layers');
+  notify(on ? '🖼 ' + OUT_NAME[n] + ': логотип на екрані' : '🖼 ' + OUT_NAME[n] + ': логотип прибрано');
 }
-
 // Постійний водяний знак — на відміну від логотипа, не ховається при зміні
 // контенту (пісня/вірш/оголошення тощо), лишається поверх усього завжди,
 // поки не вимкнеш. ОКРЕМИЙ для кожного з 4 виходів — можна, наприклад, мати
 // водяний знак на трансляції й не мати на проекторі, або зовсім різний текст.
 // НЕ перебудовуємо тут всю панель (renderTabInto) — інакше текстове поле
 // втрачало б фокус прямо під час набору тексту (як і з повзунками раніше).
-function setWatermark(n, key, val) {
-  state.watermark[n][key] = val;
-  saveLayers();
-  if (state.watermark[n].on && window.electronAPI && window.electronAPI.showWatermark) {
-    window.electronAPI.showWatermark(state.watermark[n], OUT_KIND[n]);
-  }
-}
 // Для кнопок позиції — тут перебудова панелі безпечна (це клік, не набір
 // тексту), і потрібна, щоб підсвітити нову активну кнопку.
-function setWatermarkPosition(n, pos) {
-  setWatermark(n, 'position', pos);
-  renderTabInto('layers');
-}
 // Перемикає, налаштування ЯКОГО виходу зараз показано в панелі.
-function selectWatermarkOutput(n) {
-  state._watermarkEditN = n;
-  renderTabInto('layers');
-}
-function toggleWatermark(n, on) {
-  if (on && !(state.watermark[n].text || '').trim()) { notify('⚠️ Спершу введи текст водяного знаку'); return; }
-  state.watermark[n].on = !!on;
-  saveLayers();
-  if (window.electronAPI && window.electronAPI.showWatermark) {
-    window.electronAPI.showWatermark(on ? state.watermark[n] : { on: false }, OUT_KIND[n]);
-  }
-  renderTabInto('layers');
-  notify(on ? '🏷 ' + OUT_NAME[n] + ': водяний знак увімкнено' : '🏷 ' + OUT_NAME[n] + ': водяний знак вимкнено');
-}
-
+// Глобальна заморозка — гаряча клавіша й швидка кнопка в «Шарах» керують
+// усіма 4 виходами одразу. Якщо ХОЧ ОДИН зараз заморожений — розморожуємо
+// всі; інакше заморожуємо всі. Той самий стан (state.frozen), що й
+// toggleFreezeOutput(n) нижче — не дублюємо логіку, лише різний обсяг дії.
 function toggleFreeze() {
   if (!window.electronAPI || !window.electronAPI.freezeOutput) return;
-  state.frozen = !state.frozen;
-  window.electronAPI.freezeOutput(state.frozen);
-  renderTabInto('layers');
+  // Якщо ВСІ 4 вже заморожені — розморожуємо всі. Інакше (частково або
+  // ніхто не заморожений) — заморожуємо всі. Так натискання завжди дає
+  // передбачуваний результат «усе заморожено», а не залежить від того,
+  // хтось міг заморозити один вихід окремо раніше через toggleFreezeOutput.
+  const allFrozen = [1, 2, 3, 4].every(n => state.frozen[n]);
+  const next = !allFrozen;
+  [1, 2, 3, 4].forEach(n => { state.frozen[n] = next; });
+  window.electronAPI.freezeOutput(next);   // без kind — на всі 4 одразу
+  markDirty('layers');
   if (typeof syncSendTargetBanner === 'function') syncSendTargetBanner();   // банер видно з будь-якої вкладки
-  notify(state.frozen ? '❄️ Кадр заморожено — зал бачить застиглу картинку' : '▶ Розморожено');
+  notify(next ? '❄️ Кадр заморожено на всіх виходах — зал бачить застиглу картинку' : '▶ Розморожено всі виходи');
+}
+// Заморозка ОДНОГО конкретного виходу — напр. заморозити картинку для
+// співаків (Вихід 3), лишивши трансляцію живою.
+function toggleFreezeOutput(n) {
+  if (!window.electronAPI || !window.electronAPI.freezeOutput) return;
+  const next = !state.frozen[n];
+  state.frozen[n] = next;
+  window.electronAPI.freezeOutput(next, OUT_KIND[n]);
+  markDirty('router');
+  if (typeof syncSendTargetBanner === 'function') syncSendTargetBanner();
+  notify(next ? '❄️ ' + OUT_NAME[n] + ': заморожено' : '▶ ' + OUT_NAME[n] + ': розморожено');
 }
 
 // ---- Оголошення ПОВЕРХ слайда ----
@@ -630,23 +303,12 @@ function sendAlert() {
   };
   if (!cfg.text) { notify('⚠️ Введи текст оголошення'); return; }
   state.alertCfg.text = cfg.text;
-  if (isClientStation()) { stationSend('alert', { cfg: cfg }); notify('📡 Оголошення через хост'); return; }
-  if (window.electronAPI && window.electronAPI.sendAlert) window.electronAPI.sendAlert(cfg, null);
-  notify('📢 Оголошення поверх слайда (пісня триває)');
+  const kind = state.alertCfg.targetOutput ? OUT_KIND[state.alertCfg.targetOutput] : null;
+  if (isClientStation()) { stationSend('alert', { cfg: cfg, kind: kind }); notify('📡 Оголошення через хост'); return; }
+  if (window.electronAPI && window.electronAPI.sendAlert) window.electronAPI.sendAlert(cfg, kind);
+  notify('📢 Оголошення поверх слайда' + (kind ? ' → ' + esc(OUT_NAME[state.alertCfg.targetOutput]) : '') + ' (пісня триває)');
 }
-function hideAlert() {
-  if (isClientStation()) { stationSend('alert', { cfg: null }); return; }
-  if (window.electronAPI && window.electronAPI.sendAlert) window.electronAPI.sendAlert(null, null);
-  notify('Оголошення прибрано');
-}
-function setAlertCfg(key, val) {
-  state.alertCfg[key] = val;
-  const lbl = $('#alertSizeLabel');
-  if (lbl) lbl.textContent = state.alertCfg.size + 'px';
-  const slbl = $('#alertSecLabel');
-  if (slbl) slbl.textContent = state.alertCfg.seconds ? state.alertCfg.seconds + ' с' : 'поки не прибрати';
-}
-
+// На який вихід слати оголошення/біжучий рядок: null = на всі одразу (як було раніше).
 // ---- Props: збережені ПОСТІЙНІ накладки (текст поверх слайда, до вимкнення) ----
 function loadProps() {
   const d = loadJSON('church_props');
@@ -664,7 +326,7 @@ function savePropFromAlert() {
     state.props = (state.props || []).filter(p => p.name !== name);
     state.props.push({ name: name, text: text, position: state.alertCfg.position, size: state.alertCfg.size, ticker: state.alertCfg.ticker });
     saveProps();
-    renderTabInto('layers');
+    markDirty('layers');
     notify('📌 Props «' + name + '» збережено');
   });
 }
@@ -678,21 +340,22 @@ function toggleProp(i) {
     state.activePropName = null;
   } else {                                          // показуємо ПОСТІЙНО (seconds:0)
     const cfg = { text: p.text, position: p.position || 'bottom', size: p.size || 34, seconds: 0, ticker: !!p.ticker, color: '#c8a84b' };
-    if (typeof isClientStation === 'function' && isClientStation()) { stationSend('alert', { cfg: cfg }); }
-    else if (window.electronAPI && window.electronAPI.sendAlert) { window.electronAPI.sendAlert(cfg, null); }
+    const kind = state.alertCfg.targetOutput ? OUT_KIND[state.alertCfg.targetOutput] : null;
+    if (typeof isClientStation === 'function' && isClientStation()) { stationSend('alert', { cfg: cfg, kind: kind }); }
+    else if (window.electronAPI && window.electronAPI.sendAlert) { window.electronAPI.sendAlert(cfg, kind); }
     state.activePropName = p.name;
     notify('📌 «' + p.name + '» — на екрані' + (p.autoHide > 0 ? ' (сховається за ' + p.autoHide + ' хв)' : ''));
     if (p.autoHide > 0) {
       state.propHideTimer = setTimeout(function() {
         if (state.activePropName === p.name) {
           hideAlert(); state.activePropName = null; state.propHideTimer = null;
-          try { renderTabInto('layers'); } catch (e) {}
+          try { markDirty('layers'); } catch (e) {}
           notify('⏱ «' + p.name + '» приховано автоматично');
         }
       }, p.autoHide * 60000);
     }
   }
-  renderTabInto('layers');
+  markDirty('layers');
 }
 
 function setPropAutoHide(i) {
@@ -701,7 +364,7 @@ function setPropAutoHide(i) {
     if (v === null) return;
     p.autoHide = Math.max(0, parseInt(v, 10) || 0);
     saveProps();
-    renderTabInto('layers');
+    markDirty('layers');
     notify(p.autoHide > 0 ? '⏱ «' + p.name + '» ховатиметься за ' + p.autoHide + ' хв' : '⏱ Авто-приховування вимкнено');
   });
 }
@@ -712,7 +375,7 @@ function deleteProp(i) {
   if (state.activePropName === p.name) { hideAlert(); state.activePropName = null; }
   state.props.splice(i, 1);
   saveProps();
-  renderTabInto('layers');
+  markDirty('layers');
 }
 
 // ---- Шаблони повідомлень із токенами ({дата},{час},{ім'я}…) ---------------
@@ -726,7 +389,7 @@ function addMsgTemplate() {
       if (text === null || !text.trim()) return;
       state.msgTemplates.push({ name: name, text: text.trim() });
       saveMsgTemplates();
-      renderTabInto("layers");
+      markDirty('layers');
       notify("✍️ Шаблон «" + name + "» збережено");
     });
   });
@@ -736,7 +399,7 @@ function deleteMsgTemplate(i) {
   if (!confirm("Видалити шаблон «" + state.msgTemplates[i].name + "»?")) return;
   state.msgTemplates.splice(i, 1);
   saveMsgTemplates();
-  renderTabInto("layers");
+  markDirty('layers');
 }
 function useMsgTemplate(i) {
   const t = state.msgTemplates[i]; if (!t) return;
@@ -810,7 +473,7 @@ function loadSoundToBin(input) {
   files.forEach(function(f) {
     const add = function(src, session) {
       state.soundBin.push({ name: f.name.replace(/\.[^.]+$/, ''), src: src, session: !!session });
-      if (--pending === 0) { saveSoundBin(); renderTabInto('layers'); notify('🔊 Додано звуків: ' + files.length); }
+      if (--pending === 0) { saveSoundBin(); markDirty('layers'); notify('🔊 Додано звуків: ' + files.length); }
     };
     if (f.path && typeof pathToFileUrl === 'function') {
       ensureSupportedMedia(f.path, function(cpath) { add(pathToFileUrl(cpath), false); });
@@ -838,7 +501,7 @@ function removeSound(i) {
   if (!state.soundBin[i]) return;
   state.soundBin.splice(i, 1);
   saveSoundBin();
-  renderTabInto('layers');
+  markDirty('layers');
 }
 function renderSoundBinCard() {
   const bin = state.soundBin || [];
@@ -858,25 +521,6 @@ function renderSoundBinCard() {
 
 // ---- Фонова музика з плавним затуханням ----
 let _bgAudioEl = null;
-function loadBgAudio(input) {
-  const f = input.files[0];
-  if (!f) return;
-  if (_bgAudioEl) {
-    _bgAudioEl.pause();
-    clearInterval(_bgAudioEl._fade);
-    // Звільняємо попередній blob — інакше кожен новий файл лишав копію в пам'яті
-    if (_bgAudioEl._url) URL.revokeObjectURL(_bgAudioEl._url);
-  }
-  const url = URL.createObjectURL(f);
-  _bgAudioEl = new Audio(url);
-  _bgAudioEl._url = url;
-  _bgAudioEl.loop = true;
-  _bgAudioEl.volume = 0;
-  state.bgAudio.name = f.name;
-  renderTabInto('layers');
-  notify('🎵 ' + f.name);
-  input.value = '';
-}
 function fadeAudio(to, ms, cb) {
   if (!_bgAudioEl) return;
   const from = _bgAudioEl.volume;
@@ -888,30 +532,6 @@ function fadeAudio(to, ms, cb) {
     if (t >= 1) { clearInterval(_bgAudioEl._fade); if (cb) cb(); }
   }, 40);
 }
-function playBgAudio() {
-  if (!_bgAudioEl) { notify('⚠️ Спершу обери файл'); return; }
-  _bgAudioEl.play().catch(() => notify('⚠️ Не вдалось відтворити'));
-  fadeAudio(state.bgAudio.volume, 2000);   // плавний вхід за 2 с
-  state.bgAudio.playing = true;
-  renderTabInto('layers');
-  notify('🎵 Фонова музика (плавно)');
-}
-function stopBgAudio() {
-  if (!_bgAudioEl) return;
-  fadeAudio(0, 2500, () => { _bgAudioEl.pause(); });   // плавне затухання
-  state.bgAudio.playing = false;
-  renderTabInto('layers');
-  notify('🎵 Затухання...');
-}
-function setBgVolume(v) {
-  state.bgAudio.volume = v / 100;
-  if (_bgAudioEl && state.bgAudio.playing) _bgAudioEl.volume = state.bgAudio.volume;
-  saveLayers();
-  const lbl = $('#bgVolLabel');
-  if (lbl) lbl.textContent = v + '%';
-}
-
-
 // ---- Мітки частин пісні (Куплет/Приспів/Міст…) з кольором -----------------
 const PART_TYPES = {
   verse:     { label: 'Куплет',       color: '#6b7280' },
@@ -936,7 +556,7 @@ function setPartLabel(idx, type) {
   if (type === 'verse') delete state.partLabels[k][idx]; else state.partLabels[k][idx] = type;
   if (!Object.keys(state.partLabels[k]).length) delete state.partLabels[k];
   savePartLabels();
-  renderTabInto('song');
+  markDirty('song');
 }
 function partBadge(song, idx) {
   const key = partKeyOf(song, idx);
@@ -957,7 +577,7 @@ function saveNamedArrangement() {
     state.arrangeSets[k] = state.arrangeSets[k] || {};
     state.arrangeSets[k][nm] = songOrder(s).slice();
     saveArrangeSets();
-    renderTabInto('song');
+    markDirty('song');
     notify('💾 Аранжування «' + nm + '» збережено');
   });
 }
@@ -975,7 +595,7 @@ function deleteNamedArrangement(name) {
   delete state.arrangeSets[k][name];
   if (!Object.keys(state.arrangeSets[k]).length) delete state.arrangeSets[k];
   saveArrangeSets();
-  renderTabInto('song');
+  markDirty('song');
 }
 function renderArrangeSets(s) {
   const set = (state.arrangeSets && state.arrangeSets[songKey(s)]) || {};
@@ -994,271 +614,97 @@ function renderArrangeSets(s) {
 }
 
 // ---- Вкладка «Пісня»: порядок частин + розбиття ----
-function renderSongTab() {
-  const s = state.selectedSong;
-  if (!s || !s.verses) {
-    return '<div class="card"><div class="card-title">🎵 Пісня</div><div class="card-sub">Обери пісню у вкладці «Пісні».</div></div>';
-  }
-  const order = songOrder(s);
-  const slides = songSlides(s);
-  const sc = state.splitCfg;
+// TYPO_DEFAULTS / typoGet / setTypo / applyTypo / renderTypoTab — винесено
+// в src/tabs/g_design/typo.js (пілот модуляризації).
 
-  const _liveKey = (typeof songKey === 'function') ? songKey(s) : '';
-  const orderChips = order.map((idx, pos) => {
-    const b = partBadge(s, idx);
-    const active = (state._slideSong === _liveKey && state.slideIdx === pos);
-    const ring = active ? 'box-shadow:0 0 0 2px #22c55e;' : '';
-    return `<span draggable="true" ondragstart="orderDragStart(event,${pos})" ondragover="orderDragOver(event)" ondrop="orderDrop(event,${pos})" title="Перетягни, щоб змінити порядок" style="display:inline-flex;align-items:center;gap:3px;background:${b.color};color:#fff;
-                  border-radius:5px;padding:3px 6px;font-size:11px;margin:2px;cursor:grab;${ring}">
-       ${active ? '▶ ' : ''}${esc(b.label)}
-       <button onclick="orderRemoveAt(${pos})" style="background:none;border:none;color:#fff;cursor:pointer;font-size:12px;padding:0 2px">✕</button>
-     </span>`;
-  }).join('');
-
-  const addBtns = s.verses.map((v, i) => {
-    const b = partBadge(s, i);
-    return `<button class="preset-btn" style="border-left:3px solid ${b.color}" onclick="orderAdd(${i})">+ ${esc(b.label)}</button>`;
-  }).join(' ');
-
-  const partOpts = (cur) => Object.keys(PART_TYPES).map(k =>
-    `<option value="${k}"${k === cur ? ' selected' : ''}>${PART_TYPES[k].label}</option>`).join('');
-  const partsEditor = s.verses.map((v, i) => {
-    const b = partBadge(s, i);
-    return `<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
-       <span style="width:13px;height:13px;border-radius:3px;background:${b.color};flex:none"></span>
-       <span style="width:18px;font-size:11px;color:var(--text2)">${i + 1}</span>
-       <select onchange="setPartLabel(${i}, this.value)" style="font-size:11px">${partOpts(partKeyOf(s, i))}</select>
-       <span style="flex:1;font-size:10px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(String(v).split('\n')[0].slice(0, 30))}</span>
-     </div>`;
-  }).join('');
-
-  const slideList = slides.map((sl, i) =>
-    `<div style="padding:4px 6px;border-bottom:1px solid var(--border);font-size:11px;cursor:pointer;
-                 background:${i === state.slideIdx ? 'var(--panel2)' : 'transparent'}"
-          onclick="state.slideIdx=${i - 1}; songStep(1)">
-       <b style="color:var(--accent)">${sl.verseIdx + 1}${sl.parts > 1 ? '.' + sl.part : ''}</b>
-       <span style="color:var(--text2)">${esc(String(sl.text).split('\n')[0].slice(0, 40))}…</span>
-       ${sl.parts > 1 ? `<span style="color:var(--gold);font-size:12px"> (слайд ${sl.part} з ${sl.parts})</span>` : ''}
-     </div>`).join('');
-
-  return `
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🎵 Порядок частин — «${esc(s.title)}»</div>
-      <div class="card-sub">Домовились співати приспів двічі? Склади порядок один раз — далі просто гортаєш. Чипи можна <b>перетягувати мишкою</b>, щоб змінити порядок. Або увімкни перемикач нижче — приспів сам стане після кожного куплета.</div>
-      <div style="margin-top:6px;min-height:30px">${orderChips || '<span style="font-size:11px;color:var(--text2)">Порожньо</span>'}</div>
-      <div style="margin-top:6px;display:flex;gap:3px;flex-wrap:wrap">${addBtns}</div>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px 10px;background:linear-gradient(135deg,rgba(124,92,255,.14),rgba(79,155,255,.08));border:1px solid var(--accent);border-radius:7px;font-size:13px;cursor:pointer">
-        <input type="checkbox" style="width:16px;height:16px;cursor:pointer" ${state.arrangeGlobal ? 'checked' : ''} onchange="toggleArrangeGlobal(this.checked)">
-        <span>🌍 <b>Приспів після кожного — ДЛЯ ВСІХ пісень</b> (увімкни раз — діє скрізь)</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:8px;padding:8px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;font-size:13px;cursor:pointer">
-        <input type="checkbox" style="width:16px;height:16px;cursor:pointer" ${state.chorusEach[songKey(s)] ? 'checked' : ''} onchange="toggleChorusEach(this.checked)">
-        <span>🔁 <b>Приспів після кожного куплета</b> — увімкни, і порядок збудується сам</span>
-      </label>
-      <select onchange="applyArrangePreset(this.value); this.value=''" style="width:100%;margin-top:6px;background:var(--panel2);border:1px solid var(--border);border-radius:7px;padding:7px 10px;color:var(--text);font-size:12px;cursor:pointer">
-        <option value="">📋 Інші готові варіанти…</option>
-        <option value="end">Приспів лише в кінці</option>
-        <option value="frame">Приспів спочатку і в кінці</option>
-        <option value="last2">Приспів після кожного + останній куплет двічі</option>
-        <option value="verses">Тільки куплети (без приспіву)</option>
-        <option value="plain">↺ Усі підряд (скинути порядок)</option>
-      </select>
-      <details style="margin-top:8px">
-        <summary style="font-size:11px;cursor:pointer;color:var(--text2)">🏷 Мітки частин (Куплет / Приспів / Міст…)</summary>
-        <div style="margin-top:6px">${partsEditor}</div>
-      </details>
-      <button class="btn btn-ghost btn-sm btn-block" style="margin-top:6px" onclick="orderReset()">↺ Скинути (усі підряд)</button>
-      ${renderArrangeSets(s)}
-    </div>
-
-    <div class="card">
-      <div class="card-title">✂️ Розбиття довгих куплетів</div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
-        <input type="checkbox" ${sc.on ? 'checked' : ''} onchange="setSplit('on', this.checked)">
-        Розбивати довгий текст на кілька слайдів
-      </label>
-      <div style="font-size:12px;color:var(--text2);margin-top:6px">Максимум рядків на слайд: <b>${sc.maxLines}</b></div>
-      <input type="range" min="2" max="8" value="${sc.maxLines}" onchange="setSplit('maxLines', parseInt(this.value,10))" style="width:100%">
-      <div style="font-size:12px;color:var(--text2)">Максимум символів: <b>${sc.maxChars}</b></div>
-      <input type="range" min="80" max="400" step="20" value="${sc.maxChars}" onchange="setSplit('maxChars', parseInt(this.value,10))" style="width:100%">
-      <div class="card-sub" style="margin-top:4px">Дрібний шрифт у великому залі не читається — краще два слайди.</div>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">📃 Слайди пісні (${slides.length})</div>
-    <div style="display:flex;gap:4px;margin-bottom:6px;align-items:center">
-      <button class="btn btn-ghost btn-sm" onclick="songStep(-1)">◀ Назад</button>
-      <button class="btn btn-primary btn-sm" onclick="songStep(1)">Далі ▶</button>
-      <button class="btn btn-ghost btn-sm" onclick="state.slideIdx=-1; songStep(1)">⏮ Спочатку</button>
-      <span style="flex:1"></span>
-      <span style="font-size:10px;color:var(--text2)">Розмір:</span>
-      <button class="btn btn-ghost btn-sm" onclick="songSizeStep(-4)" title="Менший шрифт пісні">A−</button>
-      <span style="font-size:11px;font-weight:700;min-width:38px;text-align:center;color:var(--accent)">${state.songSize ? state.songSize + 'px' : 'авто'}</span>
-      <button class="btn btn-ghost btn-sm" onclick="songSizeStep(4)" title="Більший шрифт пісні">A+</button>
-      ${state.songSize ? '<button class="btn btn-ghost btn-sm" onclick="songSizeReset()" title="Повернути авто-підгін">↺</button>' : ''}
-    </div>
-    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:5px">${slideList}</div>
-  </div>`;
-}
-
-
-// ============================================================
-// ТИПОГРАФІКА ВИВОДУ
-// ============================================================
-const TYPO_DEFAULTS = {
-  lineHeight: 1.45, letterSpacing: 0, uppercase: false,
-  strokeWidth: 0, strokeColor: '#000000',
-  scrim: 0, scrimBlur: 0, safeArea: 0, fadeMs: 600
-};
-
-function typoGet() {
-  return Object.assign({}, TYPO_DEFAULTS, loadJSON(STORAGE_KEYS.live + '_typo') || {});
-}
-function setTypo(key, val) {
-  const t = typoGet();
-  t[key] = val;
-  saveJSON(STORAGE_KEYS.live + '_typo', t);
-  applyTypo();
-  const labels = {
-    lineHeight: ['#typoLhLabel', v => v],
-    letterSpacing: ['#typoLsLabel', v => v + 'px'],
-    strokeWidth: ['#typoStrokeLabel', v => v ? v + 'px' : 'вимк'],
-    scrim: ['#typoScrimLabel', v => Math.round(v * 100) + '%'],
-    safeArea: ['#typoSafeLabel', v => v + '%'],
-    fadeMs: ['#typoFadeLabel', v => (v / 1000).toFixed(2) + ' с']
-  };
-  const L = labels[key];
-  if (L && $(L[0])) $(L[0]).textContent = L[1](val);
-  if (['uppercase','scrimBlur'].includes(key)) renderTabInto('typo');
-}
-// Типографіка живе в темі проектора — шлемо її туди
-function applyTypo() {
-  const t = typoGet();
-  if (typeof theme !== 'undefined' && theme) Object.assign(theme, t);
-  if (window.electronAPI && window.electronAPI.setTheme) {
-    window.electronAPI.setTheme(typeof theme !== 'undefined' ? theme : t);
-  }
-  updateLivePanels();
-}
-
-// Фіксуємо розмір шрифту під найдовший слайд пісні — щоб текст не «стрибав»
+// Фіксуємо розмір шрифту під найдовший слайд пісні — щоб текст не «стрибав».
+// set-fit-group на боці виводу ЗАВЖДИ перераховує розмір наново — тож
+// надсилаємо це ЛИШЕ на виходи, що зараз на авто-підгоні (songSize[n]===null);
+// виходи з явно зафіксованим розміром (A−/A+ у «Виходах») не чіпаємо —
+// інакше їхній ручний вибір злітав би щоразу зі зміною пісні/куплета.
 function lockSizeForSong() {
   if (!window.electronAPI || !window.electronAPI.setFitGroup) return;
   const s = state.selectedSong;
-  if (!s) { window.electronAPI.setFitGroup([], null); return; }
-  const slides = songSlides(s).map(sl => hallText(sl.text).replace(/\n/g, '<br>'));
-  window.electronAPI.setFitGroup(slides, null);
+  const slides = s ? songSlides(s).map(sl => hallText(sl.text).replace(/\n/g, '<br>')) : [];
+  [1, 2, 3, 4].forEach(function(n) {
+    if (!state.songSize[n]) window.electronAPI.setFitGroup(slides, OUT_KIND[n]);
+  });
 }
 
-// Розмір шрифту ПІСНІ, який тримається між куплетами і між піснями.
-// state.songSize=null → авто-підгін під найдовший слайд (як було раніше).
-// Інакше — точний зафіксований розмір, заданий кнопками A− / A+ (не зменшується).
+// Розмір шрифту ПІСНІ, який тримається між куплетами і між піснями — ОКРЕМО
+// для кожного виходу. songSize[n]=null → авто-підгін під найдовший слайд
+// САМЕ для цього виходу. Інакше — точний зафіксований розмір.
 function applySongSize() {
   if (!window.electronAPI) return;
-  if (state.songSize && window.electronAPI.setLockedSize) {
-    window.electronAPI.setLockedSize(state.songSize, null);
-  } else {
-    lockSizeForSong();
-  }
+  [1, 2, 3, 4].forEach(function(n) {
+    if (state.songSize[n] && window.electronAPI.setLockedSize) {
+      window.electronAPI.setLockedSize(state.songSize[n], OUT_KIND[n]);
+    }
+  });
+  if ([1, 2, 3, 4].some(function(n) { return !state.songSize[n]; })) lockSizeForSong();
 }
-function saveSongSize() { saveJSON(STORAGE_KEYS.live + '_songsize', { size: state.songSize }); }
+function saveSongSize() { saveJSON(STORAGE_KEYS.live + '_songsize', { sizes: state.songSize }); }
 function loadSongSize() {
   const c = loadJSON(STORAGE_KEYS.live + '_songsize');
-  if (c && typeof c.size === 'number') state.songSize = c.size;
+  if (!c) return;
+  if (c.sizes) {
+    [1, 2, 3, 4].forEach(function(n) { if (c.sizes[n] !== undefined) state.songSize[n] = c.sizes[n]; });
+  } else if (typeof c.size === 'number') {
+    // Міграція зі старого формату (одне спільне число на всі виходи) —
+    // застосовуємо його як стартове значення для КОЖНОГО з 4.
+    [1, 2, 3, 4].forEach(function(n) { state.songSize[n] = c.size; });
+  }
 }
+// Глобальний крок — керує УСІМА 4 виходами разом (кнопки A−/A+ у вкладці
+// «Пісні»). Точково по одному виходу — setOutputSongSize нижче.
 function songSizeStep(delta) {
-  const base = state.songSize || 58;
-  state.songSize = Math.max(20, Math.min(140, base + delta));
+  const base = state.songSize[1] || 58;
+  const next = Math.max(20, Math.min(300, base + delta));
+  [1, 2, 3, 4].forEach(function(n) { state.songSize[n] = next; });
   saveSongSize();
   applySongSize();
   if (state.selectedSong) songStep(0);           // перемалювати поточний слайд новим розміром
-  ['song','typo'].forEach(t => { if (typeof isActive === 'function' && isActive(t)) renderTabInto(t); });
-  notify('🔤 Розмір пісні: ' + state.songSize + 'px (тримається і для наступних)');
+  ['song','typo'].forEach(t => markDirty(t));
+  syncSongFontSizeDisplay();
+  notify('🔤 Розмір тексту: ' + next + 'px на всіх виходах (тримається і для наступних)');
 }
 function songSizeReset() {
-  state.songSize = null;
+  [1, 2, 3, 4].forEach(function(n) { state.songSize[n] = null; });
   saveSongSize();
-  if (window.electronAPI && window.electronAPI.setLockedSize) window.electronAPI.setLockedSize(null, null);
-  lockSizeForSong();
+  applySongSize();
   if (state.selectedSong) songStep(0);
-  ['song','typo'].forEach(t => { if (typeof isActive === 'function' && isActive(t)) renderTabInto(t); });
-  notify('↺ Розмір пісні: авто-підгін');
+  ['song','typo'].forEach(t => markDirty(t));
+  syncSongFontSizeDisplay();
+  notify('↺ Розмір тексту: авто-підгін на всіх виходах');
 }
-
-function renderTypoTab() {
-  const t = typoGet();
-  return `
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🔠 Читабельність</div>
-
-      <div style="font-size:12px;color:var(--text2)">Міжрядковий інтервал: <b id="typoLhLabel">${t.lineHeight}</b></div>
-      <input type="range" min="10" max="22" value="${Math.round(t.lineHeight*10)}"
-             oninput="setTypo('lineHeight', parseInt(this.value,10)/10)" style="width:100%">
-
-      <div style="font-size:12px;color:var(--text2)">Міжлітерний інтервал: <b id="typoLsLabel">${t.letterSpacing}px</b></div>
-      <input type="range" min="-2" max="8" value="${t.letterSpacing}"
-             oninput="setTypo('letterSpacing', parseInt(this.value,10))" style="width:100%">
-
-      <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;margin-top:6px">
-        <input type="checkbox" ${t.uppercase ? 'checked' : ''} onchange="setTypo('uppercase', this.checked)">
-        ВЕЛИКИМИ ЛІТЕРАМИ
-      </label>
-
-      <div style="font-size:12px;color:var(--text2);margin-top:8px">Швидкість переходу: <b id="typoFadeLabel">${(t.fadeMs/1000).toFixed(2)} с</b></div>
-      <input type="range" min="150" max="1500" step="50" value="${t.fadeMs}"
-             oninput="setTypo('fadeMs', parseInt(this.value,10))" style="width:100%">
-    </div>
-
-    <div class="card">
-      <div class="card-title">🎬 Текст поверх відео</div>
-      <div class="card-sub">На строкатому відео-фоні самої тіні мало. Контур і підкладка рятують.</div>
-
-      <div style="font-size:12px;color:var(--text2);margin-top:6px">Контур літер: <b id="typoStrokeLabel">${t.strokeWidth ? t.strokeWidth + 'px' : 'вимк'}</b></div>
-      <input type="range" min="0" max="6" value="${t.strokeWidth}"
-             oninput="setTypo('strokeWidth', parseInt(this.value,10))" style="width:100%">
-      <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
-        <span style="font-size:12px;color:var(--text2)">Колір контуру</span>
-        <input type="color" value="${t.strokeColor}" oninput="setTypo('strokeColor', this.value)"
-               style="width:40px;height:24px;border:none;background:none">
-      </div>
-
-      <div style="font-size:12px;color:var(--text2);margin-top:8px">Підкладка під текстом: <b id="typoScrimLabel">${Math.round(t.scrim*100)}%</b></div>
-      <input type="range" min="0" max="90" value="${Math.round(t.scrim*100)}"
-             oninput="setTypo('scrim', parseInt(this.value,10)/100)" style="width:100%">
-      ${t.scrim > 0 ? `<label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
-        <input type="checkbox" ${t.scrimBlur ? 'checked' : ''} onchange="setTypo('scrimBlur', this.checked ? 12 : 0)">
-        Розмити фон під текстом
-      </label>` : ''}
-
-      <div style="font-size:12px;color:var(--text2);margin-top:8px">Безпечні поля (обрізка країв ТВ): <b id="typoSafeLabel">${t.safeArea}%</b></div>
-      <input type="range" min="0" max="10" value="${t.safeArea}"
-             oninput="setTypo('safeArea', parseInt(this.value,10))" style="width:100%">
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">📏 Стабільний розмір шрифту</div>
-    <div class="card-sub">
-      Авто-вміщення підбирає розмір під кожен слайд окремо — і текст «стрибає» між куплетами (58px → 42px → 58px).
-      Ця кнопка рахує розмір, що влазить у <b>найдовший</b> слайд, і тримає його на всю пісню.
-    </div>
-    <button class="btn btn-primary btn-sm btn-block" style="margin-top:6px" onclick="lockSizeForSong()">
-      📏 Зафіксувати розмір під поточну пісню
-    </button>
-    <div class="flex" style="gap:4px;margin-top:8px;align-items:center;justify-content:center">
-      <button class="btn btn-ghost btn-sm" onclick="songSizeStep(-4)">A−</button>
-      <span style="font-size:12px;font-weight:700;min-width:52px;text-align:center;color:var(--accent)">${state.songSize ? state.songSize + 'px' : 'авто'}</span>
-      <button class="btn btn-ghost btn-sm" onclick="songSizeStep(4)">A+</button>
-      <button class="btn btn-ghost btn-sm" onclick="songSizeReset()">↺ Авто</button>
-    </div>
-    <div class="card-sub" style="margin-top:4px">Заданий тут розмір НЕ зменшується на наступних куплетах і <b>переходить на наступну пісню</b> — задав один раз і забув. «↺ Авто» повертає підбір під кожну пісню.</div>
-    <button class="btn btn-ghost btn-sm btn-block" style="margin-top:4px" onclick="window.electronAPI && window.electronAPI.setFitGroup([], null); notify('Розмір знову підбирається під кожен слайд')">
-      ↺ Скинути (розмір під кожен слайд)
-    </button>
-  </div>`;
+// Оновлює підпис "58px"/"авто" в картці розміру шрифту (статична вкладка
+// «Пісні») — показує значення виходу 1 як орієнтир спільного розміру.
+// Картку не перебудовуємо повністю, лише текст числа.
+function syncSongFontSizeDisplay() {
+  var el = document.getElementById('songFontSizeLabel');
+  if (el) el.textContent = state.songSize[1] ? state.songSize[1] + 'px' : 'авто';
+}
+// Точково для ОДНОГО виходу (напр. Вихід 3 для співаків) — та сама модель
+// songSize, просто змінюємо лише один ключ, не всі 4.
+function setOutputSongSize(n, delta) {
+  if (!window.electronAPI || !window.electronAPI.setLockedSize) return;
+  var base = state.songSize[n] || 58;
+  var next = Math.max(20, Math.min(300, base + delta));
+  state.songSize[n] = next;
+  saveSongSize();
+  window.electronAPI.setLockedSize(next, OUT_KIND[n]);
+  markDirty('router');
+  notify('🔤 ' + OUT_NAME[n] + ': розмір ' + next + 'px (лише цей вихід)');
+}
+// Повертає ОДИН вихід на авто-підгін, не чіпаючи решту.
+function resetOutputSongSize(n) {
+  if (!window.electronAPI) return;
+  state.songSize[n] = null;
+  saveSongSize();
+  if (window.electronAPI.setLockedSize) window.electronAPI.setLockedSize(null, OUT_KIND[n]);
+  lockSizeForSong();   // перерахувати авто-підгін саме для цього виходу
+  markDirty('router');
+  notify('↺ ' + OUT_NAME[n] + ': повернуто до авто-підгону');
 }
 
 
@@ -1273,74 +719,16 @@ function renderTypoTab() {
 function saveService() { saveJSON(STORAGE_KEYS.live + '_service', state.service); }
 function loadService() {
   const s = loadJSON(STORAGE_KEYS.live + '_service');
-  if (s) state.service = Object.assign({ name: '', date: '', items: [], idx: -1, slideIdx: 0, saved: [] }, s);
+  if (s) state.service = Object.assign({ name: '', date: '', items: [], idx: -1, slideIdx: 0, saved: [], serviceStartedAt: null }, s);
 }
 
 // ---- Наповнення плану ----
-function svcAddSong(songId) {
-  const s = state.songs.find(x => String(x.id) === String(songId));
-  if (!s) { notify('⚠️ Пісню не знайдено'); return; }
-  state.service.items.push({ kind: 'song', id: s.id, title: s.title, note: '' });
-  saveService(); renderTabInto('service');
-  notify('➕ ' + s.title);
-}
-function svcAddBible() {
-  const ref = ($('#svcBibleRef') && $('#svcBibleRef').value.trim()) || '';
-  if (!ref) { notify('⚠️ Введи посилання, напр. Ів 3:16-18'); return; }
-  state.service.items.push({ kind: 'bible', ref: ref, title: ref, note: '' });
-  saveService(); renderTabInto('service');
-}
-function svcAddSimple(kind, title) {
-  state.service.items.push({ kind: kind, title: title, note: '' });
-  saveService(); renderTabInto('service');
-}
-function svcRemove(i) {
-  state.service.items.splice(i, 1);
-  // Видалення пункту ПЕРЕД поточним зсуває масив на 1 — покажчик має зсунутись
-  // теж, інакше він тихо "перестрибує" й показує сусідній пункт як поточний.
-  if (i < state.service.idx) state.service.idx--;
-  if (state.service.idx >= state.service.items.length) state.service.idx = state.service.items.length - 1;
-  saveService(); renderTabInto('service');
-}
-
 // Пункт плану «осиротів»: пісню видалили/перейменували в бібліотеці, і за id,
 // і за title нічого не знайшлось. Дає прив'язати пункт до іншої пісні заново,
 // не видаляючи його з плану (зберігає позицію, колір, тривалість).
-function svcRelink(i, songId) {
-  const items = state.service.items;
-  const it = items[i];
-  if (!it) return;
-  const s = state.songs.find(x => String(x.id) === String(songId));
-  if (!s) { notify('⚠️ Пісню не знайдено'); return; }
-  it.id = s.id; it.title = s.title;
-  svcInvalidate();
-  saveService(); renderTabInto('service');
-  notify('🔗 Прив\'язано: ' + s.title);
-}
-
 // Кольорові мітки пунктів плану — просто візуальне групування
 // (прославлення / проповідь / технічна пауза тощо), на показ не впливає.
 const SVC_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#a855f7', '#ec4899'];
-function svcSetColor(i, color) {
-  const items = state.service.items;
-  if (!items[i]) return;
-  items[i].color = (items[i].color === color) ? null : color; // повторний клік знімає мітку
-  saveService(); renderTabInto('service');
-}
-function svcMove(i, delta) {
-  const it = state.service.items;
-  const j = i + delta;
-  if (j < 0 || j >= it.length) return;
-  [it[i], it[j]] = [it[j], it[i]];
-  // Пункти помінялись місцями в масиві — якщо серед них був поточний
-  // (виділений) пункт, покажчик має піти за ним, інакше "поточним" тихо
-  // стає той пункт, що просто зайняв стару позицію.
-  if (state.service.idx === i) state.service.idx = j;
-  else if (state.service.idx === j) state.service.idx = i;
-  saveService(); renderTabInto('service');
-}
-
-
 // parseQuickRef у додатку розуміє лише один вірш («Ів 3:16»).
 // Для плану потрібні діапазони — «Ів 3:16-18», «Пс 23» (уся глава).
 function svcParseRange(ref) {
@@ -1402,11 +790,12 @@ function svcSlidesRaw(item) {
               state.songs.find(x => x.title === item.title);
     if (!s) return [{ text: '⚠️ Пісню «' + item.title + '» не знайдено', ref: '' }];
     // Використовуємо порядок частин і розбиття довгих куплетів
-    const slides = songSlides(s).map(sl => ({
-      text: sl.text,
-      ref: s.title + (sl.parts > 1 ? ' (' + sl.part + '/' + sl.parts + ')' : '')
-    }));
-    return slides.length ? slides : [{ text: '', ref: s.title }];
+    const slides = songSlides(s).map(sl => {
+      const baseRef = songRefForDisplay(s.title);
+      const partSuffix = sl.parts > 1 ? '(' + sl.part + '/' + sl.parts + ')' : '';
+      return { text: sl.text, ref: [baseRef, partSuffix].filter(Boolean).join(' ') };
+    });
+    return slides.length ? slides : [{ text: '', ref: songRefForDisplay(s.title) }];
   }
   if (item.kind === 'bible') {
     const r = svcParseRange(item.ref);
@@ -1435,7 +824,7 @@ function exitServicePlan() {
   try {
     if (state.service && state.service.idx >= 0) {
       state.service.idx = -1;
-      if (typeof renderTabInto === 'function') renderTabInto('service');
+      if (typeof renderTabInto === 'function') markDirty('service');
     }
   } catch (e) {}
 }
@@ -1452,21 +841,43 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-function svcGoTo(i) {
-  const items = state.service.items;
-  if (i < 0 || i >= items.length) return;
-  state.service.idx = i;
-  state.service.slideIdx = 0;
-  saveService();
-  const slides = svcSlides(items[i]);
-  if (!slides.length) {
-    renderTabInto('service');
-    notify('▶ ' + items[i].title + ' (без слайдів)');
-    return;
-  }
-  svcShowSlide(0);
+// Заплановано (сума duration по пунктах ДО поточного — тобто скільки мало
+// пройти часу до моменту, як дійшли до нього) vs реально минуло від першого
+// переходу по плану. Оновлюється тут одразу при рендері й далі тікером
+// (svcTimingTick, кожні 15с) — БЕЗ повного перемальовування вкладки.
+function svcUpdateTimingDisplay() {
+  const box = document.getElementById('svcTimingBox');
+  if (!box) return;
+  const sv = state.service;
+  if (!sv.serviceStartedAt || sv.idx < 0) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  const plannedMin = sv.items.slice(0, sv.idx).reduce((sum, it) => sum + (it.duration || 0), 0);
+  const actualMin = (Date.now() - sv.serviceStartedAt) / 60000;
+  const diff = actualMin - plannedMin;
+  const diffAbs = Math.round(Math.abs(diff));
+  const onTrack = diffAbs < 1;
+  const diffLabel = onTrack ? 'за розкладом' : (diff > 0 ? '+' + diffAbs + ' хв (відстаємо)' : '−' + diffAbs + ' хв (випереджаємо)');
+  const color = onTrack ? 'var(--text2)' : (diff > 0 ? 'var(--red)' : 'var(--green)');
+  box.style.display = 'block';
+  box.innerHTML = '<div style="font-size:12px;margin-bottom:6px;padding:6px 8px;background:var(--panel2);border-radius:5px">' +
+    '⏱ Заплановано на цей момент: <b>' + Math.round(plannedMin) + ' хв</b> · Реально минуло: <b>' + Math.round(actualMin) + ' хв</b> · ' +
+    '<b style="color:' + color + '">' + diffLabel + '</b></div>';
 }
-
+let _svcTimingTicker = null;
+function svcStartTimingTicker() {
+  if (_svcTimingTicker) return;
+  _svcTimingTicker = setInterval(svcUpdateTimingDisplay, 15000);
+}
+safeInit(svcStartTimingTicker, 'svcStartTimingTicker');
+// Скидає лише РЕАЛЬНИЙ відлік (напр. перед повторним використанням того
+// самого плану наступного тижня) — заплановані хвилини по пунктах лишаються.
+// Друк/експорт плану — окремим файлом .html, який відкривається в будь-
+// якому браузері й друкується чи зберігається як PDF стандартними засобами
+// ОС/браузера — без потреби окремо чіпати Electron-API друку.
+// Звіт ПІСЛЯ служби — на відміну від svcPrint() (план НАПЕРЕД, лише
+// заплановані хвилини), тут реальний час на кожен пункт: різниця між
+// startedAt цього пункту й startedAt наступного (для останнього — між його
+// startedAt і зараз). Ті самі дані, що вже рахує жива панель відхилення —
+// просто зведені в один звіт після завершення, а не наживо.
 function svcShowSlide(si) {
   const item = state.service.items[state.service.idx];
   if (!item) return;
@@ -1483,270 +894,41 @@ function svcShowSlide(si) {
     verseIdx: si
   });
   if (state.liveMode !== 'staged') goLive();
-  renderTabInto('service');
+  markDirty('service');
 }
 
 // Далі: наступний слайд, а в кінці елемента — автоматично наступний пункт плану
-function svcNext() {
-  const item = state.service.items[state.service.idx];
-  if (!item) { svcGoTo(0); return; }
-  const slides = svcSlides(item);
-  if (state.service.slideIdx + 1 < slides.length) {
-    svcShowSlide(state.service.slideIdx + 1);
-  } else if (state.service.idx + 1 < state.service.items.length) {
-    svcGoTo(state.service.idx + 1);
-    notify('▶ Далі: ' + state.service.items[state.service.idx].title);
-  } else {
-    notify('Кінець плану');
-  }
-}
-function svcPrev() {
-  if (state.service.slideIdx > 0) {
-    svcShowSlide(state.service.slideIdx - 1);
-  } else if (state.service.idx > 0) {
-    const pi = state.service.idx - 1;
-    state.service.idx = pi;
-    const slides = svcSlides(state.service.items[pi]);
-    if (!slides.length) {
-      // Пункт без слайдів (молитва/проповідь/пожертви) — показуємо перехід
-      // ЯВНО (як і svcGoTo при русі вперед), інакше оператор тисне ◀ і не
-      // бачить жодної реакції — здається, що кнопка «не працює».
-      state.service.slideIdx = 0;
-      saveService();
-      renderTabInto('service');
-      notify('◀ ' + state.service.items[pi].title + ' (без слайдів)');
-      return;
-    }
-    svcShowSlide(slides.length - 1);
-  }
-}
-
 // ---- Збереження планів (напр. «Неділя 20.07») ----
-function svcSaveAs() {
-  pv2Prompt('Назва плану:', state.service.name || ('Служіння ' + new Date().toLocaleDateString('uk-UA')), function(name){
-  if (!name) return;
-  state.service.name = name;
-  const copy = { name: name, date: new Date().toISOString().slice(0, 10), items: JSON.parse(JSON.stringify(state.service.items)) };
-  state.service.saved = (state.service.saved || []).filter(p => p.name !== name);
-  state.service.saved.push(copy);
-  saveService(); renderTabInto('service');
-  notify('💾 План «' + name + '» збережено');
-  });
-}
+// Шаблон — та сама структура збереження, що й звичайний план, але з міткою
+// isTemplate:true. Якщо служби повторюються щотижня зі схожою структурою
+// (той самий порядок пісень/оголошень/проповіді) — зберігаєш ОДИН РАЗ як
+// шаблон, і щотижня береш «💠 Новий план із шаблону», не будуючи з нуля.
 // Приймаємо індекс, а не назву: апостроф в українській назві («П'ятниця»)
 // розривав JS-рядок в onclick і кнопка переставала працювати.
-function svcLoad(i) {
-  const p = (state.service.saved || [])[i];
-  if (!p) return;
-  state.service.items = JSON.parse(JSON.stringify(p.items));
-  state.service.name = p.name;
-  state.service.idx = -1;
-  saveService(); renderTabInto('service');
-  notify('📂 План «' + p.name + '» завантажено');
-}
-function svcDelete(i) {
-  const p = (state.service.saved || [])[i];
-  if (!p || !confirm('Видалити план «' + p.name + '»?')) return;
-  state.service.saved.splice(i, 1);
-  saveService(); renderTabInto('service');
-}
 // Копіювати збережений план під новою назвою — щоб узяти «як минулого тижня»
-// й підправити, не чіпаючи оригінал.
-function svcDuplicate(i) {
-  const p = (state.service.saved || [])[i];
-  if (!p) return;
-  pv2Prompt('Назва копії:', 'Копія — ' + p.name, function(name) {
-    if (!name) return;
-    const copy = { name: name, date: new Date().toISOString().slice(0, 10), items: JSON.parse(JSON.stringify(p.items)) };
-    state.service.saved = (state.service.saved || []).filter(x => x.name !== name);
-    state.service.saved.push(copy);
-    saveService(); renderTabInto('service');
-    notify('📄 Копія «' + name + '» створена');
-  });
-}
-function svcClear() {
-  if (!confirm('Очистити поточний план?')) return;
-  state.service.items = [];
-  state.service.idx = -1;
-  saveService(); renderTabInto('service');
-}
-function svcExport() {
-  downloadFile(JSON.stringify({ name: state.service.name, items: state.service.items }, null, 2),
-    (state.service.name || 'план') + '.json', 'application/json');
-}
-function svcImport(input) {
-  const f = input.files[0];
-  if (!f) return;
-  const r = new FileReader();
-  r.onload = e => {
-    try {
-      const d = JSON.parse(e.target.result);
-      if (!Array.isArray(d.items)) throw new Error('Немає списку пунктів');
-      state.service.items = d.items;
-      state.service.name = d.name || '';
-      state.service.idx = -1;
-      saveService(); renderTabInto('service');
-      notify('📥 План імпортовано: ' + d.items.length + ' пунктів');
-    } catch (err) { notify('✗ ' + err.message); }
-  };
-  r.readAsText(f);
-  input.value = '';
-}
-
+// й підправити, не чіпаючи оригінал. Зберігає статус шаблону: копія шаблону —
+// теж шаблон, копія звичайного плану — теж звичайний план.
+// На відміну від svcDuplicate (клонує ЯК Є, включно зі статусом шаблону),
+// ця функція саме для щотижневого використання: бере ШАБЛОН і робить
+// НОВИЙ ЗВИЧАЙНИЙ план (isTemplate:false) з датою на СЬОГОДНІ — сам шаблон
+// лишається недоторканим у списку для наступного разу.
 const SVC_ICONS = { song: '🎵', bible: '📖', announce: '📢', prayer: '🙏', sermon: '📣', offering: '💝', timer: '⏱', media: '🎬' };
 
 // Оцінка часу на пункт — просто число хвилин, яке оператор вписує сам.
-function svcSetDuration(i, min) {
-  const items = state.service.items;
-  if (!items[i]) return;
-  const m = parseInt(min, 10);
-  items[i].duration = (isFinite(m) && m > 0) ? m : 0;
-  saveService();
-}
-
-function renderServiceTab() {
-  const sv = state.service;
-  const songOpts = state.songs.map(s => `<option value="${s.id}">${esc(s.title)}</option>`).join('');
-  const savedList = (sv.saved || []).map((p, pi) =>
-    `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;border-bottom:1px solid var(--border)">
-       <span style="flex:1;font-size:11px">${esc(p.name)} <span style="color:var(--text2)">(${p.items.length})</span></span>
-       <button class="btn btn-ghost btn-sm" onclick="svcLoad(${pi})">📂</button>
-       <button class="btn btn-ghost btn-sm" title="Копіювати під новою назвою" onclick="svcDuplicate(${pi})">📄</button>
-       <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="svcDelete(${pi})">✕</button>
-     </div>`).join('') || '<div style="font-size:11px;color:var(--text2)">Збережених планів немає</div>';
-
-  const items = sv.items.map((it, i) => {
-    const active = i === sv.idx;
-    const slides = svcSlides(it);
-    // Осиротілий пункт-пісня: id і title з бібліотеки нічого не знаходять
-    // (пісню видалили/перейменували, або дубль-чекер прибрав збіг).
-    const broken = it.kind === 'song' &&
-      !state.songs.find(x => String(x.id) === String(it.id)) &&
-      !state.songs.find(x => x.title === it.title);
-    const borderColor = broken ? 'var(--red)' : (it.color || (active ? 'var(--accent)' : 'transparent'));
-    const swatches = SVC_COLORS.map(c =>
-      `<span onclick="svcSetColor(${i},'${c}')" title="Мітка"
-             style="width:11px;height:11px;border-radius:50%;background:${c};cursor:pointer;
-                    display:inline-block;box-shadow:${it.color === c ? '0 0 0 2px var(--text)' : 'none'}"></span>`
-    ).join('');
-    const relinkBar = broken ? `<div style="display:flex;gap:4px;margin-top:4px;align-items:center">
-        <span style="font-size:11px;color:var(--red);white-space:nowrap">⚠️ пісню не знайдено —</span>
-        <select id="svcRelink${i}" style="flex:1;min-width:0;background:var(--bg);border:1px solid var(--red);border-radius:3px;padding:2px;color:var(--text);font-size:11px" onclick="event.stopPropagation()">${songOpts}</select>
-        <button class="btn btn-primary btn-sm" onclick="svcRelink(${i}, $('#svcRelink${i}').value)">🔗</button>
-      </div>` : '';
-    return `<div style="display:flex;align-items:center;gap:5px;padding:6px;border-bottom:1px solid var(--border);
-                        background:${active ? 'var(--panel2)' : 'transparent'};border-left:3px solid ${borderColor}">
-      <span style="font-size:15px">${broken ? '⚠️' : (SVC_ICONS[it.kind] || '•')}</span>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:12px;color:${broken ? 'var(--red)' : 'var(--text)'};overflow:hidden;text-overflow:ellipsis">${esc(it.title)}</div>
-        <div style="font-size:12px;color:var(--text2)">${broken ? 'пісню видалено або перейменовано в бібліотеці' : (slides.length ? slides.length + ' слайд(ів)' : 'без слайдів')}${active && !broken ? ' • зараз ' + (sv.slideIdx + 1) + '/' + slides.length : ''}</div>
-        <div style="display:flex;gap:3px;margin-top:3px">${swatches}</div>
-        ${relinkBar}
-      </div>
-      <input type="number" min="0" max="180" value="${it.duration || ''}" placeholder="хв" title="Орієнтовний час, хв"
-             style="width:38px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:2px;color:var(--text);font-size:11px;text-align:center"
-             onchange="svcSetDuration(${i}, this.value)">
-      <button class="btn btn-success btn-sm" onclick="svcGoTo(${i})" ${broken ? 'disabled title="Спершу прив\'яжи пісню"' : ''}>▶</button>
-      <button class="btn btn-ghost btn-sm" onclick="svcMove(${i},-1)">↑</button>
-      <button class="btn btn-ghost btn-sm" onclick="svcMove(${i},1)">↓</button>
-      <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="svcRemove(${i})">✕</button>
-    </div>`;
-  }).join('') || '<div style="padding:10px;font-size:11px;color:var(--text2)">План порожній — додай пісні й вірші зліва</div>';
-  // Орієнтовний загальний час служби — сума того, що оператор проставив по пунктах
-  // (пункти без вказаного часу просто не рахуються, а не змушують ставити 0 всюди).
-  const totalMin = sv.items.reduce((sum, it) => sum + (it.duration || 0), 0);
-  const totalLabel = totalMin > 0
-    ? `<div style="font-size:12px;color:var(--text2);margin-bottom:4px">⏱ Орієнтовний час служби: <b style="color:var(--text)">${Math.floor(totalMin / 60) ? Math.floor(totalMin / 60) + ' год ' : ''}${totalMin % 60} хв</b></div>`
-    : '';
-
-  return `
-  <div class="grid2">
-    <div>
-      <div class="card">
-        <div class="card-title">➕ Додати до плану</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:4px">Пісня (весь текст, з порядком частин)</div>
-        <input id="svcSongSearch" type="text" placeholder="🔍 Знайти пісню за назвою…" oninput="svcRefreshSongPick()"
-               style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none;margin-bottom:4px">
-        <select id="svcSongBookFilter" onchange="svcRefreshSongPick()"
-                style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none;margin-bottom:4px">
-          <option value="">📚 Усі збірники</option>
-        </select>
-        <div style="display:flex;gap:4px">
-          <select id="svcSongPick" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">${songOpts}</select>
-          <button class="btn btn-primary btn-sm" onclick="svcAddSong($('#svcSongPick').value)">➕</button>
-        </div>
-
-        <div style="font-size:12px;color:var(--text2);margin-top:8px">Біблія (діапазон — кожен вірш окремим слайдом)</div>
-        <div style="display:flex;gap:4px">
-          <input id="svcBibleRef" type="text" placeholder="Ів 3:16-18"
-                 style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none"
-                 onkeydown="if(event.key==='Enter')svcAddBible()">
-          <button class="btn btn-primary btn-sm" onclick="svcAddBible()">➕</button>
-        </div>
-
-        <div style="font-size:12px;color:var(--text2);margin-top:8px">Пункти без слайдів (для порядку служби)</div>
-        <div style="display:flex;gap:3px;flex-wrap:wrap">
-          <button class="preset-btn" onclick="svcAddSimple('prayer','Молитва')">🙏 Молитва</button>
-          <button class="preset-btn" onclick="svcAddSimple('sermon','Проповідь')">📣 Проповідь</button>
-          <button class="preset-btn" onclick="svcAddSimple('offering','Пожертви')">💝 Пожертви</button>
-          <button class="preset-btn" onclick="svcAddSimple('announce','Оголошення')">📢 Оголошення</button>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title">💾 Збережені плани</div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">
-          <button class="btn btn-primary btn-sm" onclick="svcSaveAs()">💾 Зберегти як…</button>
-          <button class="btn btn-ghost btn-sm" onclick="svcExport()">⬇ Експорт</button>
-          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('svcImportInput').click()">📥 Імпорт</button>
-          <input type="file" id="svcImportInput" accept=".json" style="display:none" onchange="svcImport(this)">
-          <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="svcClear()">🗑 Очистити</button>
-        </div>
-        ${savedList}
-      </div>
-    </div>
-
-    <div>
-      <div class="card" style="border-color:var(--accent)">
-        <div class="card-title">📅 План${sv.name ? ' — ' + esc(sv.name) : ''} (${sv.items.length})</div>
-        <div class="card-sub">Тисни ▶ на пункті — і далі просто «Наступний». Після останнього слайда пісні план сам переходить до наступного пункту.</div>
-        <div style="display:flex;gap:6px;margin:10px 0;align-items:stretch">
-          <button class="btn btn-ghost" style="font-size:15px;padding:14px 16px" onclick="svcPrev()">◀</button>
-          <button class="btn btn-primary" style="flex:1;font-size:17px;font-weight:700;padding:14px" onclick="svcNext()">Наступний пункт ▶</button>
-        </div>
-        <div style="text-align:center;font-size:12px;color:var(--text2);margin:-4px 0 8px">${sv.idx >= 0 && sv.items[sv.idx] ? ('Зараз: <b style=\"color:var(--accent)\">' + esc(sv.items[sv.idx].title || '') + '</b> · пункт ' + (sv.idx + 1) + '/' + sv.items.length) : 'Обери пункт, щоб почати'}</div>
-        ${totalLabel}
-        <div style="max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:5px">${items}</div>
-      </div>
-    </div>
-  </div>`;
-}
-
 // Заповнює вбудовану копію плану служби у вкладці «Пісні» (id="servicePlanEmbed")
 // — тим самим renderServiceTab(), щоб не дублювати логіку й не розходитись
-// зі старою поведінкою. Викликається центрально з renderTabInto('service'),
+// зі старою поведінкою. Викликається центрально з markDirty('service'),
 // тож усі десятки svc*-функцій, що вже й так оновлюють план, автоматично
 // оновлюють і цю копію теж, без правок у кожній із них окремо.
 function renderServicePlanEmbed() {
   var host = document.getElementById('servicePlanEmbed');
   if (!host) return;
   try { host.innerHTML = renderServiceTab(); } catch (e) { console.error('renderServicePlanEmbed', e); }
+  if (typeof svcUpdateTimingDisplay === 'function') svcUpdateTimingDisplay();
 }
 
-function svcRefreshSongPick() {
-  var sel = document.getElementById('svcSongPick');
-  if (!sel) return;
-  var qEl = document.getElementById('svcSongSearch');
-  var q = qEl ? qEl.value.toLowerCase().trim() : '';
-  var bookEl = document.getElementById('svcSongBookFilter');
-  var book = bookEl ? bookEl.value : '';
-  var list = state.songs.slice().sort(function(a, b) { return (a.title || '').localeCompare(b.title || '', 'uk'); });
-  if (book) list = list.filter(function(s) { return (s.songbook || '').trim() === book; });
-  if (q) list = list.filter(function(s) { return (s.title || '').toLowerCase().indexOf(q) !== -1; });
-  sel.innerHTML = list.length
-    ? list.map(function(s) { return '<option value="' + s.id + '">' + esc(s.title + (s.songbook ? '  —  📚 ' + s.songbook : '')) + '</option>'; }).join('')
-    : '<option value="">— нічого не знайдено —</option>';
-}
+// Живий пошук/фільтр для селектора «➕ Додати до плану»: набираєш назву або
+// обираєш збірник — список одразу звужується, без перезбирання всієї вкладки.
 // Заповнює фільтр збірників для селектора плану служіння — той самий
 // перелік, що й в інших місцях пошуку пісень.
 function svcRenderSongBookFilter() {
@@ -1759,51 +941,14 @@ function svcRenderSongBookFilter() {
   if (books.indexOf(prev) !== -1) sel.value = prev;
 }
 
+
 // ============================================================
 // МОНІТОРИ (вдосконалено)
 // ============================================================
-function identifyDisplays() {
-  if (window.electronAPI && window.electronAPI.identifyDisplays) {
-    window.electronAPI.identifyDisplays(4);
-    notify('🔢 Номери показані на всіх екранах (4 с)');
-  }
-}
-function toggleTestPattern(n) {
-  state.testPattern = state.testPattern || {};
-  const kind = n ? OUT_KIND[n] : null;
-  const key = n || 'all';
-  state.testPattern[key] = !state.testPattern[key];
-  if (window.electronAPI && window.electronAPI.testPattern) {
-    window.electronAPI.testPattern(kind, state.testPattern[key]);
-  }
-  renderTabInto('monitors');
-  notify(state.testPattern[key] ? '🎯 Тестова сітка увімкнена' : 'Сітку прибрано');
-}
-
 // Прив'язка виходу до монітора за «відбитком» — переживає перезавантаження
-function bindOutputToDisplay(n, fingerprint) {
-  if (!window.electronAPI || !window.electronAPI.bindOutputFingerprint) return;
-  state.outputBind = state.outputBind || {};
-  state.outputBind[OUT_KIND[n]] = fingerprint || null;
-  saveJSON(STORAGE_KEYS.live + '_bind', state.outputBind);
-  if (typeof logChange === 'function') {
-    logChange('Прив\'язка ' + (OUT_NAME[n] || n), fingerprint ? 'закріплено за монітором' : 'прив\'язку знято');
-  }
-  window.electronAPI.bindOutputFingerprint(OUT_KIND[n], fingerprint).then(() => {
-    refreshMonitors();
-    notify(fingerprint ? '🔗 ' + OUT_NAME[n] + ' закріплено за монітором' : 'Прив\'язку знято');
-  });
-}
 // Резервне дублювання: якщо закріплений за виходом монітор зникає посеред
 // служби, автоматично перекинути вміст на інший, живий вихід — щоб зал не
 // лишався без картинки, поки хтось не помітить і не виправить вручну.
-function setOutputFailover(n, backupN) {
-  state.outputFailover = state.outputFailover || {};
-  state.outputFailover[n] = backupN ? parseInt(backupN, 10) : null;
-  saveJSON(STORAGE_KEYS.live + '_failover', state.outputFailover);
-  renderTabInto('monitors2');
-  notify(backupN ? '🛟 ' + OUT_NAME[n] + ' → резерв: ' + OUT_NAME[backupN] : 'Резерв знято для ' + OUT_NAME[n]);
-}
 function loadOutputFailover() {
   const f = loadJSON(STORAGE_KEYS.live + '_failover');
   if (f) state.outputFailover = f;
@@ -1823,97 +968,6 @@ function loadOutputBindings() {
   }
 }
 
-function refreshMonitors() {
-  if (!window.electronAPI || !window.electronAPI.getDisplays) return;
-  window.electronAPI.getDisplays().then(list => {
-    state.displays = list || [];
-    // Вкладка зареєстрована під id 'monitors2' (пункт меню «Прив'язка екранів»).
-    // 'monitors' — стара назва, яку renderTabInto ще розуміє, але isActive('monitors')
-    // ніколи не був істинним після перейменування — оновлені дані мовчки НЕ
-    // перемальовувались, поки не вийти з вкладки й не зайти знову.
-    if (isActive('monitors2')) renderTabInto('monitors2');
-    if (typeof syncMonitorMissingBanner === 'function') syncMonitorMissingBanner();
-  }).catch(() => {});
-}
-
-function renderMonitorsTab() {
-  const ds = state.displays || [];
-  const bind = state.outputBind || {};
-
-  const cards = ds.map(d => {
-    const boundTo = [1,2,3,4].filter(n => bind[OUT_KIND[n]] === d.fingerprint);
-    const openHere = (d.open || []).map(k => Object.keys(OUT_KIND).find(n => OUT_KIND[n] === k));
-    const badge = d.isOperator
-      ? '<span style="background:var(--red);color:#fff;font-size:12px;padding:2px 6px;border-radius:4px">ЕКРАН ОПЕРАТОРА</span>'
-      : (d.isPrimary ? '<span style="background:var(--panel2);color:var(--text2);font-size:12px;padding:2px 6px;border-radius:4px">головний</span>' : '');
-
-    const bindBtns = d.isOperator ? '<span style="font-size:12px;color:var(--text2)">Вивід на цей екран заблоковано</span>'
-      : [1,2,3,4].map(n =>
-        `<button class="btn ${boundTo.includes(n) ? 'btn-primary' : 'btn-ghost'} btn-sm"
-                 onclick="bindOutputToDisplay(${n}, ${boundTo.includes(n) ? 'null' : `'${d.fingerprint}'`})">${OUT_NAME[n]}</button>`).join(' ');
-
-    // Тестова сітка саме на ЦЬОМУ моніторі — раніше можна було перевірити лише
-    // всі виходи одразу; тепер окремо для кожного закріпленого сюди виходу.
-    const testBtns = !d.isOperator && boundTo.length
-      ? '<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;align-items:center">' +
-        '<span style="font-size:12px;color:var(--text2);min-width:70px">Сітка тут:</span>' +
-        boundTo.map(n => `<button class="btn ${(state.testPattern && state.testPattern[n]) ? 'btn-primary' : 'btn-ghost'} btn-sm"
-                   onclick="toggleTestPattern(${n})">🎯 ${OUT_NAME[n]}</button>`).join(' ') +
-        '</div>'
-      : '';
-
-    // Резервне дублювання: якщо саме цей монітор зникне, куди перекинути вміст.
-    const failoverBtns = !d.isOperator && boundTo.length
-      ? '<div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">' +
-        boundTo.map(n => {
-          const cur = (state.outputFailover && state.outputFailover[n]) || '';
-          const opts = [1,2,3,4].filter(k => k !== n).map(k =>
-            `<option value="${k}" ${cur == k ? 'selected' : ''}>${OUT_NAME[k]}</option>`).join('');
-          return `<span style="font-size:12px;color:var(--text2)">🛟 Резерв для ${OUT_NAME[n]}:</span>
-                  <select onchange="setOutputFailover(${n}, this.value)" style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px;color:var(--text);font-size:11px">
-                    <option value="">Немає</option>${opts}
-                  </select>`;
-        }).join(' ') +
-        '</div>'
-      : '';
-
-    return `<div class="card" style="margin-bottom:8px;border-color:${d.isOperator ? 'var(--red)' : (boundTo.length ? 'var(--accent)' : 'var(--border)')}">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <span style="font-size:22px;font-weight:800;color:var(--accent)">${d.num}</span>
-        <div style="flex:1;min-width:120px">
-          <div style="font-size:12px;color:var(--text)">${d.width} × ${d.height}${d.scaleFactor !== 1 ? ' <span style="color:var(--gold)">(масштаб ' + Math.round(d.scaleFactor*100) + '%, реально ' + d.realWidth + '×' + d.realHeight + ')</span>' : ''}</div>
-          <div style="font-size:12px;color:var(--text2)">позиція ${d.x},${d.y}${d.rotation ? ' • поворот ' + d.rotation + '°' : ''}${openHere.length ? ' • <span style="color:var(--green)">вікно виводу тут</span>' : ''}</div>
-        </div>
-        ${badge}
-      </div>
-      <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;align-items:center">
-        <span style="font-size:12px;color:var(--text2);min-width:70px">Закріпити:</span>
-        ${bindBtns}
-      </div>
-      ${testBtns}
-      ${failoverBtns}
-    </div>`;
-  }).join('') || '<div class="card"><div class="card-sub">Монітори не знайдені — натисни «Оновити».</div></div>';
-
-  const tp = state.testPattern || {};
-  return `
-  <div class="card">
-    <div class="card-title">🖥 Монітори (${ds.length})</div>
-    <div class="card-sub">Закріплення тримається за «відбитком» монітора, а не за його ID — тож переживає перезавантаження Windows, де ID змінюються.</div>
-    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">
-      <button class="btn btn-primary btn-sm" onclick="identifyDisplays()">🔢 Показати номери на екранах</button>
-      <button class="btn ${tp.all ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="toggleTestPattern(null)">🎯 Тестова сітка</button>
-      <button class="btn btn-ghost btn-sm" onclick="refreshMonitors()">↻ Оновити</button>
-    </div>
-    <div class="card-sub" style="margin-top:6px">
-      Сітка показує <b style="color:#f0c040">жовту рамку</b> — край екрана (якщо її не видно, проектор зрізає краї)
-      і <b style="color:#3ecf8e">зелений пунктир</b> — безпечну зону для тексту.
-    </div>
-  </div>
-  ${cards}`;
-}
-
-
 // ============================================================
 // КЕРУВАННЯ ТИТРОМ ДЛЯ ТРАНСЛЯЦІЇ
 // ============================================================
@@ -1924,130 +978,8 @@ function loadLower() {
   const c = loadJSON(STORAGE_KEYS.live + '_lower');
   if (c) Object.assign(state.lower, c, { visible: false });
 }
-function setLower(key, val) {
-  state.lower[key] = val;
-  saveLower();
-  renderTabInto('stream');
-  if (state.lower.visible) lowerShow();   // якщо титр в ефірі — оновлюємо наживо
-}
-
 // Показати титр із поточним віршем/куплетом
-function lowerShow() {
-  const n = state.lower.target || 2;
-  const c = pv2GraphicsContent();
-  if (!c.text) { notify('⚠️ Спершу надішли вірш або куплет'); return; }
-
-  const prevLayout = state.graphicsSettings.layout;
-  state.graphicsSettings.layout = 'lower';           // тимчасово — щоб не чіпати налаштування залу
-  const html = getGraphicsHTML(c.text, c.ref);
-  state.graphicsSettings.layout = prevLayout;
-
-  if (isClientStation()) { stationSend('send-html', { html: html, label: 'Титр' }); }
-  else sendHTMLToOutputN(n, html, null);
-
-  state.lower.visible = true;
-  renderTabInto('stream');
-  notify('🎬 Титр в ефірі → ' + OUT_NAME[n]);
-
-  clearTimeout(_lowerHideTimer);
-  if (state.lower.autoHide > 0) {
-    _lowerHideTimer = setTimeout(() => lowerHide(), state.lower.autoHide * 1000);
-  }
-}
-
-function lowerHide() {
-  clearTimeout(_lowerHideTimer);
-  const n = state.lower.target || 2;
-  if (isClientStation()) stationSend('clear', {});
-  else pv2ClearOutput(n);
-  state.lower.visible = false;
-  renderTabInto('stream');
-  notify('Титр прибрано');
-}
 function lowerToggle() { state.lower.visible ? lowerHide() : lowerShow(); }
-
-function renderStreamTab() {
-  const L = state.lower;
-  const styles = Object.keys(LOWER_STYLES).map(k => {
-    const st = LOWER_STYLES[k];
-    const on = L.style === k;
-    return `<button class="btn ${on ? 'btn-primary' : 'btn-ghost'} btn-sm"
-              onclick="setLower('style','${k}')"
-              style="display:flex;align-items:center;gap:5px">
-              <span style="width:10px;height:10px;border-radius:2px;background:${st.accent};display:inline-block"></span>
-              ${st.name}</button>`;
-  }).join(' ');
-
-  const posBtn = (p, l) => `<button class="btn ${L.position === p ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setLower('position','${p}')">${l}</button>`;
-  const animBtn = (a, l) => `<button class="btn ${L.animation === a ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setLower('animation','${a}')">${l}</button>`;
-  const outBtn = n => `<button class="btn ${L.target === n ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setLower('target',${n})">${OUT_NAME[n]}</button>`;
-  const c = pv2GraphicsContent();
-
-  return `
-  <div class="card" style="border-color:${L.visible ? 'var(--red)' : 'var(--accent)'}">
-    <div class="card-title">${L.visible ? '<span style="color:var(--red)">● В ЕФІРІ</span>' : '○ Титр прихований'}</div>
-    <div class="card-sub">Зараз у титрі: <b>${c.ref ? esc(c.ref) : '—'}</b> ${c.text ? '— ' + esc(String(c.text).replace(/<[^>]+>/g,' ').slice(0, 60)) + '…' : '(нічого не надіслано)'}</div>
-    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">
-      <button class="btn btn-success" style="flex:1;font-weight:700" onclick="lowerShow()">🎬 ПОКАЗАТИ ТИТР</button>
-      <button class="btn btn-ghost" style="flex:1" onclick="lowerHide()">✕ Прибрати</button>
-    </div>
-    <div class="card-sub" style="margin-top:4px">Гаряча клавіша: признач «Титр» у вкладці «Клавіші», щоб показувати одним натисканням.</div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🎨 Стиль титру</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap">${styles}</div>
-
-      <div style="font-size:12px;color:var(--text2);margin-top:10px">Розташування</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap">
-        ${posBtn('bottom','Внизу')} ${posBtn('top','Вгорі')} ${posBtn('left','Зліва')} ${posBtn('right','Справа')} ${posBtn('center','По центру')}
-      </div>
-
-      <div style="font-size:12px;color:var(--text2);margin-top:10px">Поява</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap">
-        ${animBtn('slideUp','Знизу вгору')} ${animBtn('slideLeft','Збоку')} ${animBtn('fade','Проявлення')} ${animBtn('zoom','Наближення')} ${animBtn('none','Без анімації')}
-      </div>
-
-      <div style="font-size:12px;color:var(--text2);margin-top:10px">Колір акценту</div>
-      <input type="color" value="${L.accent || LOWER_STYLES[L.style].accent}" oninput="setLower('accent', this.value)"
-             style="width:50px;height:26px;border:none;background:none">
-      <button class="btn btn-ghost btn-sm" onclick="setLower('accent', null)">Стандартний</button>
-    </div>
-
-    <div class="card">
-      <div class="card-title">⚙️ Керування</div>
-
-      <div style="font-size:12px;color:var(--text2)">На який вихід</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap">${outBtn(1)} ${outBtn(2)} ${outBtn(3)} ${outBtn(4)}</div>
-
-      <div style="font-size:12px;color:var(--text2);margin-top:10px">Розмір тексту: <b>${Math.round((L.scale || 0.62) * 100)}%</b></div>
-      <input type="range" min="35" max="110" value="${Math.round((L.scale || 0.62) * 100)}"
-             oninput="setLower('scale', parseInt(this.value,10)/100)" style="width:100%">
-
-      <div style="font-size:12px;color:var(--text2)">Прибирати автоматично: <b>${L.autoHide ? L.autoHide + ' с' : 'ні (тримати)'}</b></div>
-      <input type="range" min="0" max="60" step="5" value="${L.autoHide}"
-             oninput="setLower('autoHide', parseInt(this.value,10))" style="width:100%">
-
-      <div style="font-size:12px;color:var(--text2);margin-top:8px">Фон сцени (що вирізає OBS)</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap">
-        <button class="btn ${(state.graphicsSettings.lowerChroma||'transparent')==='transparent'?'btn-primary':'btn-ghost'} btn-sm" onclick="setLowerChroma('transparent')">Прозорий</button>
-        <button class="btn ${state.graphicsSettings.lowerChroma==='#00ff00'?'btn-primary':'btn-ghost'} btn-sm" onclick="setLowerChroma('#00ff00')">🟩 Зелений</button>
-        <button class="btn ${state.graphicsSettings.lowerChroma==='#ff00ff'?'btn-primary':'btn-ghost'} btn-sm" onclick="setLowerChroma('#ff00ff')">🟪 Маджента</button>
-      </div>
-      <div class="card-sub" style="margin-top:4px">Прозорий — якщо OBS бачить альфа-канал. Ні — став зелений і додай фільтр «Chroma Key».</div>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">👁 Як це виглядатиме поверх камери</div>
-    <div style="position:relative;width:100%;aspect-ratio:16/9;border:1px solid var(--border);border-radius:6px;overflow:hidden;
-                background:linear-gradient(135deg,#2a1f14,#0d1b2e 60%,#1a1a2e)">
-      <iframe id="lowerPreviewFrame" style="position:absolute;top:0;left:0;width:1920px;height:1080px;border:0;
-              transform:scale(0.28);transform-origin:top left;pointer-events:none;background:transparent"></iframe>
-    </div>
-  </div>`;
-}
 
 // Прев'ю титру
 function updateLowerPreview() {
@@ -2064,377 +996,25 @@ function updateLowerPreview() {
 }
 
 // ---- Вкладка «Шари» ----
-function renderLayersTab() {
-  const a = state.alertCfg;
-  const posBtn = (p, l) => `<button class="btn ${a.position === p ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setAlertCfg('position','${p}')">${l}</button>`;
-  return `
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🎬 Відео-фон під текстом</div>
-      <div class="card-sub">Зациклене відео (хвилі, світло) — текст пісні лягає поверх. Звук завжди вимкнено.</div>
-      <input type="file" accept="video/*,.mp4,.webm,.mov,.mkv,.avi,.wmv,.flv,.m4v,.mpg,.mpeg,.3gp,.ts,.mts,.m2ts,.m2v,.vob,.divx,.asf,.mxf,.ogv" onchange="loadBgVideo(this)" style="font-size:11px;width:100%;margin-top:6px">
-      ${state.bgVideo ? `<div style="font-size:11px;color:var(--green);margin-top:4px">▶ ${esc(state.bgVideo.name)}</div>
-        <button class="btn btn-ghost btn-sm btn-block" style="margin-top:4px;color:var(--red)" onclick="clearBgVideo()">✕ Прибрати відео-фон</button>` : ''}
-
-      <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px">
-        <div style="font-size:12px;color:var(--text2)">🔁 Черга з авто-ротацією (кілька роликів по черзі)</div>
-        <input type="file" accept="video/*,.mp4,.webm,.mov" multiple onchange="loadBgQueue(this)" style="font-size:11px;width:100%;margin-top:4px">
-        ${(state.bgQueue || []).map((q, i) => `
-          <div style="display:flex;align-items:center;gap:4px;padding:2px 0;font-size:11px;color:${i === (state.bgQueueIdx||0) && state.bgQueueRunning ? 'var(--green)' : 'var(--text2)'}">
-            <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${i === (state.bgQueueIdx||0) && state.bgQueueRunning ? '▶ ' : ''}${esc(q.name)}</span>
-            <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="removeBgQueueItem(${i})">✕</button>
-          </div>`).join('')}
-        <div style="display:flex;align-items:center;gap:6px;margin-top:6px">
-          <span style="font-size:11px;color:var(--text2)">Інтервал:</span>
-          <input type="number" min="5" max="600" value="${state.bgQueueInterval || 30}" onchange="setBgQueueInterval(this.value)"
-                 style="width:50px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:2px;color:var(--text);font-size:11px;text-align:center">
-          <span style="font-size:11px;color:var(--text2)">с</span>
-        </div>
-        <div style="display:flex;gap:4px;margin-top:6px">
-          <button class="btn ${state.bgQueueRunning ? 'btn-ghost' : 'btn-primary'} btn-sm" style="flex:1" onclick="bgQueueStart()">▶ Пуск ротації</button>
-          <button class="btn btn-ghost btn-sm" style="flex:1" onclick="bgQueueStop()">⏹ Стоп</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">🖼 Логотип і заморозка</div>
-      <input type="file" accept="image/*,.heic,.heif,.tif,.tiff,.avif,.jp2,.tga,.pcx" onchange="loadLogo(this)" style="font-size:11px;width:100%">
-      <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">
-        <button class="btn ${state.logoOn ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="showLogo(${state.logoOn ? 'false' : 'true'})">🖼 ${state.logoOn ? 'Прибрати логотип' : 'Показати логотип'}</button>
-        <button class="btn ${state.frozen ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="toggleFreeze()">❄️ ${state.frozen ? 'Розморозити' : 'Заморозити кадр'}</button>
-      </div>
-      <div class="card-sub" style="margin-top:4px">Логотип — замість чорноти на паузі. Заморозка — застигла картинка, поки готуєш наступне.</div>
-    </div>
-  </div>
-
-  <div class="card" style="border-color:var(--accent)">
-    <div class="card-title">🏷 Постійний водяний знак</div>
-    <div class="card-sub">На відміну від логотипа — НЕ ховається, коли показуєш пісню/вірш/оголошення. Лишається на екрані завжди, поки не вимкнеш. ОКРЕМИЙ для кожного виходу — можна мати різний текст чи взагалі вимкнути лише на одному.</div>
-    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">
-      ${[1, 2, 3, 4].map(n => `<button class="btn ${state._watermarkEditN === n ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="selectWatermarkOutput(${n})">
-        ${state.watermark[n].on ? '🔴 ' : ''}${esc(OUT_NAME[n])}
-      </button>`).join('')}
-    </div>
-    ${(function() {
-      const n = state._watermarkEditN || 1;
-      const wm = state.watermark[n];
-      return `
-    <input id="watermarkText" type="text" placeholder="Наприклад: 2017 СЛАВЯНСЬКА ЦЕРКОВЬ ТРОЇЦІ" value="${esc(wm.text || '')}"
-           oninput="setWatermark(${n}, 'text', this.value)"
-           style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:7px;color:var(--text);font-size:12px;outline:none;margin-top:10px">
-    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">
-      <button class="btn ${wm.position==='top-left'?'btn-primary':'btn-ghost'} btn-sm" onclick="setWatermarkPosition(${n}, 'top-left')">Зверху-зліва</button>
-      <button class="btn ${wm.position==='top-right'?'btn-primary':'btn-ghost'} btn-sm" onclick="setWatermarkPosition(${n}, 'top-right')">Зверху-справа</button>
-      <button class="btn ${wm.position==='bottom-left'?'btn-primary':'btn-ghost'} btn-sm" onclick="setWatermarkPosition(${n}, 'bottom-left')">Знизу-зліва</button>
-      <button class="btn ${wm.position==='bottom-right'?'btn-primary':'btn-ghost'} btn-sm" onclick="setWatermarkPosition(${n}, 'bottom-right')">Знизу-справа</button>
-    </div>
-    <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
-      <div style="flex:1">
-        <div style="font-size:11px;color:var(--text2)">Розмір: <b id="watermarkSizeLbl">${wm.size || 16}</b>px</div>
-        <input type="range" min="10" max="48" value="${wm.size || 16}" oninput="document.getElementById('watermarkSizeLbl').textContent=this.value; setWatermark(${n}, 'size', parseInt(this.value,10))" style="width:100%">
-      </div>
-      <input type="color" value="${wm.color || '#ffffff'}" oninput="setWatermark(${n}, 'color', this.value)" style="width:36px;height:26px;border:none;background:none;cursor:pointer">
-    </div>
-    <button class="btn ${wm.on ? 'btn-primary' : 'btn-success'} btn-block" style="margin-top:8px" onclick="toggleWatermark(${n}, ${wm.on ? 'false' : 'true'})">
-      🏷 ${esc(OUT_NAME[n])}: ${wm.on ? 'Вимкнути водяний знак' : 'Увімкнути водяний знак'}
-    </button>`;
-    })()}
-  </div>
-
-  <div class="card" style="border-color:var(--gold)">
-    <div class="card-title">📢 Оголошення ПОВЕРХ слайда</div>
-    <div class="card-sub">Пісня триває — повідомлення виїжджає знизу. Напр.: «Мама Софійки, підійдіть до дитячої кімнати».</div>
-    <input id="alertText" type="text" placeholder="Текст оголошення" value="${esc(a.text || '')}"
-           style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:7px;color:var(--text);font-size:12px;outline:none;margin-top:6px">
-    <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap;align-items:center">
-      ${posBtn('bottom','Знизу')} ${posBtn('top','Зверху')}
-      <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;margin-left:6px">
-        <input type="checkbox" ${a.ticker ? 'checked' : ''} onchange="setAlertCfg('ticker', this.checked)"> Біжучий рядок
-      </label>
-    </div>
-    <div style="font-size:12px;color:var(--text2);margin-top:6px">Розмір: <b id="alertSizeLabel">${a.size}px</b></div>
-    <input type="range" min="20" max="70" value="${a.size}" oninput="setAlertCfg('size', parseInt(this.value,10))" style="width:100%">
-    <div style="font-size:12px;color:var(--text2)">Показувати: <b id="alertSecLabel">${a.seconds ? a.seconds + ' с' : 'поки не прибрати'}</b></div>
-    <input type="range" min="0" max="60" value="${a.seconds}" oninput="setAlertCfg('seconds', parseInt(this.value,10))" style="width:100%">
-    <div style="display:flex;gap:4px;margin-top:6px">
-      <button class="btn btn-primary btn-sm" onclick="sendAlert()">📢 Показати поверх</button>
-      <button class="btn btn-ghost btn-sm" onclick="hideAlert()">Прибрати</button>
-    </div>
-  </div>
-
-  ${renderPropsCard()}
-  ${renderMsgTemplatesCard()}
-
-  <div class="card">
-    <div class="card-title">🎵 Фонова музика</div>
-    <div class="card-sub">Плавний вхід (2 с) і затухання (2,5 с) — перед служінням, під час пожертв.</div>
-    <input type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg" onchange="loadBgAudio(this)" style="font-size:11px;width:100%;margin-top:6px">
-    ${state.bgAudio.name ? `<div style="font-size:11px;color:var(--text2);margin-top:4px">${esc(state.bgAudio.name)}</div>` : ''}
-    <div style="display:flex;gap:4px;margin-top:6px">
-      <button class="btn btn-success btn-sm" onclick="playBgAudio()">▶ Пуск (плавно)</button>
-      <button class="btn btn-ghost btn-sm" onclick="stopBgAudio()">⏹ Стоп (затухання)</button>
-    </div>
-    <div style="font-size:12px;color:var(--text2);margin-top:6px">Гучність: <b id="bgVolLabel">${Math.round(state.bgAudio.volume*100)}%</b></div>
-    <input type="range" min="0" max="100" value="${Math.round(state.bgAudio.volume*100)}" oninput="setBgVolume(parseInt(this.value,10))" style="width:100%">
-  </div>
-
-  ${renderSoundBinCard()}
-
-  <div class="card" style="border-color:var(--blue)">
-    <div class="card-title">🎤 Живі субтитри (Web Speech API)</div>
-    <div class="card-sub">Розпізнавання мови з мікрофона комп'ютера → субтитри в реальному часі у вибраному виході.</div>
-    <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
-      Статус: ${state.captions.listening ? '<span style="color:var(--green)">🎤 Слухаємо</span>' : 'готово'}
-    </div>
-    <div style="display:flex;gap:4px;margin-bottom:6px">
-      <button class="btn ${state.captions.enabled ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="startCaptions()">▶ Пуск</button>
-      <button class="btn btn-ghost btn-sm" onclick="stopCaptions()">⏹ Стоп</button>
-      <button class="btn btn-ghost btn-sm" onclick="clearCaptions()">✕ Очистити текст</button>
-    </div>
-    <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Мова:</div>
-    <select onchange="setCaptionLang(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;margin-bottom:6px;outline:none">
-      <option value="uk-UA">🇺🇦 Українська</option>
-      <option value="ru-RU">🇷🇺 Російська</option>
-      <option value="en-US">🇬🇧 Англійська</option>
-    </select>
-    <div style="font-size:11px;color:var(--text2);margin-bottom:4px">Показувати в виході:</div>
-    <div style="display:flex;gap:4px">
-      <button class="btn ${state.captions.targetOutput === 1 ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setCaptionOutput(1)">1</button>
-      <button class="btn ${state.captions.targetOutput === 2 ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setCaptionOutput(2)">2</button>
-      <button class="btn ${state.captions.targetOutput === 3 ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setCaptionOutput(3)">3</button>
-      <button class="btn ${state.captions.targetOutput === 4 ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setCaptionOutput(4)">4</button>
-    </div>
-    ${state.captions.text || state.captions.interim ? `
-      <div style="margin-top:8px;padding:8px;background:var(--panel2);border-radius:4px;border-left:3px solid var(--blue)">
-        <div style="font-size:11px;color:var(--text)">${esc(state.captions.text)}<span style="color:var(--text2);font-style:italic">${state.captions.interim ? ' ' + esc(state.captions.interim) : ''}</span></div>
-      </div>
-    ` : ''}
-  </div>`;
-}
-
-
+// ============================================================
+// СУБТИТРИ + АВТОПРОПОЗИЦІЯ ВІРША (окрема вкладка, раніше — картка у
+// «Шари»). Живі субтитри (Web Speech API), автопропозиція вірша під час
+// проповіді (локальний fuzzy-пошук) та індикатор рівня звуку з пульта —
+// усе, що стосується мовлення в реальному часі, зібрано в одному місці.
+// ============================================================
 // ============================================================
 // ЕКРАН З QR + ФОТО (4 режими)
 //  logo   — QR із логотипом церкви в центрі
 //  banner — фото/банер на весь екран, QR у кутку
 //  simple — просто QR із підписом
 //  multi  — кілька QR поряд (пожертви + сайт + Instagram)
-// Використовує наявний buildQRCanvas() з index.html.
+// Використовує наявний buildQRCanvas() з qr.js.
 // ============================================================
-function qrState() {
-  if (!state.qrScreen) {
-    const defaults = {
-      mode: 'logo',
-      photo: null,            // готове фото QR (показуємо як є, без генерації)
-      photoFit: 'contain',    // contain = увесь QR видно | cover = на весь екран
-      photoScale: 100,        // % розміру фото в режимі "contain" — керування розміром картинки
-      title: 'Підтримати служіння',
-      subtitle: 'Скануй камерою телефона',
-      titleSize: 72,          // px — розмір заголовка окремо від тексту нижче
-      subtitleSize: 32,       // px — розмір підпису
-      titleColor: '#ffffff',
-      subtitleColor: '#c8a84b',
-      single: { text: '', label: 'Пожертви' },
-      banner: null,                 // dataURL фото
-      bannerCorner: 'br',           // кут QR: br/bl/tr/tl
-      items: [                      // для multi
-        { text: '', label: 'Пожертви' },
-        { text: '', label: 'Наш сайт' },
-        { text: '', label: 'Instagram' }
-      ],
-      target: 1
-    };
-    // Мердж (не заміна) — щоб у вже збережених станів (без нових полів
-    // titleSize/subtitleSize/photoScale) ці поля отримали значення за
-    // замовчуванням, а не лишились undefined.
-    const saved = loadJSON(STORAGE_KEYS.live + '_qrscreen');
-    state.qrScreen = saved ? Object.assign({}, defaults, saved) : defaults;
-  }
-  return state.qrScreen;
-}
-function saveQrScreen() { saveJSON(STORAGE_KEYS.live + '_qrscreen', state.qrScreen); }
-function setQr(key, val) {
-  const q = qrState();
-  q[key] = val;
-  saveQrScreen();
-  renderTabInto('qrscreen');
-  updateQrPreview();
-}
 // Легша версія для повзунків розміру: НЕ перебудовує всю панель (renderTabInto)
 // на кожен рух повзунка — інакше DOM-елемент повзунка знищувався б і
 // перестворювався прямо під час перетягування, ламаючи взаємодію мишею.
 // Оновлює лише прев'ю й підпис числа поруч із повзунком.
-function setQrSize(key, val, labelId) {
-  const q = qrState();
-  q[key] = val;
-  saveQrScreen();
-  updateQrPreview();
-  const lbl = document.getElementById(labelId);
-  if (lbl) lbl.textContent = val;
-}
-function setQrItem(i, key, val) {
-  const q = qrState();
-  q.items[i][key] = val;
-  saveQrScreen();
-  updateQrPreview();
-}
-function loadQrPhoto(input) {
-  const f = input.files[0];
-  if (!f) return;
-  if (f.size > 3 * 1024 * 1024) { notify('⚠️ Фото завелике — до 3 МБ'); input.value=''; return; }
-  const r = new FileReader();
-  r.onload = e => { qrState().photo = e.target.result; saveQrScreen(); renderTabInto('qrscreen'); updateQrPreview(); notify('📷 Фото QR завантажено'); };
-  r.readAsDataURL(f);
-  input.value = '';
-}
-
-function loadQrBanner(input) {
-  const f = input.files[0];
-  if (!f) return;
-  if (f.size > 3 * 1024 * 1024) { notify('⚠️ Фото завелике — до 3 МБ'); input.value=''; return; }
-  const r = new FileReader();
-  r.onload = e => { qrState().banner = e.target.result; saveQrScreen(); renderTabInto('qrscreen'); updateQrPreview(); notify('🖼 Фото додано'); };
-  r.readAsDataURL(f);
-  input.value = '';
-}
-
 // Головне: збираємо весь екран (1920x1080) на одному canvas
-function composeQrScreen(cb) {
-  const q = qrState();
-  if (q.mode !== 'photo' && typeof buildQRCanvas !== 'function') {
-    notify('⚠️ Генератор QR ще не завантажився. Потрібен інтернет при першому запуску.');
-    return;
-  }
-  const W = 1920, H = 1080;
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const g = canvas.getContext('2d');
-
-  function bg(done) {
-    if (q.mode === 'banner' && q.banner) {
-      const img = new Image();
-      img.onload = () => {
-        // Фото на весь екран (cover)
-        const r = Math.max(W / img.width, H / img.height);
-        const w = img.width * r, h = img.height * r;
-        g.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
-        g.fillStyle = 'rgba(0,0,0,.28)'; g.fillRect(0, 0, W, H);
-        done();
-      };
-      img.onerror = () => { g.fillStyle = '#0a0a1a'; g.fillRect(0,0,W,H); done(); };
-      img.src = q.banner;
-    } else {
-      // Темний градієнт
-      const grad = g.createLinearGradient(0, 0, W, H);
-      grad.addColorStop(0, '#0a0a1a'); grad.addColorStop(1, '#161a2e');
-      g.fillStyle = grad; g.fillRect(0, 0, W, H);
-      done();
-    }
-  }
-
-  // Режим готового фото QR — просто малюємо картинку, нічого не генеруємо
-  if (q.mode === 'photo') {
-    if (!q.photo) { cb(canvas); return; }
-    const grad = g.createLinearGradient(0, 0, W, H);
-    grad.addColorStop(0, '#0a0a1a'); grad.addColorStop(1, '#161a2e');
-    g.fillStyle = grad; g.fillRect(0, 0, W, H);
-    const img = new Image();
-    img.onload = () => {
-      const scale = (q.photoScale || 100) / 100;
-      if (q.photoFit === 'cover') {
-        const r = Math.max(W / img.width, H / img.height) * scale;
-        const w = img.width * r, h = img.height * r;
-        g.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
-      } else {
-        // contain — увесь QR видно, з полями (щоб код точно зчитувався)
-        const r = Math.min((W * 0.7) / img.width, (H * 0.8) / img.height) * scale;
-        const w = img.width * r, h = img.height * r;
-        // біла підкладка під QR — камери читають надійніше
-        const pad = 40;
-        g.fillStyle = '#fff';
-        roundRect(g, (W - w) / 2 - pad, (H - h) / 2 - pad + 30, w + pad*2, h + pad*2, 20); g.fill();
-        g.drawImage(img, (W - w) / 2, (H - h) / 2 + 30, w, h);
-      }
-      // Заголовок зверху — розмір і колір окремо для заголовка й підпису
-      if (q.title) { g.textAlign = 'center'; g.fillStyle = q.titleColor || '#ffffff'; g.font = '700 ' + (q.titleSize || 72) + 'px Georgia, serif'; g.fillText(q.title, W/2, 110); }
-      if (q.subtitle) { g.fillStyle = q.subtitleColor || '#c8a84b'; g.font = (q.subtitleSize || 32) + 'px Georgia, serif'; g.fillText(q.subtitle, W/2, 165); }
-      cb(canvas);
-    };
-    img.onerror = () => cb(canvas);
-    img.src = q.photo;
-    return;
-  }
-
-  function drawTitle() {
-    if (q.mode === 'banner') return;
-    g.textAlign = 'center'; g.fillStyle = q.titleColor || '#ffffff';
-    g.font = '700 76px Georgia, serif';
-    if (q.title) g.fillText(q.title, W / 2, 150);
-    g.fillStyle = q.subtitleColor || '#c8a84b'; g.font = '34px Georgia, serif';
-    if (q.subtitle) g.fillText(q.subtitle, W / 2, 210);
-  }
-
-  // Малює один QR (dataURL) із рамкою і підписом у точці x,y (центр QR)
-  function placeQR(dataUrl, cx, cy, size, label, labelColor, done) {
-    const img = new Image();
-    img.onload = () => {
-      const pad = 22;
-      g.fillStyle = '#ffffff';
-      roundRect(g, cx - size/2 - pad, cy - size/2 - pad, size + pad*2, size + pad*2, 18); g.fill();
-      g.drawImage(img, cx - size/2, cy - size/2, size, size);
-      if (label) {
-        g.textAlign = 'center';
-        g.fillStyle = labelColor || '#ffffff';
-        g.font = '700 40px Georgia, serif';
-        g.fillText(label, cx, cy + size/2 + pad + 52);
-      }
-      done();
-    };
-    img.onerror = done;
-    img.src = dataUrl;
-  }
-
-  bg(() => {
-    drawTitle();
-    if (q.mode === 'multi') {
-      const items = q.items.filter(it => it.text.trim());
-      if (!items.length) { cb(canvas); return; }
-      const n = items.length;
-      const size = n >= 3 ? 360 : 440;
-      const gap = (W - n * size) / (n + 1);
-      let done = 0;
-      items.forEach((it, i) => {
-        const cx = gap * (i + 1) + size * i + size / 2;
-        buildQRCanvas(it.text, size, built => {
-          if (built) placeQR(built.toDataURL('image/png'), cx, H / 2 + 20, size, it.label, '#c8a84b', () => { if (++done === n) cb(canvas); });
-          else if (++done === n) cb(canvas);
-        });
-      });
-    } else if (q.mode === 'banner') {
-      const it = q.single;
-      if (!it.text.trim()) { cb(canvas); return; }
-      const size = 300;
-      buildQRCanvas(it.text, size, built => {
-        if (!built) { cb(canvas); return; }
-        const m = 70;
-        const pos = { br:[W-size/2-m, H-size/2-m], bl:[size/2+m, H-size/2-m],
-                      tr:[W-size/2-m, size/2+m], tl:[size/2+m, size/2+m] }[q.bannerCorner || 'br'];
-        placeQR(built.toDataURL('image/png'), pos[0], pos[1], size, it.label, '#ffffff', () => cb(canvas));
-      });
-    } else {
-      // logo / simple — великий QR по центру (логотип у центрі бере з вкладки QR, якщо заданий)
-      const it = q.single;
-      if (!it.text.trim()) { cb(canvas); return; }
-      const size = 560;
-      buildQRCanvas(it.text, size, built => {
-        if (!built) { cb(canvas); return; }
-        placeQR(built.toDataURL('image/png'), W / 2, H / 2 + 60, size, it.label, '#c8a84b', () => cb(canvas));
-      });
-    }
-  });
-}
-
 function roundRect(g, x, y, w, h, r) {
   g.beginPath();
   g.moveTo(x + r, y);
@@ -2445,279 +1025,18 @@ function roundRect(g, x, y, w, h, r) {
   g.closePath();
 }
 
-function updateQrPreview() {
-  const cv = $('#qrScreenPreview');
-  if (!cv) return;
-  composeQrScreen(full => {
-    const g = cv.getContext('2d');
-    cv.width = 480; cv.height = 270;
-    g.fillStyle = '#000'; g.fillRect(0, 0, 480, 270);
-    g.drawImage(full, 0, 0, 480, 270);
-  });
-}
-
-function sendQrScreen() {
-  const q = qrState();
-  // Готове фото QR генератора не потребує; для решти режимів — потрібен
-  if (q.mode !== 'photo' && typeof buildQRCanvas !== 'function') {
-    notify('⚠️ Генератор QR недоступний (потрібен інтернет при першому запуску)');
-    return;
-  }
-  const hasContent = q.mode === 'photo' ? !!q.photo
-                   : q.mode === 'multi' ? q.items.some(i => i.text.trim())
-                   : q.single.text.trim();
-  if (!hasContent) { notify(q.mode === 'photo' ? '⚠️ Спершу завантаж фото QR' : '⚠️ Введи хоча б одне посилання'); return; }
-  composeQrScreen(full => {
-    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
-      'html,body{margin:0;height:100vh;background:#000;overflow:hidden}' +
-      'img{width:100vw;height:100vh;object-fit:contain}</style></head><body>' +
-      '<img src="' + full.toDataURL('image/png') + '"></body></html>';
-    const n = q.target || 1;
-    sendHTMLToOutputN(n, html, 'QR-екран');
-    notify('📲 QR-екран → ' + OUT_NAME[n]);
-  });
-}
-
-
+// n=1..4 — саме на цей вихід, не займаючи решту (той самий підхід, що вже
+// є для графіки/HTML-оверлеїв/H2R). Запам'ятовує n як q.target — це те,
+// що й далі використовує хоткей «qr-send» (sendQrScreen() нижче).
+// Які виходи ЗАРАЗ показують QR-екран — щоб кнопки самі підсвічувались 🔴
+// (той самий патерн, що вже є в H2R-титрах: htmlLiveMap). Один об'єкт на
+// всі 4 виходи достатньо: на відміну від H2R тут немає списку файлів —
+// QR-екран лише один, тож просто true/false на кожен вихід.
+// Сумісність зі старим хоткеєм «qr-send» — той, що обраний останнім кліком
+// «На вихід» (q.target), або вихід 1, якщо ще не обирали жодного.
+// pv2ClearOutput(n) — той самий канонічний шлях очищення виходу, що вже
+// використовує H2R (clearHTMLOverlayOutput): правильно згасає
+// (showClear() у projector-preload.js), а не просто замінює на порожню
+// сторінку без переходу, як робив попередній варіант цієї функції.
 // ---- Логотип у центр QR (перенесено зі старої вкладки, дані ті самі) ----
-function qrScreenLogo(input) {
-  const f = input.files && input.files[0];
-  if (!f) return;
-  const r = new FileReader();
-  r.onload = e => {
-    qrLogo = e.target.result;                     // цей же логотип використовує buildQRCanvas
-    if (typeof generateQR === 'function') { try { generateQR(); } catch (err) {} }
-    renderTabInto('qrscreen');
-    updateQrPreview();
-    notify('🖼 Логотип додано в центр QR');
-  };
-  r.onerror = () => notify('❌ Не вдалось прочитати файл');
-  r.readAsDataURL(f);
-  input.value = '';
-}
-function qrScreenClearLogo() {
-  qrLogo = null;
-  if (typeof generateQR === 'function') { try { generateQR(); } catch (err) {} }
-  renderTabInto('qrscreen');
-  updateQrPreview();
-  notify('Логотип прибрано');
-}
-function qrScreenLogoSize(v) {
-  qrLogoScale = Math.max(0.10, Math.min(0.28, v / 100));
-  if (typeof generateQR === 'function') { try { generateQR(); } catch (err) {} }
-  updateQrPreview();
-}
-
 // ---- Збережені QR (той самий список, що й у старій вкладці) ----
-function qrList() {
-  try {
-    const raw = (typeof bigStoreGet === 'function') ? bigStoreGet(QR_KEY) : localStorage.getItem(QR_KEY);
-    return JSON.parse(raw || '[]');
-  } catch (e) { return []; }
-}
-function qrScreenSave() {
-  const q = qrState();
-  if (q.mode === 'photo') {
-    // Режим фото: посилання тут немає взагалі — джерело правди це саме
-    // завантажене фото. Раніше ця гілка була відсутня, тому збереження
-    // завжди вимагало «посилання», якого в цьому режимі просто нема.
-    if (!q.photo) { notify('⚠️ Спершу завантаж фото QR'); return; }
-    const label = q.title || 'QR-фото';
-    const list = qrList();
-    list.push({
-      mode: 'photo', label: label,
-      photo: q.photo, photoFit: q.photoFit, photoScale: q.photoScale,
-      title: q.title, subtitle: q.subtitle,
-      titleSize: q.titleSize, subtitleSize: q.subtitleSize,
-      target: q.target
-    });
-    if (typeof safeSet === 'function') safeSet(QR_KEY, JSON.stringify(list));
-    else localStorage.setItem(QR_KEY, JSON.stringify(list));
-    renderTabInto('qrscreen');
-    notify('⭐ Збережено з фото: ' + label);
-    return;
-  }
-  const text = q.mode === 'multi'
-    ? ((q.items || []).find(i => i.text && i.text.trim()) || {}).text
-    : (q.single || {}).text;
-  if (!text || !text.trim()) { notify('⚠️ Спершу введи посилання'); return; }
-  const label = (q.single && q.single.label) || q.title || text.slice(0, 30);
-  const list = qrList();
-  list.push({ mode: q.mode, text: text.trim(), label: label });
-  if (typeof safeSet === 'function') safeSet(QR_KEY, JSON.stringify(list));
-  else localStorage.setItem(QR_KEY, JSON.stringify(list));
-  renderTabInto('qrscreen');
-  notify('⭐ Збережено: ' + label);
-}
-function qrScreenLoad(i) {
-  const p = qrList()[i];
-  if (!p) return;
-  const q = qrState();
-  if (p.mode === 'photo' && p.photo) {
-    // Відновлюємо ТОЧНО те, що було збережено — фото, підписи й розміри —
-    // а не лише текст (раніше тут насильно перемикало на режим 'simple',
-    // тому збережене фото ніколи не показувалось знову).
-    q.mode = 'photo';
-    q.photo = p.photo;
-    q.photoFit = p.photoFit || 'contain';
-    q.photoScale = p.photoScale || 100;
-    q.title = p.title || '';
-    q.subtitle = p.subtitle || '';
-    q.titleSize = p.titleSize || 72;
-    q.subtitleSize = p.subtitleSize || 32;
-    if (p.target) q.target = p.target;
-  } else {
-    if (q.mode === 'multi' || q.mode === 'photo') q.mode = 'simple';
-    q.single = { text: p.text, label: p.label || '' };
-  }
-  saveQrScreen();
-  renderTabInto('qrscreen');
-  updateQrPreview();
-  notify('▶ ' + (p.label || (p.text || '').slice(0, 24)));
-}
-function qrScreenDelete(i) {
-  const list = qrList();
-  if (!list[i]) return;
-  list.splice(i, 1);
-  if (typeof safeSet === 'function') safeSet(QR_KEY, JSON.stringify(list));
-  else localStorage.setItem(QR_KEY, JSON.stringify(list));
-  renderTabInto('qrscreen');
-}
-
-function renderQrScreenTab() {
-  const q = qrState();
-  const modeBtn = (m, l) => `<button class="btn ${q.mode === m ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setQr('mode','${m}')">${l}</button>`;
-  const cornerBtn = (c, l) => `<button class="btn ${q.bannerCorner === c ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setQr('bannerCorner','${c}')">${l}</button>`;
-  const outBtn = n => `<button class="btn ${q.target === n ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setQr('target',${n})">${OUT_NAME[n]}</button>`;
-
-  let editor = '';
-  if (q.mode === 'multi') {
-    editor = q.items.map((it, i) => `
-      <div style="display:flex;gap:4px;margin-bottom:4px">
-        <input type="text" value="${esc(it.label)}" placeholder="Підпис" oninput="setQrItem(${i},'label',this.value)"
-               style="width:110px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px">
-        <input type="text" value="${esc(it.text)}" placeholder="Посилання / реквізити" oninput="setQrItem(${i},'text',this.value)"
-               style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px">
-      </div>`).join('');
-  } else {
-    editor = `
-      <div style="font-size:12px;color:var(--text2)">Посилання / реквізити</div>
-      <input type="text" value="${esc(q.single.text)}" placeholder="https://... або номер картки" oninput="q=qrState();q.single.text=this.value;saveQrScreen();updateQrPreview()"
-             style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px;margin-bottom:6px">
-      <div style="font-size:12px;color:var(--text2)">Підпис під QR</div>
-      <input type="text" value="${esc(q.single.label)}" oninput="q=qrState();q.single.label=this.value;saveQrScreen();updateQrPreview()"
-             style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px">`;
-  }
-
-  return `
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">📲 Що показати</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap">
-        ${modeBtn('photo','📷 Моє фото QR')}
-        ${modeBtn('logo','QR із логотипом')}
-        ${modeBtn('banner','Фото + QR у кутку')}
-        ${modeBtn('simple','Простий QR')}
-        ${modeBtn('multi','Кілька QR')}
-      </div>
-
-      ${q.mode === 'photo' ? `
-        <div style="font-size:12px;color:var(--text2);margin-top:10px">Фото готового QR (до 3 МБ)</div>
-        <input type="file" accept="image/*" onchange="loadQrPhoto(this)" style="font-size:11px;width:100%">
-        ${q.photo ? '<div style="font-size:11px;color:var(--green);margin-top:4px">✓ фото завантажено</div>' : '<div style="font-size:11px;color:var(--text2);margin-top:4px">Завантаж скріншот або фото QR — програма покаже його як є, нічого не змінюючи.</div>'}
-        <div style="font-size:12px;color:var(--text2);margin-top:8px">Розмір на екрані</div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap">
-          <button class="btn ${(q.photoFit||'contain')==='contain'?'btn-primary':'btn-ghost'} btn-sm" onclick="setQr('photoFit','contain')">QR повністю видно</button>
-          <button class="btn ${q.photoFit==='cover'?'btn-primary':'btn-ghost'} btn-sm" onclick="setQr('photoFit','cover')">На весь екран</button>
-        </div>
-        <div class="card-sub" style="margin-top:4px">«QR повністю видно» — з білими полями, камери читають надійніше. «На весь екран» — якщо фото вже оформлене.</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:8px">Заголовок (необов'язково)</div>
-        <input type="text" value="${esc(q.title)}" oninput="setQr('title',this.value)"
-               style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px">
-        <input type="text" value="${esc(q.subtitle)}" oninput="setQr('subtitle',this.value)" placeholder="Підзаголовок"
-               style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px;margin-top:4px">
-
-        <div style="font-size:12px;color:var(--text2);margin-top:10px;font-weight:600">Розмір</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Розмір фото/QR: <span id="qrPhotoScaleLbl">${q.photoScale || 100}</span>%</div>
-        <input type="range" min="50" max="150" value="${q.photoScale || 100}" oninput="setQrSize('photoScale',parseInt(this.value,10),'qrPhotoScaleLbl')" style="width:100%">
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Розмір заголовка: <span id="qrTitleSizeLbl">${q.titleSize || 72}</span>px</div>
-        <input type="range" min="20" max="140" value="${q.titleSize || 72}" oninput="setQrSize('titleSize',parseInt(this.value,10),'qrTitleSizeLbl')" style="width:100%">
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Розмір підпису: <span id="qrSubtitleSizeLbl">${q.subtitleSize || 32}</span>px</div>
-        <input type="range" min="12" max="80" value="${q.subtitleSize || 32}" oninput="setQrSize('subtitleSize',parseInt(this.value,10),'qrSubtitleSizeLbl')" style="width:100%">
-
-        <div style="font-size:12px;color:var(--text2);margin-top:10px;font-weight:600">Колір тексту</div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
-          <span style="font-size:11px;color:var(--text2);width:70px">Заголовок</span>
-          <input type="color" value="${q.titleColor || '#ffffff'}" oninput="setQr('titleColor', this.value)" style="width:36px;height:26px;border:none;background:none;cursor:pointer">
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
-          <span style="font-size:11px;color:var(--text2);width:70px">Підпис</span>
-          <input type="color" value="${q.subtitleColor || '#c8a84b'}" oninput="setQr('subtitleColor', this.value)" style="width:36px;height:26px;border:none;background:none;cursor:pointer">
-        </div>
-      ` : q.mode !== 'banner' ? `
-        <div style="font-size:12px;color:var(--text2);margin-top:10px;font-weight:600">Заголовок екрана</div>
-        <input type="text" value="${esc(q.title)}" oninput="setQr('title',this.value)"
-               style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px">
-        <div style="font-size:12px;color:var(--text2);margin-top:4px">Підзаголовок</div>
-        <input type="text" value="${esc(q.subtitle)}" oninput="setQr('subtitle',this.value)"
-               style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px">
-      ` : `
-        <div style="font-size:12px;color:var(--text2);margin-top:10px">Фото / банер (до 3 МБ)</div>
-        <input type="file" accept="image/*" onchange="loadQrBanner(this)" style="font-size:11px;width:100%">
-        ${q.banner ? '<div style="font-size:11px;color:var(--green);margin-top:4px">✓ фото додано</div>' : ''}
-        <div style="font-size:12px;color:var(--text2);margin-top:6px">Кут для QR</div>
-        <div style="display:flex;gap:4px;flex-wrap:wrap">${cornerBtn('br','↘ Правий низ')}${cornerBtn('bl','↙ Лівий низ')}${cornerBtn('tr','↗ Правий верх')}${cornerBtn('tl','↖ Лівий верх')}</div>
-      `}
-
-      ${q.mode === 'photo' ? '' : `<div style="margin-top:10px">${editor}</div>`}
-
-      ${q.mode === 'logo' ? `
-      <div style="margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:12px;color:var(--text2);margin-bottom:4px">Логотип у центрі QR</div>
-        <div style="display:flex;gap:5px;align-items:center;flex-wrap:wrap">
-          <input type="file" id="qrScreenLogoInput" accept="image/*" style="display:none" onchange="qrScreenLogo(this)">
-          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('qrScreenLogoInput').click()">📁 Вибрати файл</button>
-          ${(typeof qrLogo !== 'undefined' && qrLogo) ? `<span style="font-size:11px;color:var(--green)">✓ логотип є</span>
-            <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="qrScreenClearLogo()">✕</button>` : '<span style="font-size:11px;color:var(--text2)">не обрано</span>'}
-        </div>
-        ${(typeof qrLogo !== 'undefined' && qrLogo) ? `<div style="margin-top:6px">
-          <div style="font-size:11px;color:var(--text2)">Розмір логотипа: ${Math.round((typeof qrLogoScale !== 'undefined' ? qrLogoScale : 0.22) * 100)}%</div>
-          <input type="range" min="10" max="28" value="${Math.round((typeof qrLogoScale !== 'undefined' ? qrLogoScale : 0.22) * 100)}"
-                 style="width:100%" onchange="qrScreenLogoSize(this.value)">
-        </div>` : ''}
-      </div>` : ''}
-
-      <div style="font-size:12px;color:var(--text2);margin-top:10px">На який екран</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap">${outBtn(1)} ${outBtn(2)} ${outBtn(3)} ${outBtn(4)}</div>
-
-      <div style="display:flex;gap:5px;margin-top:10px">
-        <button class="btn btn-success" style="flex:1;font-weight:700" onclick="sendQrScreen()">📲 ПОКАЗАТИ НА ЕКРАНІ</button>
-        <button class="btn btn-ghost" onclick="qrScreenSave()">⭐ Зберегти</button>
-      </div>
-      ${(function(){
-        const list = qrList();
-        if (!list.length) return '<div style="font-size:11px;color:var(--text2);margin-top:8px">Збережених QR ще немає — введи посилання й тисни «⭐ Зберегти».</div>';
-        return `<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
-          <div style="font-size:12px;color:var(--text2);margin-bottom:4px">⭐ Збережені QR</div>
-          ${list.map((p, i) => `<div style="display:flex;align-items:center;gap:5px;padding:4px 0;border-bottom:1px solid var(--border)">
-              <span style="flex:1;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                <b>${esc(p.label || (p.text || '').slice(0, 28) || 'QR')}</b>
-                ${p.mode === 'photo' ? '<span style="color:var(--text2);font-size:11px"> 📷 фото</span>' : `<span style="color:var(--text2);font-size:11px"> ${esc((p.text || '').slice(0, 34))}</span>`}
-              </span>
-              <button class="btn btn-ghost btn-sm" onclick="qrScreenLoad(${i})">▶</button>
-              <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="qrScreenDelete(${i})">✕</button>
-            </div>`).join('')}
-        </div>`;
-      })()}
-    </div>
-
-    <div class="card">
-      <div class="card-title">👁 Як це виглядатиме</div>
-      <canvas id="qrScreenPreview" width="480" height="270"
-              style="width:100%;border:1px solid var(--border);border-radius:6px;background:#000"></canvas>
-      <div class="card-sub" style="margin-top:6px">Прев'ю оновлюється, щойно вводиш посилання.</div>
-    </div>
-  </div>`;
-}
-
-

@@ -60,7 +60,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   outputStatus: (kind) => ipcRenderer.invoke('output-status', kind),
   outputsStatus: () => ipcRenderer.invoke('outputs-status'),
   sendToOutput: (kind, type, payload) => ipcRenderer.invoke('send-to-output', { kind, type, payload }),
-  setOutputBg: (kind, color) => ipcRenderer.invoke('set-output-bg', { kind, color }),
+  setOutputBg: (kind, color, animated) => ipcRenderer.invoke('set-output-bg', { kind, color, animated }),
   setMirrorKinds: (kinds) => ipcRenderer.invoke('set-mirror-kinds', kinds),
 
   // PPTX / DOCX — витяг тексту (парситься в main-процесі)
@@ -74,6 +74,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // GDD-графіка (H2R / CasparCG): update / play / stop
   gddCommand: (kind, action, data) => ipcRenderer.invoke('gdd-command', { kind, action, data }),
   generateQRCode: (text, size) => ipcRenderer.invoke('qrcode-generate', { text, size }),
+  pickWatchFolder: () => ipcRenderer.invoke('pick-watch-folder'),
+  getWatchFolder: () => ipcRenderer.invoke('get-watch-folder'),
+  stopWatchFolder: () => ipcRenderer.invoke('stop-watch-folder'),
+  onWatchFolderNewFiles: (cb) => ipcRenderer.on('watch-folder-new-files', (e, items) => cb(items)),
+  onWatchFolderError: (cb) => ipcRenderer.on('watch-folder-error', (e, err) => cb(err)),
 
   // Станції: хост ↔ клієнти
   startSyncServer: (pin) => ipcRenderer.invoke('start-sync-server', { pin }),
@@ -100,7 +105,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showLogo: (dataUrl, kind) => ipcRenderer.invoke('show-logo', { dataUrl, kind }),
   showWatermark: (cfg, kind) => ipcRenderer.invoke('show-watermark', { cfg, kind }),
   freezeOutput: (on, kind) => ipcRenderer.invoke('freeze-output', { on, kind }),
-  onLogoAutoHidden: (cb) => ipcRenderer.on('logo-auto-hidden', () => cb()),
+  onLogoAutoHidden: (cb) => ipcRenderer.on('logo-auto-hidden', (e, kind) => cb(kind)),
   sendAlert: (cfg, kind) => ipcRenderer.invoke('send-alert', { cfg, kind }),
 
   // Керування під час служби
@@ -108,6 +113,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setMasterVolume: (v) => ipcRenderer.invoke('set-master-volume', v),
   sendStageTimer: (data) => ipcRenderer.invoke('send-stage-timer', data),
   setStageOutput: (kind) => ipcRenderer.invoke('set-stage-output', kind),
+
+  // Stage Monitor — окреме вікно сцени (не плутати з setStageOutput вище,
+  // яка лише накладає таймер поверх одного зі звичайних 4 виходів)
+  openStageWindow: () => ipcRenderer.invoke('open-stage-window'),
+  closeStageWindow: () => ipcRenderer.invoke('close-stage-window'),
+  stageWindowStatus: () => ipcRenderer.invoke('stage-window-status'),
+  updateStageWindow: (data) => ipcRenderer.invoke('stage-content-update', data),
+  setStageMonitor: (displayId) => ipcRenderer.invoke('set-stage-monitor', displayId),
+  bindStageMonitorFingerprint: (fp) => ipcRenderer.invoke('bind-stage-monitor-fingerprint', fp),
+  onStageWindowClosed: (cb) => ipcRenderer.on('stage-window-closed', () => cb()),
 
   // Діагностика і бекап
   logError: (where, message) => ipcRenderer.invoke('log-error', { where, message }),
@@ -121,6 +136,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Оновлення
   checkUpdates: () => ipcRenderer.invoke('check-updates'),
   installUpdate: () => ipcRenderer.invoke('install-update'),
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   onUpdateStatus: (cb) => ipcRenderer.on('update-status', (e, d) => cb(d)),
 
   // Автозапуск
@@ -140,6 +156,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // HTML Overlay — записує в temp файл, повертає file:// шлях
   writeHtmlOverlay: (html) => ipcRenderer.invoke('write-html-overlay', html),
+  // Новий, безпечніший канал доставки того самого HTML — через кастомну
+  // схему app:// замість тимчасового file://-файлу (див.
+  // src/main/content-protocol.js). Наявний writeHtmlOverlay лишається
+  // без змін, щоб нічого не зламати; перемикання викликів на цей канал —
+  // окремий крок після перевірки на всіх типах контенту.
+  writeHtmlOverlayApp: (html) => ipcRenderer.invoke('write-html-overlay-app', html),
+  convertPptxToPdf: (buffer) => ipcRenderer.invoke('convert-pptx-to-pdf', buffer),
+  extractPptxNotes: (buffer) => ipcRenderer.invoke('extract-pptx-notes', buffer),
 
   // ATEM
   atemConnect: (ip) => ipcRenderer.invoke('atem-connect', ip),

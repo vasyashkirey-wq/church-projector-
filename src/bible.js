@@ -85,7 +85,8 @@ function updateVerses() {
 }
 
 // Показує всі вірші обраної глави одразу, щоб не гортати випадаючий список
-// наосліп — перші ~5 видно без прокрутки, решта глави доступна прокруткою.
+// наосліп — перші ~6-7 видно без прокрутки (max-height у index.html), решта
+// глави доступна прокруткою.
 function renderChapterPreview() {
   var preview = document.getElementById('chapterPreview');
   if (!preview || !currentBibleBook || !currentBibleChapter) return;
@@ -256,7 +257,222 @@ function syncBibleLayoutButtons() {
   if (l) l.className = 'btn btn-sm ' + (cur === 'lower' ? 'btn-primary' : 'btn-ghost');
 }
 
+// Той самий патерн, що вже є для H2R-титрів (renderHTMLOverlayList): ОДНА
+// кнопка на вихід сама підсвічується 🔴, коли вірш зараз в ефірі саме там,
+// а рядок «✕ Прибрати» показує лише ті виходи, де він реально показаний
+// зараз — а не всі 4 завжди. Раніше тут були два статичні ряди (На вихід /
+// Прибрати з) по 4 кнопки кожен, завжди однакові незалежно від стану.
+function bibleLiveOutputTargets() {
+  // targets=[0] («На всі») рахуємо як усі 4 — так само як H2R показує
+  // liveOutputs за фактом, а не за тим, якою кнопкою надіслали.
+  if (!Array.isArray(lastLiveGraphicsTargets)) return [];
+  if (lastLiveGraphicsTargets.indexOf(0) >= 0) return [1, 2, 3, 4];
+  return lastLiveGraphicsTargets.slice();
+}
+function renderBibleOutputRow() {
+  var el = document.getElementById('bibleOutputRow');
+  if (!el) return;
+  var live = bibleLiveOutputTargets();
+  // Індикатор режиму кожного виходу: оператор має бачити, ЩО саме
+  // зараз на кожному екрані — один переклад чи кілька. Раніше це було
+  // видно лише на самих екранах, тобто вже разом із залом.
+  var modes = (typeof outputModeSummary === 'function') ? outputModeSummary() : [];
+  var conflict = modes.some(function(m) { return m.conflict; });
+  // Показуємо ВСЕ, що зараз на екрані (вірш, титри, таймер, медіа…),
+  // а не лише режим перекладу. Золотим — коли на одному екрані кілька
+  // джерел одночасно: це не помилка, але привід глянути, чи так задумано.
+  var badge = modes.filter(function(m) { return m.what && m.what.length; }).map(function(m) {
+    var col = m.conflict ? 'var(--red)' : (m.busy ? 'var(--gold)' : 'var(--text2)');
+    return '<span style="font-size:10px;color:' + col + '">' +
+      escHtml(m.name) + ': ' + escHtml(m.what.join(' + ')) + (m.conflict ? ' ⚠' : '') + '</span>';
+  }).join('<span style="opacity:.4">·</span>');
+
+  var outBtns = [1, 2, 3, 4].map(function(n) {
+    var isLive = live.indexOf(n) >= 0;
+    var name = (typeof OUT_NAME !== 'undefined' && OUT_NAME[n]) ? OUT_NAME[n] : ('Вихід ' + n);
+    return '<button class="btn ' + (isLive ? 'btn-success' : 'btn-ghost') + ' btn-sm" onclick="sendBibleWithGraphics(' + n + ')" title="Показати на ' + escHtml(name) + '">' +
+      (isLive ? '🔴 ' : '') + escHtml(name) + '</button>';
+  }).join('');
+  var clearBtns = live.map(function(n) {
+    var name = (typeof OUT_NAME !== 'undefined' && OUT_NAME[n]) ? OUT_NAME[n] : ('Вихід ' + n);
+    return '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="clearBibleFrom(' + n + ')" title="Прибрати з ' + escHtml(name) + '">✕ ' + escHtml(name) + '</button>';
+  }).join('');
+  // ОДИН рядок: кнопки виходів і «✕ Прибрати» поруч — так само, як у
+  // H2R-титрах (там оператор уже звик до цього вигляду). Раніше
+  // «прибрати» жило окремим рядком нижче, і під час служби це змушувало
+  // вести очима вниз замість того, щоб натиснути поруч.
+  el.innerHTML = '<div class="flex" style="gap:5px;flex-wrap:wrap;align-items:center">' +
+      outBtns + clearBtns + '</div>' +
+    // Рядок стану: що зараз на кожному екрані. Зʼявляється лише коли
+    // щось в ефірі — щоб не займати місце даремно.
+    (badge ? '<div class="flex mt8" style="gap:6px;flex-wrap:wrap;align-items:center">' +
+      (conflict ? '<b style="font-size:10px;color:var(--red)">⚠ конфлікт режимів — виправлено автоматично</b> ' : '') +
+      badge + '</div>' : '');
+  // Вірш міг змінитись (гортання ◀▶, новий пошук) — прев'ю картки «Кілька
+  // перекладів» має показувати САМЕ поточний вірш, а не застарілий.
+  if (typeof updateAllMultiTransPreviews === 'function') updateAllMultiTransPreviews();
+}
+
+// ============================================================
+// СТОРОЖ УЗГОДЖЕНОСТІ ВИХОДІВ
+//
+// ПРОБЛЕМА, ЯКУ ЦЕ ЗАКРИВАЄ:
+// живий стан ведеться у ДВОХ паралельних списках —
+//   lastLiveGraphicsTargets  (вихід показує ОДИН переклад)
+//   state.multiLive          (вихід показує КІЛЬКА перекладів)
+// Їх змінюють 16 різних місць. Якщо вихід випадково потрапить в обидва,
+// при гортанні стрілками на нього прилітають ДВА різні кадри підряд —
+// і на екранах опиняється різне. Саме це вже ловилось двічі наживо.
+//
+// ЧОМУ САМЕ СТОРОЖ, А НЕ «ще раз уважно виправити»:
+// вручну стежити за 16 місцями неможливо — наступна зміна знову щось
+// розсинхронізує. Сторож перевіряє ПРАВИЛО (вихід рівно в одному
+// режимі), а не конкретні місця, тож ловить і майбутні помилки.
+//
+// ПОВЕДІНКА ПРИ РОЗХОДЖЕННІ: не падаємо й не питаємо оператора під час
+// служби — тихо лагодимо на користь ОСТАННЬОЇ дії (mode), пишемо в
+// консоль для розбору потім. Служба важливіша за чистоту логів.
+function assertOutputConsistency(justChanged, mode) {
+  try {
+    if (!Array.isArray(lastLiveGraphicsTargets)) lastLiveGraphicsTargets = [];
+    if (!state.multiLive || !Array.isArray(state.multiLive)) state.multiLive = [];
+
+    // 0 у lastLiveGraphicsTargets означає «усі виходи» — розгортаємо,
+    // інакше перетин із multiLive не видно.
+    var single = lastLiveGraphicsTargets.indexOf(0) >= 0 ? [1, 2, 3, 4] : lastLiveGraphicsTargets.slice();
+    var both = single.filter(function (n) { return state.multiLive.indexOf(n) >= 0; });
+    if (!both.length) return true;
+
+    console.warn('[виходи] конфлікт режимів на', both,
+                 '— вихід одночасно в одиночному і мульти. Лагоджу на користь:', mode || 'останньої дії');
+
+    if (mode === 'multi') {
+      // Остання дія — мульти: прибираємо ці виходи з одиночного списку
+      lastLiveGraphicsTargets = lastLiveGraphicsTargets
+        .filter(function (n) { return n !== 0 && both.indexOf(n) < 0; });
+      if (lastLiveGraphicsTargets.indexOf(0) < 0 && single.length === 4 && both.length < 4) {
+        // був режим «на всі» — лишаємо ті, що не пішли в мульти
+        lastLiveGraphicsTargets = [1, 2, 3, 4].filter(function (n) { return both.indexOf(n) < 0; });
+      }
+    } else {
+      // Остання дія — одиночний вивід: прибираємо з мульти
+      state.multiLive = state.multiLive.filter(function (n) { return both.indexOf(n) < 0; });
+    }
+    lastLiveGraphics = lastLiveGraphicsTargets.length > 0;
+    lastLiveMulti = state.multiLive.length > 0;
+    return false;
+  } catch (e) {
+    console.warn('[виходи] сторож узгодженості впав:', e);
+    return true;   // сторож не має ламати вивід — краще пропустити перевірку
+  }
+}
+
+// Повертає, що САМЕ зараз на кожному виході — для індикатора в панелі.
+// Оператор бачить розходження ДО того, як його побачить зал.
+//
+// Зводить ВСІ джерела виводу, а не лише Біблію: кожна фіча веде власну
+// «живу» мапу (graphicsLiveMap, h2rLowerLiveMap, timerLiveMap,
+// mediaLiveMap, qrLiveMap, tickerLiveMap, creditsLiveMap,
+// confettiLiveMap, htmlLiveMap) — і без зведення оператор ніде не бачив
+// повної картини по 4 екранах, лише по одній вкладці за раз.
+//
+// Мапи читаємо захищено (typeof + try): якщо якийсь модуль ще не
+// завантажився або фічу прибрали, огляд має працювати далі, а не падати.
+function outputModeSummary() {
+  var out = [];
+  try {
+    var single = (Array.isArray(lastLiveGraphicsTargets) && lastLiveGraphicsTargets.indexOf(0) >= 0)
+      ? [1, 2, 3, 4] : (lastLiveGraphicsTargets || []);
+    var multi = (state && state.multiLive) || [];
+
+    // [мапа, коротка назва для індикатора]
+    var sources = [
+      ['graphicsLiveMap',  'графіка'],
+      ['h2rLowerLiveMap',  'титри'],
+      ['timerLiveMap',     'таймер'],
+      ['mediaLiveMap',     'медіа'],
+      ['qrLiveMap',        'QR'],
+      ['tickerLiveMap',    'рядок'],
+      ['creditsLiveMap',   'подяки'],
+      ['confettiLiveMap',  'конфеті']
+    ];
+
+    for (var n = 1; n <= 4; n++) {
+      var what = [];
+      if (multi.indexOf(n) >= 0) what.push('кілька перекладів');
+      else if (single.indexOf(n) >= 0) what.push('вірш');
+
+      for (var i = 0; i < sources.length; i++) {
+        try {
+          var m = (typeof window !== 'undefined') ? window[sources[i][0]] : null;
+          if (m && m[n]) what.push(sources[i][1]);
+        } catch (e) {}
+      }
+      // htmlLiveMap влаштована інакше: зберігає ІНДЕКС графіки, не true/false
+      try {
+        if (typeof window !== 'undefined' && window.htmlLiveMap && window.htmlLiveMap[n] != null) what.push('HTML-графіка');
+      } catch (e) {}
+
+      out.push({
+        n: n,
+        name: (typeof OUT_NAME !== 'undefined' && OUT_NAME[n]) ? OUT_NAME[n] : ('Вихід ' + n),
+        mode: multi.indexOf(n) >= 0 ? 'multi' : (single.indexOf(n) >= 0 ? 'single' : 'off'),
+        conflict: multi.indexOf(n) >= 0 && single.indexOf(n) >= 0,
+        what: what,                    // усе, що зараз на цьому екрані
+        busy: what.length > 1          // кілька джерел одночасно — привід глянути
+      });
+    }
+  } catch (e) {}
+  return out;
+}
+
+// Скидає ОБИДВА списки відстеження виходів. Викликається, коли на екрани
+// йде контент, що заміщає Біблію цілком (пісня, PDF-слайд, «очистити»).
+//
+// Навіщо окрема функція: пісні раніше скидали лише прапорці
+// (lastLiveGraphics/lastLiveMulti), але лишали самі СПИСКИ. Через це
+// після Біблії в мульти-режимі індикатор і далі показував «кілька
+// перекладів» на екрані, де вже давно пісня, а стрілки ◀▶ могли
+// повернути туди вірш. Той самий клас бага, що й «на екранах різне».
+function resetOutputTracking(source) {
+  try {
+    lastLiveGraphicsTargets = [];
+    lastLiveGraphics = false;
+    lastLiveMulti = false;
+    if (state && Array.isArray(state.multiLive)) state.multiLive = [];
+    if (source) lastLiveSource = source;
+    if (typeof renderBibleOutputRow === 'function') renderBibleOutputRow();
+  } catch (e) {}
+}
+
 function sendBibleWithGraphics(target) {
+  // Якщо для ЦЬОГО виходу в картці «Кілька перекладів» уже обрано
+  // переклади — виводимо саме їх (до 3), а не один переклад із картки
+  // «Переклад». Раніше кнопки «Проектор»/«Трансляція» завжди слали лише
+  // один переклад, і щоб отримати три, доводилось окремо шукати кнопку
+  // в картці «Кілька перекладів» нижче — хоча налаштування вже задані.
+  // target === 0 («На всі») лишається однопере кладним: там немає
+  // «свого» виходу, з якого брати набір перекладів.
+  try {
+    if (target !== 0 && state && state.multiTrans &&
+        (state.multiTrans[target] || []).filter(Boolean).length &&
+        typeof sendMultiToOutput === 'function') {
+      // Цей вихід переходить у мульти-режим — його ОБОВʼЯЗКОВО треба
+      // прибрати з одно-перекладного списку. Інакше він опиниться
+      // одночасно в lastLiveGraphicsTargets і в state.multiLive, і при
+      // гортанні стрілками на нього прилетить ДВА різні кадри підряд
+      // (bibleReplayGraphics + multiReplay) — екран блимає й показує
+      // не те, що очікує оператор.
+      if (Array.isArray(lastLiveGraphicsTargets)) {
+        lastLiveGraphicsTargets = lastLiveGraphicsTargets.filter(function(t) { return t !== target && t !== 0; });
+        lastLiveGraphics = lastLiveGraphicsTargets.length > 0;
+      }
+      sendMultiToOutput(target);
+      assertOutputConsistency(target, 'multi');
+      if (typeof renderBibleOutputRow === 'function') renderBibleOutputRow();
+      return;
+    }
+  } catch (e) {}
   // Запам'ятовуємо, де вже показано: щоб гортання оновлювало ВСІ ці екрани,
   // а не лише той, куди натиснули востаннє.
   if (target === 0) {
@@ -274,10 +490,61 @@ function sendBibleWithGraphics(target) {
 // зараз показує «Трансляція» — на відміну від sendBibleWithGraphics, що
 // приймає лише один вихід за раз.
 function sendBibleGraphicsMulti(targets) {
-  if (targets.indexOf(0) >= 0) lastLiveGraphicsTargets = [0];
-  else lastLiveGraphicsTargets = targets.slice();
-  lastLiveGraphicsTarget = targets[targets.length - 1];
-  bibleGraphicsTo(targets);
+  // Кожен вихід зі своїм набором перекладів («Кілька перекладів») —
+  // виводимо саме його набір; решта йдуть звичайним однопере кладним
+  // шляхом. Так «2 виводи» / «Усі 4 виводи» поводяться так само, як
+  // окремі кнопки виходів вище, а не по-різному.
+  var rest = [], multi = [];
+  (targets || []).forEach(function(t) {
+    try {
+      if (t !== 0 && state && state.multiTrans &&
+          (state.multiTrans[t] || []).filter(Boolean).length &&
+          typeof sendMultiToOutput === 'function') {
+        sendMultiToOutput(t);
+        multi.push(t);
+        return;
+      }
+    } catch (e) {}
+    rest.push(t);
+  });
+
+  // ВАЖЛИВО: у lastLiveGraphicsTargets мають потрапити ОБИДВІ групи.
+  // Раніше тут писався лише `rest`, і виходи, що пішли через мульти-
+  // переклади, випадали зі стану — після цього стрілки ◀▶
+  // (bibleReplayGraphics) оновлювали не всі екрани, і ті, що випали,
+  // застигали на попередньому вірші. Саме звідси й був симптом
+  // «виводжу текст, а на екранах різне».
+  // state.multiLive веде sendMultiToOutput сама, тож тут лише
+  // однопере кладні цілі + позначка, що мульти теж в ефірі.
+  if (rest.indexOf(0) >= 0) lastLiveGraphicsTargets = [0];
+  else lastLiveGraphicsTargets = rest.slice();
+  lastLiveGraphics = lastLiveGraphicsTargets.length > 0;
+  if (multi.length) lastLiveMulti = true;
+  lastLiveGraphicsTarget = (rest.length ? rest[rest.length - 1]
+                                        : multi[multi.length - 1]);
+
+  if (rest.length) bibleGraphicsTo(rest);
+  // Тут найбільший ризик розходження: частина цілей пішла в мульти,
+  // частина — в одиночний. Саме цей шлях двічі давав «різне на екранах».
+  assertOutputConsistency(null, multi.length ? 'multi' : 'single');
+
+  // ЯВНИЙ ЗВІТ, куди пішло. Без нього «2 виводи» мовчить, і якщо один
+  // з екранів нічого не отримав (вікно виходу не відкрите, для виходу
+  // не обрано перекладів тощо), оператор дізнається про це вже із залу.
+  // Тепер видно одразу: «Проектор: вірш · Трансляція: кілька перекладів».
+  try {
+    var nm = function (t) { return (typeof OUT_NAME !== 'undefined' && OUT_NAME[t]) ? OUT_NAME[t] : ('Вихід ' + t); };
+    var parts = [];
+    (targets || []).forEach(function (t) {
+      if (t === 0) { parts.push('усі екрани'); return; }
+      if (multi.indexOf(t) >= 0) parts.push(nm(t) + ': кілька перекладів');
+      else if (rest.indexOf(t) >= 0) parts.push(nm(t) + ': вірш');
+      else parts.push('⚠️ ' + nm(t) + ': НЕ надіслано');
+    });
+    if (typeof notify === 'function' && parts.length) notify('📖 ' + parts.join(' · '));
+  } catch (e) {}
+
+  if (typeof renderBibleOutputRow === 'function') renderBibleOutputRow();
 }
 
 // Повторний вивід під час гортання — на всі екрани, де вірш уже показано
@@ -287,6 +554,30 @@ function bibleReplayGraphics() {
   // true = оновлюємо ЗАЛ напряму. Це повторний вивід того, що вже в ефірі,
   // тому прев'ю тут не потрібне — інакше при гортанні зал завмирав би.
   bibleGraphicsTo(list, true);
+}
+
+// РАНІШЕ прибрати вірш з виходу можна було, лише вручну надіславши туди
+// щось інше — окремої кнопки «прибрати» не було взагалі (той самий пробіл,
+// що виправили в H2R і QR-екрані). pv2ClearOutput(n) — той самий канонічний
+// шлях очищення виходу, що вже використовує H2R (clearHTMLOverlayOutput):
+// правильно згасає (showClear() у projector-preload.js), а не просто
+// замінює на порожню сторінку без переходу, як робив попередній варіант
+// цієї функції. Знімає вихід і з lastLiveGraphicsTargets/state.multiLive,
+// щоб гортання стрілками більше туди не повертало вірш.
+function clearBibleFrom(n) {
+  if (typeof pv2ClearOutput === 'function') pv2ClearOutput(n);
+  try {
+    if (Array.isArray(lastLiveGraphicsTargets)) {
+      lastLiveGraphicsTargets = lastLiveGraphicsTargets.filter(function(t) { return t !== n && t !== 0; });
+      lastLiveGraphics = lastLiveGraphicsTargets.length > 0;
+    }
+    if (state && Array.isArray(state.multiLive)) {
+      state.multiLive = state.multiLive.filter(function(x) { return x !== n; });
+      lastLiveMulti = state.multiLive.length > 0;
+    }
+  } catch (e) {}
+  renderBibleOutputRow();
+  if (typeof refreshMultiTransCard === 'function') refreshMultiTransCard();
 }
 
 function bibleGraphicsTo(targets, _fromGoLive) {
@@ -370,6 +661,8 @@ function bibleGraphicsTo(targets, _fromGoLive) {
   if (!sent) { sendToProjectorWin(text, ref); return; }
 
   if (typeof notify === 'function') notify('✝ ' + (ref || 'Вірш') + ' — з графікою');
+  assertOutputConsistency(null, 'single');
+  renderBibleOutputRow();
 }
 
 function sendBibleToProjector() {
@@ -443,3 +736,4 @@ searchBible = function() {
 
 // Ініціалізація списку книг (перенесено зі стартового INIT index.html):
 initBibleBooks();
+renderBibleOutputRow();

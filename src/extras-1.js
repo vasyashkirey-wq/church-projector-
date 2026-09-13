@@ -25,6 +25,21 @@ function pv2Prompt(message, defValue, cb) {
   ov.onclick = (e) => { if (e.target === ov) done(null); };
 }
 
+// Індикатор інтернету — стандартний navigator.onLine (перевіряє, чи мережевий
+// адаптер ДУМАЄ, що є з'єднання; не гарантує реальний доступ до інтернету,
+// але цього достатньо, щоб попередити «зараз офлайн» перед автооновленням чи
+// пошуком ONVIF-камер, замість мовчазного очікування, що ніколи не завершиться).
+function updateNetIndicator() {
+  var el = document.getElementById('netIndicator');
+  if (!el) return;
+  var online = navigator.onLine;
+  el.textContent = online ? '🟢' : '🔴';
+  el.title = online ? 'Інтернет є' : 'Немає інтернету — автооновлення й пошук камер ONVIF не працюватимуть';
+}
+window.addEventListener('online', updateNetIndicator);
+window.addEventListener('offline', updateNetIndicator);
+safeInit(updateNetIndicator, 'updateNetIndicator');
+
 // ============================================================
 // ЦЕРКВА ПРАГА — РОЗШИРЕНІ ФУНКЦІЇ (extras.js)
 // Портовано з панелі керування v3: плейлист, план служіння,
@@ -37,6 +52,20 @@ function pv2Prompt(message, defValue, cb) {
 const $ = sel => document.querySelector(sel);
 const $$ = sel => Array.from(document.querySelectorAll(sel));
 const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+// Назва пісні як "ref" (маленький підпис над текстом на екрані) — можна
+// вимкнути в Налаштуваннях (state.showSongTitle=false), якщо оператор не
+// хоче, щоб назва показувалась зверху куплетів. За замовчуванням — показує,
+// як і раніше (undefined трактуємо як "увімкнено", щоб не ламати вже
+// збережені стани без цього поля).
+function songRefForDisplay(title) {
+  return (state.showSongTitle !== false) ? (title || '') : '';
+}
+function loadDisplayToggles() {
+  var t = loadJSON(STORAGE_KEYS.live + '_showsongtitle');
+  if (t !== null && t !== undefined) state.showSongTitle = t;
+  var n = loadJSON(STORAGE_KEYS.live + '_showtransname');
+  if (n !== null && n !== undefined) state.showTransName = n;
+}
 // Читаємо через спільний шар: великі дані лежать у файлі, а в сховищі лише позначка.
 // Без цього extras.js бачив би позначку замість даних (пісні/оголошення «зникали б»).
 const loadJSON = key => {
@@ -63,6 +92,12 @@ const saveJSON = (key, data) => {
     return false;
   }
 };
+// safeInit(loadDisplayToggles) було тут раніше — прибрано звідси, бо
+// падало через TDZ навіть після першого фіксу (перенесення після const
+// loadJSON виявилось недостатнім: далі за текстом іще й const STORAGE_KEYS,
+// а ще далі var state — усі потрібні тілу loadDisplayToggles). Виклик
+// перенесено в САМИЙ КІНЕЦЬ файлу (нижче за всі top-level const/var), щоб
+// більше не ганятись за черговою залежністю, яка опиниться нижче по тексту.
 // Скільки місця займають наші дані (для діагностики)
 function storageUsageQuick() {
   let total = 0;
@@ -73,17 +108,11 @@ function storageUsageQuick() {
   return { bytes: total, mb: (total / 1048576).toFixed(2) + ' МБ' };
 }
 const fmtTime = s => { const m=Math.floor(s/60), sec=Math.floor(s%60); return (m<10?'0':'')+m+':'+(sec<10?'0':'')+sec; };
-// Відкладає важку операцію до наступного кадру, склеюючи серію викликів в один.
-function rafDebounce(fn) {
-  let pending = false, lastArgs = null;
-  return function(...args) {
-    lastArgs = args;
-    if (pending) return;
-    pending = true;
-    const run = () => { pending = false; fn.apply(null, lastArgs); };
-    (typeof requestAnimationFrame === 'function') ? requestAnimationFrame(run) : setTimeout(run, 16);
-  };
-}
+// rafDebounce ПЕРЕНЕСЕНО в src/core/reactive.js — він вантажиться раніше
+// за всі інші файли. Причина: background.js/html-overlay.js/song-*.js
+// підключені ДО extras-1.js, а їхні render-функції обгорнуті в
+// rafDebounce і викликаються вже на старті (initBgLibrary). Поки
+// визначення жило тут, це падало з «rafDebounce is not defined».
 const isActive = tabId => $('#tab-content-'+tabId) ? $('#tab-content-'+tabId).classList.contains('active') : false;
 const downloadFile = (content, filename, mime) => {
   const blob = new Blob([content], {type: mime+';charset=utf-8'});
@@ -134,6 +163,7 @@ const STORAGE_KEYS = {
   statistics: 'church_statistics',
   cloud: 'church_cloud_config',
   stageNotes: 'church_stage_notes',
+  stageMonitor: 'church_stage_monitor_fingerprint',
   qrPresets: 'church_qr_presets',
   graphicsPresets: 'church_graphics_presets',
   h2rTemplates: 'church_h2r_templates',
@@ -141,8 +171,8 @@ const STORAGE_KEYS = {
   plugins: 'church_plugins',
   animations: 'church_animations',
   fonts: 'church_fonts',
-  scenePresets: 'church_scene_presets',
-  announceSettings: 'church_announce_settings'
+  announceSettings: 'church_announce_settings',
+  scenePresets: 'church_scene_presets'
 };
 
 const H2R_STYLES = {
@@ -241,23 +271,72 @@ function setOutputName(n, name) {
   name = String(name || '').trim().slice(0, 24);
   OUT_NAME[n] = name || OUT_NAME_DEFAULT[n];
   saveJSON('church_output_names', OUT_NAME);
-  renderTabInto('router');
+  markDirty('router');
   if (typeof syncSendTargetBanner === 'function') syncSendTargetBanner();   // банер показує назву — оновити підпис одразу
 }
 
 // Відправити HTML на КОНКРЕТНИЙ вихід (а не на всі)
-const _overlayCache = new Map(); // html → Promise<filePath>
+const _overlayCache = new Map(); // html → Promise<filePath|appUrl>
 // Кешуємо саме ПРОМІС, а не готовий шлях: маршрути шлють однаковий HTML
 // на 4 виходи одночасно, і всі 4 виклики стартують до завершення першого запису.
+
+// ── ДВИГУН, фаза 1: перемикач каналу доставки HTML в output-вікна ──
+// false (типово) = старий, перевірений роками канал: тимчасовий файл +
+//                  file:// URL. Поведінка 1-в-1 як була.
+// true            = нова кастомна схема app:// (src/main/content-protocol.js):
+//                  HTML тримається в памʼяті, без тимчасових файлів, і має
+//                  нормальне походження — саме це згодом дозволить увімкнути
+//                  contextIsolation/webSecurity на output-вікнах (аудит 4.1).
+//
+// Перемикач НАВМИСНО з типовим значенням «вимкнено» і зберігається в
+// налаштуваннях: увімкнути можна на одному ПК, перевірити всі типи
+// контенту (H2R, GDD, фони, PDF/PPTX-слайди), і за потреби миттєво
+// відкотитись — без перезбірки застосунку й без ризику зірвати службу.
+function overlayChannelIsApp() {
+  try {
+    return !!(state && state.useAppProtocol) && !!(window.electronAPI && window.electronAPI.writeHtmlOverlayApp);
+  } catch (e) { return false; }
+}
+function setOverlayChannel(useApp) {
+  state.useAppProtocol = !!useApp;
+  saveJSON(STORAGE_KEYS.live + '_useappproto', state.useAppProtocol);
+  _overlayCache.clear();   // шляхи зі старого каналу більше не валідні
+  notify(state.useAppProtocol
+    ? '🔬 Канал доставки: app:// (новий). Перевір усі типи контенту.'
+    : '↩️ Канал доставки: file:// (старий, перевірений)');
+  if (typeof renderTabInto === 'function') { try { markDirty('settings'); } catch (e) {} }
+}
+function loadOverlayChannel() {
+  const v = loadJSON(STORAGE_KEYS.live + '_useappproto');
+  if (v !== null && v !== undefined) state.useAppProtocol = !!v;
+}
+
 function overlayPath(html) {
   let p = _overlayCache.get(html);
   if (p) return p;
-  p = window.electronAPI.writeHtmlOverlay(html);
+  p = overlayChannelIsApp()
+    ? window.electronAPI.writeHtmlOverlayApp(html)
+    : window.electronAPI.writeHtmlOverlay(html);
   if (_overlayCache.size > 40) _overlayCache.clear(); // не тримаємо історію вічно
   _overlayCache.set(html, p);
   p.catch(() => _overlayCache.delete(html));          // невдалий запис не кешуємо
   return p;
 }
+
+// Лічильник поколінь відправки НА КОЖЕН ВИХІД.
+//
+// Проблема, яку це закриває: sendHTMLToOutputN асинхронна —
+// overlayPath(html) спершу готує HTML, і лише потім .then() шле його у
+// вікно. Якщо між цими двома моментами оператор очистить вихід,
+// команда «clear» долетить ПЕРШОЮ (вона синхронна), а підготовлений
+// HTML — після неї, і контент повернеться на щойно очищений екран.
+// Виглядало як «прибираю, а воно саме вмикається».
+//
+// Тому очищення виходу підвищує його покоління (див. pv2ClearOutput), а
+// кожна відправка перевіряє, чи її покоління ще актуальне. Це лікує ВСІ
+// фічі одразу — QR, H2R-титри, медіа, таймер, графіку, вірші — бо всі
+// вони йдуть саме через цю функцію.
+var _outSendGen = { 1: 0, 2: 0, 3: 0, 4: 0 };
 
 function sendHTMLToOutputN(n, html, label) {
   if (state.trainingMode) {
@@ -265,7 +344,16 @@ function sendHTMLToOutputN(n, html, label) {
     return;
   }
   if (!window.electronAPI || !window.electronAPI.sendToOutput) { doSendHTML(html, label); return; }
+  // doSendHTML (усі виходи, гілка вище) сам пише в журнал через хук у
+  // extras-2.js — цей адресний шлях на конкретний вихід той хук не
+  // проходить, тож без цього виклику «на вихід N» (H2R/Медіа/Таймер) не
+  // потрапляло в «Журнал ефіру». Знайдено рев'ю коду.
+  if (typeof recordStat === 'function') recordStat('html', label, n);
+  var myGen = _outSendGen[n];
   overlayPath(html).then(filePath => {
+    // Поки готувався HTML, вихід очистили (чи послали туди щось інше) —
+    // цей результат застарів, мовчки викидаємо.
+    if (myGen !== _outSendGen[n]) return;
     window.electronAPI.sendToOutput(OUT_KIND[n], 'html', { filePath: filePath });
   }).catch(err => {
     console.warn('Не вдалось записати HTML-оверлей', err);
@@ -288,6 +376,28 @@ function pv2CloseOutput(n) {
     state.outputStates[n].open = false;
     pv2RenderOutputsCard();
   }).catch(() => {});
+}
+// «Закрити всі виходи» одним кліком — раніше доводилось тиснути «Закрити»
+// по черзі 4 рази (напр. в кінці служби чи щоб прибрати забуті відкриті
+// виходи). Питаємо підтвердження, як і інші небезпечні дії (та сама
+// свастика confirmDanger, що й у clearLive) — закриття не можна скасувати
+// одним кліком назад.
+function pv2CloseAllOutputs() {
+  const open = [1, 2, 3, 4].filter(n => state.outputStates[n] && state.outputStates[n].open);
+  if (!open.length) { notify('Усі виходи й так закриті'); return; }
+  if (state.ui && state.ui.confirmDanger !== false) {
+    if (!confirm('Закрити всі відкриті виходи (' + open.map(n => OUT_NAME[n]).join(', ') + ')?')) return;
+  }
+  open.forEach(n => pv2CloseOutput(n));
+  notify('✕ Усі виходи закрито');
+}
+// Тумблер відкрити/закрити для БУДЬ-ЯКОГО виходу за номером — те саме, що
+// toggleProjector()/toggleStream() роблять для 1/2 (F1/F2), але для решти.
+// Використовується гарячими клавішами F3/F4 (вихід 3/4) — раніше F1/F2/F5
+// мали тумблер, а вихід 3/4 доводилось відкривати лише мишкою.
+function toggleOutputN(n) {
+  if (state.outputStates && state.outputStates[n] && state.outputStates[n].open) pv2CloseOutput(n);
+  else pv2OpenOutput(n);
 }
 // Застосувати колір фону за кодом (hex) до виходу n
 function pv2ApplyOutputBg(n) {
@@ -334,6 +444,19 @@ function pv2RenderOutputsCard() {
       dot.title = open ? 'Відкрито' : 'Закрито';
     }
   }
+  updateSendBarOutputsBadge();
+}
+// Бейдж «N/4 відкрито» на постійній нижній панелі — видно з будь-якої
+// вкладки, не лише з «Виходів». Помаранчевий/сірий, коли не всі 4 відкриті —
+// це нормальний робочий стан (не помилка), просто нагадування, скільки
+// зараз реально видно оператору в Dock/списку вікон.
+function updateSendBarOutputsBadge() {
+  const el = document.getElementById('sendBarOutputsBadge');
+  if (!el) return;
+  const open = [1, 2, 3, 4].filter(n => state.outputStates[n] && state.outputStates[n].open);
+  el.textContent = open.length + '/4 відкрито';
+  el.style.color = open.length === 4 ? 'var(--green)' : (open.length === 0 ? 'var(--red)' : 'var(--text2)');
+  el.title = (open.length ? open.map(n => OUT_NAME[n]).join(', ') : 'Жодного виходу не відкрито') + ' — клік відкриває вкладку «Виходи»';
 }
 
 // ---- Стан розширених функцій. Пісні/оголошення/вибір/таймер ----
@@ -350,6 +473,9 @@ var state = {
   // Хромакей для кожного з 4 виходів ('none' або hex)
   outputChroma: {1:'none', 2:'none', 3:'none', 4:'none'},
   outputLive: {1:null, 2:null, 3:null, 4:null},   // «зараз показує» для кожного виходу окремо
+  // Пресети сцени — на відміну від «Профілю» (один вихід), зберігає й
+  // застосовує режим+хромакей+фон одразу для ВСІХ 4 виходів одним кліком.
+  scenePresets: [],
   // Авто-контраст: якщо колір тексту не заданий — беремо чорний на світлому фоні, білий на темному
   autoContrast: true,
   // Куди йде наступна відправка: 'all' або конкретний вихід 1..4
@@ -369,18 +495,35 @@ var state = {
   songTags: {},      // кольорові мітки-категорії пісень (id → ключ)
   chorusEach: {},    // прапорець «приспів після кожного куплета» для кожної пісні
   slideIdx: 0,
-  songSize: null,    // зафіксований розмір шрифту пісні (null = авто-підгін); тримається між куплетами і між піснями
+  // Розмір шрифту пісні — ОКРЕМИЙ для кожного з 4 виходів (раніше було одне
+  // спільне значення на всі + окреме "перевизначення по виходах" зверху —
+  // тепер це одна система: null = авто-підгін під найдовший слайд для ЦЬОГО
+  // виходу, число = зафіксований розмір саме для нього. Кнопки A−/A+ у
+  // вкладці «Пісні» керують усіма 4 разом; у «Виходах» — точково по одному.
+  songSize: {1: null, 2: null, 3: null, 4: null},
   scheduler: { items: [] }, autoBackup: { on: false, everyDays: 7, last: 0 }, songTrash: [], lang: 'ua',
   blackout: false, masterVolume: 1, sermon: { running: false }, bookmarks: [], panelLocked: false,
   // Титр для трансляції
   lower: { style: 'gold', position: 'bottom', animation: 'slideUp', accent: null, scale: 0.62,
            target: 2, autoHide: 0, visible: false },
-  captions: { enabled: false, listening: false, text: '', interim: '', targetOutput: 1 },  // живі субтитри (Web Speech API)
+  captions: { enabled: false, listening: false, text: '', interim: '', targetOutput: 1,
+    verseDetect: false, suggestion: null },  // живі субтитри (Web Speech API) + автопропозиція вірша
   cloudSync: { folder: null, lastSync: null, autoSync: true },  // хмарна синхронізація бібліотеки
-  service: { name: '', date: '', items: [], idx: -1, slideIdx: 0, saved: [] },
+  service: { name: '', date: '', items: [], idx: -1, slideIdx: 0, saved: [], serviceStartedAt: null },
   bgVideo: null,     // фонове відео
   bgQueue: [], bgQueueInterval: 30, bgQueueIdx: 0, bgQueueRunning: false,  // черга з авто-ротацією
-  logo: null,        // логотип церкви
+  logo: null,        // сам логотип-картинка — один файл, спільний для всіх виходів
+  // Показ логотипа — ОКРЕМИЙ для кожного з 4 виходів (раніше було одне
+  // спільне state.logoOn на всі). position: 'center-full' (на весь екран,
+  // як заставка паузи) або кутова ('top-left'/'top-right'/'bottom-left'/
+  // /'bottom-right' — маленький значок, як водяний знак, не перекриває контент).
+  logoSettings: {
+    1: { on: false, position: 'center-full', size: 160 },
+    2: { on: false, position: 'center-full', size: 160 },
+    3: { on: false, position: 'center-full', size: 160 },
+    4: { on: false, position: 'center-full', size: 160 }
+  },
+  _logoEditN: 1,   // який вихід зараз редагується в панелі «Шари» (лише UI, не зберігається)
   // Постійний водяний знак (напр. назва церкви/рік) — ОКРЕМИЙ для кожного
   // з 4 виходів (раніше було одне спільне налаштування на всі).
   watermark: {
@@ -390,8 +533,12 @@ var state = {
     4: { text: '', on: false, position: 'top-left', size: 16, color: '#ffffff' }
   },
   _watermarkEditN: 1,   // який вихід зараз редагується в панелі «Шари» (лише UI, не зберігається)
-  frozen: false,
-  alertCfg: { text: '', position: 'bottom', size: 34, seconds: 12, ticker: false },
+  // Заморозка — ОКРЕМА для кожного з 4 виходів (раніше було одне спільне
+  // булеве значення на всі). Глобальний перемикач toggleFreeze() (гаряча
+  // клавіша, швидка кнопка) і далі керує всіма 4 одразу — просто тепер
+  // під капотом це той самий об'єкт, що й для точкового toggleFreezeOutput(n).
+  frozen: {1: false, 2: false, 3: false, 4: false},
+  alertCfg: { text: '', position: 'bottom', size: 34, seconds: 12, ticker: false, targetOutput: null },   // targetOutput: null = на всі виходи
   bgAudio: { playing: false, volume: 0.5, name: '' },
   // Ефір: SoftProjector розділяє Prepare і Live — робимо так само, але з живим прев'ю
   liveMode: 'staged',   // staged = спершу в прев'ю, потім «В ЕФІР» | direct = одразу на екран
@@ -404,7 +551,6 @@ var state = {
   playlist: [], playlistIndex: 0, playlistRunning: false, playlistTimer: null,
   mediaFiles: [], currentMediaIndex: -1, mediaPlayer: null,
   animSettings: {entry:'fade', exit:'fade', speed:500},
-  stageWindow: null,
   statsData: {totalOutputs:0, songUsage:{}, bibleUsage:{}, dailyActivity:{}, log:[]},
   textSettings: {
     1:{size:58,position:'center',align:'center',color:'#ffffff',bgColor:'#000000',fontFamily:'Georgia, serif',styles:{bold:false,italic:false,shadow:true},
@@ -432,7 +578,11 @@ var state = {
     refSize: 30,            // розмір посилання
     fontFamily: 'Georgia, serif',
     layout: 'full',         // full = слайд на весь екран | lower = титр поверх відео (для трансляції)
-    streamOpacity: 62,      // прозорість фону графіки для трансляції, % (100 = суцільний)
+    streamOpacity: 62,      // прозорість фону графіки для трансляції, % (100 = суцільний) — застаріле, лишено для сумісності зі старими збереженнями
+    // Те саме, але окремо для КОЖНОГО з 4 виходів — раніше було лише ОДНЕ
+    // спільне значення (streamOpacity), тож вихід 3/4 з хромакеєм не мав
+    // куди поставити свою прозорість, окрім як через трансляцію.
+    outputOpacity: {1: 62, 2: 62, 3: 62, 4: 62},
     bgType: 'color',        // color | gradient | image
     bgGradient: 'linear-gradient(135deg,#0a0a1a,#1a1a3e)',
     bgImage: null,          // data:URL зображення
@@ -449,6 +599,13 @@ var state = {
     extraTitle: ''          // заголовок над текстом — для шаблону «title» (напр. тема проповіді)
   },
   h2rConfig: {line1:'Олександр', line2:'Проповідник', line3:'Церква Прага', style:'classic', accent:'#7c6af7', textColor:'#ffffff', bgColor:'#0a0a1a', animation:'slideLeft', duration:3, scale:2},
+  // Титри подяки — прокрутка знизу вгору (як титри фільму), для завершення
+  // служби/події. lines — багаторядковий текст, по рядку на пункт.
+  creditsConfig: {lines:'Дякуємо всім, хто допоміг!\nЗвук: Іван\nВідео: Марія\nВолонтери', durationSec:30, textColor:'#ffffff', accent:'#c8a84b', bg:'#0a0a1a'},
+  // Тікер — горизонтальний біжучий рядок унизу екрана (як новинний канал),
+  // на відміну від титрів подяки (вертикальні, одноразові) — цей крутиться
+  // ПО КОЛУ, доки не зупинять вручну.
+  tickerConfig: {text:'Слідкуйте за оголошеннями у групі церкви', speedSec:18, bg:'#0a0a1a', textColor:'#ffffff', accent:'#c8a84b'},
   customFonts: [],
   pptTemplate: 'classic', pptPreviewIndex: 0
 };
@@ -462,38 +619,6 @@ Object.defineProperties(state, {
   currentBibleVerseNum:{ get: () => (typeof currentBibleVerseNum !== 'undefined' ? currentBibleVerseNum : null) },
   timerState:          { get: () => (typeof timerState !== 'undefined' ? timerState : {remaining:0, setSeconds:0}) }
 });
-
-function addCurrentToPlaylist() {
-const content = getCurrentContent();
-if(!content || !content.payload.html) { notify('Немає контенту'); return; }
-let type = 'text', ref = content.payload.ref || 'Без назви';
-if(isActive('songs')) { type = 'song'; ref = state.selectedSong ? state.selectedSong.title : 'Пісня'; }
-else if(isActive('bible')) { type = 'bible'; ref = $('#bibleRef')?.textContent || 'Вірш'; }
-else if(isActive('announce')) { type = 'announce'; ref = $('#annTitle')?.value || 'Оголошення'; }
-state.playlist.push({id: Date.now() + Math.random() * 1000, type, ref, html: content.payload.html, content});
-savePlaylistData();
-renderPlaylist();
-}
-
-
-function applyAnimations() {
-updateAnimationPreview();
-saveJSON(STORAGE_KEYS.animations, state.animSettings);
-const speedVal = $('#animSpeedVal');
-if(speedVal) speedVal.textContent = state.animSettings.speed + 'ms';
-notify('✓ Анімації застосовано');
-}
-
-function applyFontSettings() {
-const s = $('#fontSongs')?.value || 'Georgia, serif';
-const b = $('#fontBible')?.value || 'Georgia, serif';
-const h = $('#fontHeaders')?.value || 'Georgia, serif';
-saveJSON(STORAGE_KEYS.fonts, {songs: s, bible: b, headers: h});
-const preview = $('#fontPreviewText');
-if(preview) preview.style.fontFamily = s;
-notify('✓ Шрифти застосовано');
-}
-
 
 function applyH2RPreset(name) {
 const presets = {
@@ -518,35 +643,6 @@ updateH2RPreview();
 notify('✓ Пресет "' + name + '"');
 }
 
-function applyPresetAnim(name) {
-const p = {
-gentle: {entry:'fade', exit:'fade', speed:600},
-fast: {entry:'fade', exit:'fade', speed:200}
-}[name];
-if(!p) return;
-const entry = $('#animEntry');
-const exit = $('#animExit');
-const speed = $('#animSpeed');
-if(entry) entry.value = p.entry;
-if(exit) exit.value = p.exit;
-if(speed) speed.value = p.speed;
-const speedVal = $('#animSpeedVal');
-if(speedVal) speedVal.textContent = p.speed + 'ms';
-updateAnimationPreview();
-applyAnimations();
-previewAnimation();
-}
-
-function applyTextSettingsToOutput() {
-  const target = state.currentTextOutput;
-  const c = pv2GraphicsContent();
-  if (target === 'all') {
-    doSendHTML(buildTextHTML(state.textSettings[1], c), 'Текст (всі виходи)');
-  } else {
-    const hasChroma = !!(state.outputChroma && state.outputChroma[target] && state.outputChroma[target] !== 'none');
-    sendHTMLToOutputN(target, buildTextHTML(state.textSettings[target] || state.textSettings[1], c, hasChroma), 'Текст');
-  }
-}
 
 function captureHotkey(e) {
 if(!state._hotkeyCapture) return;
@@ -569,133 +665,87 @@ const status = $('#hotkeyStatus');
 if(status) status.textContent = '✓ Клавішу призначено';
 }
 
-function changeTextSize(d) {
-const s = state.currentTextOutput === 'all' ? state.textSettings[1] : state.textSettings[state.currentTextOutput] || state.textSettings[1];
-const n = Math.max(12, Math.min(150, (s.size || 58) + d));
-if(state.currentTextOutput === 'all') {
-for(let i = 1; i <= 4; i++) state.textSettings[i].size = n;
-} else {
-state.textSettings[state.currentTextOutput].size = n;
-}
-const sizeDisplay = $('#textSizeDisplay');
-const sizeSlider = $('#textSizeSlider');
-if(sizeDisplay) sizeDisplay.textContent = n;
-if(sizeSlider) sizeSlider.value = n;
-updateTextStatus();
-updateTextPreview();
-}
-
-function clearH2R() {
-const content = $('#h2rPreviewContent');
-if(content) content.style.opacity = '0';
-setTimeout(() => { if(content) content.style.opacity = '1'; }, 300);
-}
-
-function clearPlaylist() {
-if(!confirm('Очистити чергу?')) return;
-state.playlist = [];
-state.playlistIndex = 0;
-state.playlistRunning = false;
-stopPlaylistTimer();
-savePlaylistData();
-renderPlaylist();
-const status = $('#playlistStatus');
-if(status) status.textContent = '● Зупинено';
+// РАНІШЕ ця функція міняла лише прев'ю оператора (500мс блимка), а живий
+// екран взагалі не чіпала — титри лишались там НАЗАВЖДИ, доки щось інше їх
+// випадково не замінило б. Тепер справді прибирає: спершу програє парну
+// анімацію ВИХОДУ (той самий рух, що й вхід, у зворотному напрямку), тоді,
+// коли вона завершиться, надсилає порожню сторінку, щоб остаточно очистити.
+function clearH2R(n) {
+  if (state.h2rConfig.line1 || state.h2rConfig.line2 || state.h2rConfig.line3) {
+    const exitHtml = getH2RHTML(true);
+    if (!n) doSendHTML(exitHtml, '');
+    else if (typeof sendHTMLToOutputN === 'function') sendHTMLToOutputN(n, exitHtml, '');
+    setTimeout(() => {
+      const blank = '<!DOCTYPE html><html><body style="background:transparent"></body></html>';
+      if (!n) doSendHTML(blank, '');
+      else if (typeof sendHTMLToOutputN === 'function') sendHTMLToOutputN(n, blank, '');
+    }, 450);
+  }
+  if (n) { h2rLowerLiveMap[n] = false; if (typeof renderH2RLowerOutBtns === 'function') renderH2RLowerOutBtns(); }
+  const content = $('#h2rPreviewContent');
+  if (content) { content.style.opacity = '0'; setTimeout(() => { if (content) content.style.opacity = '1'; }, 300); }
 }
 
-function closeStageDisplay() {
-if(state.stageWindow && !state.stageWindow.closed) { state.stageWindow.close(); state.stageWindow = null; }
-const status = $('#stageStatus');
-if(status) status.textContent = '✕ Stage Display закрито';
-}
-
-
+// closeStageDisplay/openStageDisplay — оновлено 27.08.2026: раніше тут був
+// window.open()-попап (жив лише в рендерері, без гарантії «поверх усіх
+// вікон», зникав за блокуванням спливаючих вікон). Тепер — звичайне
+// BrowserWindow через window.electronAPI.openStageWindow(), як і решта виходів.
 // CCLI-подібний звіт: реальні дати використання кожної пісні (не «сьогодні»
 // для всього), лише пісні (без віршів — CCLI їх не потребує), усі, а не
 // топ-10, і саме за обраний період (раніше перемикач Період нічого не робив).
-function exportStatisticsExcel() {
-  const period = ($('#statPeriod') && $('#statPeriod').value) || 'month';
-  const spanMs = period === 'day' ? 24 * 3600 * 1000 : period === 'week' ? 7 * 24 * 3600 * 1000 : period === 'year' ? 365 * 24 * 3600 * 1000 : 30 * 24 * 3600 * 1000;
-  const cutoff = Date.now() - spanMs;
-  const log = (state.statsData.log || []).filter(e => e.t >= cutoff);
-
-  const songDates = {};
-  log.forEach(e => {
-    if (e.kind !== 'song' || !e.name) return;
-    const day = new Date(e.t).toISOString().split('T')[0];
-    (songDates[e.name] = songDates[e.name] || new Set()).add(day);
-  });
-  const names = Object.keys(songDates).sort();
-  const rows = ['Назва пісні,Кількість використань,Дати використання'];
-  names.forEach(name => {
-    const dates = Array.from(songDates[name]).sort();
-    rows.push(`"${name}",${dates.length},"${dates.join('; ')}"`);
-  });
-  rows.push('');
-  rows.push('Період:,' + ({ day: 'День', week: 'Тиждень', month: 'Місяць', year: 'Рік' }[period]));
-  rows.push('Усього різних пісень:,' + names.length);
-  if (!names.length) { notify('⚠️ За цей період пісень не надсилалось'); return; }
-  downloadFile(rows.join('\n'), 'ccli_pisni_' + new Date().toISOString().split('T')[0] + '.csv', 'text/csv');
-  notify('📊 Звіт по піснях: ' + names.length);
-}
-
-function exportToHTML() {
-if(!state.songs.length) { notify('Немає'); return; }
-let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Пісні</title><style>body{font-family:Georgia,serif;max-width:600px;margin:16px auto;padding:12px;background:#f5f0e8}.song{margin:8px 0;padding:8px;background:#fff;border-radius:3px}.title{font-size:16px;font-weight:700;color:#2d1b69}.author{color:#888;font-size:12px}.verse{margin:2px 0;padding:2px 6px;background:#faf8f5;border-left:2px solid #c8a84b}</style></head><body><h1>⛪ Пісні</h1>`;
-state.songs.forEach(s => {
-html += `<div class="song"><div class="title">${esc(s.title)}</div>${s.author ? '<div class="author">'+esc(s.author)+'</div>' : ''}<div class="verse">${esc(s.verses[0] || '').replace(/\n/g,'<br>')}</div></div>`;
-});
-html += '</body></html>';
-downloadFile(html, 'songs_export.html', 'text/html');
-}
-
-function exportToPPTX() {
-if(!state.songs.length) { notify('Немає пісень'); return; }
-const t = PPT_TEMPLATES[state.pptTemplate] || PPT_TEMPLATES.classic;
-let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Пісні</title><style>body{margin:0;padding:12px;background:#1a1a1a;font-family:Arial,sans-serif}.slide{width:800px;height:450px;margin:10px auto;padding:24px 40px;background:${t.bg};border-radius:4px;display:flex;flex-direction:column;justify-content:center;page-break-after:always}.title{color:${t.titleColor};font-size:24px;font-weight:700;font-family:${t.fontFamily};text-align:center}.author{color:rgba(255,255,255,0.3);font-size:12px;text-align:center;margin-bottom:6px}.verses{color:${t.textColor};font-size:16px;font-family:${t.fontFamily};line-height:1.5;text-align:center}.footer{color:rgba(255,255,255,0.06);font-size:12px;text-align:center;margin-top:8px}</style></head><body>`;
-state.songs.forEach(s => {
-html += `<div class="slide"><div class="title">${esc(s.title)}</div>${s.author ? '<div class="author">✍️ '+esc(s.author)+'</div>' : ''}<div class="verses">${esc(s.verses[0] || '').replace(/\n/g,'<br>')}</div><div class="footer">⛪ Церква Прага</div></div>`;
-});
-html += '</body></html>';
-const win = window.open('', '_blank', 'width=900,height=700');
-if(!win) { notify('Дозвольте спливаючі вікна'); return; }
-win.document.write(html);
-win.document.close();
-win.focus();
-win.print();
-const status = $('#pptStatus');
-if(status) status.textContent = '✓ PPTX експортовано';
-}
-
-function getAnimationCSS(type, dir) {
-const t = {
-fade: {transform:'translate(0,0) scale(1)', opacity:'0'},
-slideLeft: {transform:'translate(-40px,0) scale(1)', opacity:'0'},
-zoom: {transform:'translate(0,0) scale(0.5)', opacity:'0'},
-none: {transform:'translate(0,0) scale(1)', opacity:'1'}
-};
-if(dir === 'out' && type !== 'none') {
-if(type === 'fade') return {transform:'translate(0,0) scale(1)', opacity:'0'};
-if(type === 'slideLeft') return {transform:'translate(40px,0) scale(1)', opacity:'0'};
-if(type === 'zoom') return {transform:'translate(0,0) scale(1.5)', opacity:'0'};
-}
-return t[type] || t.fade;
-}
-
+// Що зараз обрано для показу. Використовується прев'ю і «В ефір».
+//
+// ДВА БАГИ, ЯКІ ТУТ БУЛИ (обидва давали «Контент не обрано»):
+// 1) Джерело визначалось за тим, яка ВКЛАДКА зараз відкрита
+//    (isActive('bible')). Коли оператор виводив прямо з Біблії — усе
+//    працювало, бо вкладка активна. А через прев'ю активна вкладка
+//    «Показ», тож жодна умова не спрацьовувала й на екран летіла
+//    заглушка. Тепер дивимось на ФАКТИЧНО обраний вміст, а активна
+//    вкладка — лише підказка для вибору між піснею й віршем.
+// 2) Пісня читалась із state.selectedSong, якої не існує: пісня живе в
+//    глобальній selectedSong (index.html). Тобто пісні звідси не
+//    бралися взагалі, за жодних умов.
 function getCurrentContent() {
-const payload = {html: '', ref: ''};
-if(isActive('songs') && state.selectedSong) {
-payload.html = state.selectedSong.verses[state.selectedVerseIdx] || '';
-payload.ref = state.selectedSong.title;
-} else if(isActive('bible')) {
-payload.html = $('#bibleDisplay')?.textContent || '';
-payload.ref = $('#bibleRef')?.textContent || '';
-} else if(isActive('announce')) {
-return {type: 'html', payload: {html: getAnnounceHTML({title: $('#annTitle')?.value, body: $('#annBody')?.value, datetime: $('#annDateTime')?.value, style: $('#annStyle')?.value}), ref: 'Оголошення'}};
-} else {
-payload.html = 'Контент не обрано';
-}
-return {type: 'text', payload};
+  const payload = { html: '', ref: '' };
+
+  // Фактично обране, незалежно від відкритої вкладки
+  const song = (typeof selectedSong !== 'undefined' && selectedSong) ? selectedSong : null;
+  const songIdx = (typeof selectedVerseIdx !== 'undefined') ? selectedVerseIdx : 0;
+  const bibleText = ($('#bibleDisplay')?.textContent || '').trim();
+  const bibleRef = ($('#bibleRef')?.textContent || '').trim();
+  const hasBible = bibleText && bibleText !== '—' && bibleText.indexOf('Оберіть вірш') !== 0;
+
+  // Оголошення — лише коли ця вкладка справді відкрита: там вміст
+  // збирається з полів, які поза вкладкою не мають сенсу.
+  if (isActive('announce')) {
+    return { type: 'html', payload: { html: getAnnounceHTML({
+      title: $('#annTitle')?.value, body: $('#annBody')?.value,
+      datetime: $('#annDateTime')?.value, style: $('#annStyle')?.value }), ref: 'Оголошення' } };
+  }
+
+  // Якщо обрано і пісню, і вірш — вирішуємо так: спершу активна
+  // вкладка, потім те, що виводили останнім (lastLiveSource), і лише
+  // потім — що є в наявності.
+  let preferSong;
+  if (isActive('songs')) preferSong = true;
+  else if (isActive('bible')) preferSong = false;
+  else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'song') preferSong = true;
+  else if (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'bible') preferSong = false;
+  else preferSong = !!song && !hasBible;
+
+  if (preferSong && song) {
+    payload.html = song.verses[songIdx] || '';
+    payload.ref = songRefForDisplay(song.title);
+  } else if (hasBible) {
+    payload.html = bibleText;
+    payload.ref = bibleRef;
+  } else if (song) {
+    payload.html = song.verses[songIdx] || '';
+    payload.ref = songRefForDisplay(song.title);
+  } else {
+    payload.html = 'Контент не обрано';
+  }
+  return { type: 'text', payload };
 }
 
 
@@ -878,19 +928,35 @@ function getGraphicsHTML(text, ref, bgAlpha) {
   </style></head><body>${bgImageLayer}${bgVideoLayer}${decorHTML}<div class="wrap">${bodyContentHTML}</div>${AUTOFIT_SCRIPT}</body></html>`;
 }
 
-function getH2RHTML() {
+function getH2RHTML(exiting) {
 const s = H2R_STYLES[state.h2rConfig.style] || H2R_STYLES.classic;
 const accent = state.h2rConfig.accent;
 let bg = s.bg || 'rgba(10,10,26,0.92)';
 if(bg.includes('var(--accent)')) bg = bg.replace(/var(--accent)/g, accent);
 let border = s.border || 'none';
 if(border.includes('var(--accent)')) border = border.replace(/var(--accent)/g, accent);
-const anims = {slideLeft:'h2rSlideLeft', fade:'h2rFade', pop:'h2rPop', none:'none'};
-const anim = anims[state.h2rConfig.animation] || 'h2rFade';
-const dur = Math.min(state.h2rConfig.duration, 5);
+// Кожен вхід має ПАРНИЙ вихід (той самий рух, у зворотному напрямку) —
+// раніше зникнення завжди було миттєвим, незалежно від того, як титри
+// з'явились, що виглядало різко порівняно з плавним входом.
+const animsIn = {slideLeft:'h2rSlideLeftIn', slideRight:'h2rSlideRightIn', slideUp:'h2rSlideUpIn', fade:'h2rFadeIn', pop:'h2rPopIn', none:'none'};
+const animsOut = {slideLeft:'h2rSlideLeftOut', slideRight:'h2rSlideRightOut', slideUp:'h2rSlideUpOut', fade:'h2rFadeOut', pop:'h2rFadeOut', none:'none'};
+const animName = state.h2rConfig.animation || 'fade';
+const anim = (exiting ? animsOut : animsIn)[animName] || (exiting ? 'h2rFadeOut' : 'h2rFadeIn');
+const dur = exiting ? 0.4 : Math.min(state.h2rConfig.duration, 5);
+const fillMode = exiting ? 'forwards' : 'both';
 const sc = state.h2rConfig.scale || 1;   // масштаб розміру титрів (повзунок)
 
-return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{margin:0;background:transparent;width:100vw;height:100vh;overflow:hidden;font-family:${s.fontFamily};display:flex;align-items:flex-end;justify-content:flex-start}.wrap{background:${bg};border:${border};border-radius:${s.borderRadius};padding:${Math.round(14*sc)}px ${Math.round(20*sc)}px;margin:0 0 20px 20px;max-width:90%;animation:${anim} ${dur}s ease;}.line1{color:${state.h2rConfig.textColor};font-size:${Math.round(18*sc)}px;font-weight:700}.line2{color:${accent};font-size:${Math.round(12*sc)}px;margin-top:${Math.round(2*sc)}px}.line3{color:rgba(255,255,255,0.3);font-size:${Math.round(12*sc)}px;margin-top:${Math.round(2*sc)}px}.decor{position:absolute;bottom:-4px;left:0;right:0;height:${Math.max(3,Math.round(3*sc))}px;background:${accent};border-radius:0 0 4px 4px}@keyframes h2rSlideLeft{from{transform:translateX(-60px);opacity:0}to{transform:translateX(0);opacity:1}}@keyframes h2rFade{from{opacity:0}to{opacity:1}}@keyframes h2rPop{0%{transform:scale(0.5);opacity:0}70%{transform:scale(1.05);opacity:1}100%{transform:scale(1);opacity:1}}</style></head><body><div class="wrap">${state.h2rConfig.line1 ? '<div class="line1">'+esc(state.h2rConfig.line1)+'</div>' : ''}${state.h2rConfig.line2 ? '<div class="line2">'+esc(state.h2rConfig.line2)+'</div>' : ''}${state.h2rConfig.line3 ? '<div class="line3">'+esc(state.h2rConfig.line3)+'</div>' : ''}<div class="decor"></div></div></body></html>`;
+return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>*{margin:0;padding:0;box-sizing:border-box}body{margin:0;background:transparent;width:100vw;height:100vh;overflow:hidden;font-family:${s.fontFamily};display:flex;align-items:flex-end;justify-content:flex-start}.wrap{background:${bg};border:${border};border-radius:${s.borderRadius};padding:${Math.round(14*sc)}px ${Math.round(20*sc)}px;margin:0 0 20px 20px;max-width:90%;animation:${anim} ${dur}s ease ${fillMode};}.line1{color:${state.h2rConfig.textColor};font-size:${Math.round(18*sc)}px;font-weight:700}.line2{color:${accent};font-size:${Math.round(12*sc)}px;margin-top:${Math.round(2*sc)}px}.line3{color:rgba(255,255,255,0.3);font-size:${Math.round(12*sc)}px;margin-top:${Math.round(2*sc)}px}.decor{position:absolute;bottom:-4px;left:0;right:0;height:${Math.max(3,Math.round(3*sc))}px;background:${accent};border-radius:0 0 4px 4px}
+@keyframes h2rSlideLeftIn{from{transform:translateX(-60px);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes h2rSlideLeftOut{from{transform:translateX(0);opacity:1}to{transform:translateX(-60px);opacity:0}}
+@keyframes h2rSlideRightIn{from{transform:translateX(60px);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes h2rSlideRightOut{from{transform:translateX(0);opacity:1}to{transform:translateX(60px);opacity:0}}
+@keyframes h2rSlideUpIn{from{transform:translateY(40px);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes h2rSlideUpOut{from{transform:translateY(0);opacity:1}to{transform:translateY(40px);opacity:0}}
+@keyframes h2rFadeIn{from{opacity:0}to{opacity:1}}
+@keyframes h2rFadeOut{from{opacity:1}to{opacity:0}}
+@keyframes h2rPopIn{0%{transform:scale(0.5);opacity:0}70%{transform:scale(1.05);opacity:1}100%{transform:scale(1);opacity:1}}
+</style></head><body><div class="wrap">${state.h2rConfig.line1 ? '<div class="line1">'+esc(state.h2rConfig.line1)+'</div>' : ''}${state.h2rConfig.line2 ? '<div class="line2">'+esc(state.h2rConfig.line2)+'</div>' : ''}${state.h2rConfig.line3 ? '<div class="line3">'+esc(state.h2rConfig.line3)+'</div>' : ''}<div class="decor"></div></div></body></html>`;
 }
 
 
@@ -906,35 +972,22 @@ return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;ba
 }
 
 
-function loadFonts(input) {
-const files = Array.from(input.files);
-if(!files.length) return;
-files.forEach(f => {
-const r = new FileReader();
-r.onload = function(e) {
-const name = f.name.replace(/.[^.]+$/, '');
-const blob = new Blob([e.target.result], {type: f.type});
-const url = URL.createObjectURL(blob);
-state.customFonts.push({name, url, file: f.name});
-const style = document.createElement('style');
-style.textContent = '@font-face{font-family:"' + name + '";src:url("' + url + '")}';
-document.head.appendChild(style);
-renderFontsList();
-updateFontSelectors();
-updateGraphicsFontList();   // новий шрифт одразу доступний у Графіці й Тексті
-notify('🖋️ Шрифт "' + name + '" завантажено');
-};
-r.readAsArrayBuffer(f);
-});
-input.value = '';
-}
-
 
 function loadHotkeys() {
 try { const d = loadJSON(STORAGE_KEYS.hotkeys); if(d) state.hotkeys = d; } catch(e) {}
 if(!state.hotkeys || !Object.keys(state.hotkeys).length) {
 state.hotkeys = {'next-verse':'Space','prev-verse':'ArrowLeft','send':'Enter','clear':'Escape'};
 }
+// Відкрити/закрити виходи 1-5 (проектор/трансляція/вихід3/вихід4/обидва)
+// раніше були захардкоджені на F1-F5 (index.html), не через це меню —
+// тепер перенесено сюди, щоб можна було переприв'язати (на macOS ці
+// клавіші за замовчуванням займає система). Добавляємо як дефолт лише
+// тим, у кого їх ще нема в збереженому профілі — не чіпаємо, якщо
+// оператор уже сам щось призначив.
+const outputToggleDefaults = {'toggle-projector':'F1','toggle-stream':'F2','toggle-out3':'F3','toggle-out4':'F4','toggle-both':'F5'};
+Object.keys(outputToggleDefaults).forEach(a => {
+  if (state.hotkeys[a] === undefined) state.hotkeys[a] = outputToggleDefaults[a];
+});
 renderHotkeys();
 }
 
@@ -942,65 +995,6 @@ renderHotkeys();
 // MIDI-ТРИГЕРИ (Web MIDI API — вже є в Chromium/Electron,
 // нічого не треба ставити чи компілювати нативно)
 // ============================================================
-const MIDI_ACTIONS = [
-  { action: 'next',     label: '▶ Далі' },
-  { action: 'prev',     label: '◀ Назад' },
-  { action: 'go-live',  label: '📺 В ефір' },
-  { action: 'clear',    label: '✕ Очистити' },
-  { action: 'blackout', label: '⬛ Чорний екран' },
-  { action: 'freeze',   label: '❄️ Заморозка' }
-];
-function loadMidiMap() {
-  try { const d = loadJSON(STORAGE_KEYS.midiMap); if (d) state.midiMap = d; } catch (e) {}
-}
-function saveMidiMap() { saveJSON(STORAGE_KEYS.midiMap, state.midiMap); }
-
-function initMidi() {
-  if (!navigator.requestMIDIAccess) {
-    notify('⚠️ Ця збірка Chromium не підтримує Web MIDI');
-    return;
-  }
-  navigator.requestMIDIAccess().then(function (access) {
-    state.midiInputs = Array.from(access.inputs.values()).map(i => i.name);
-    access.inputs.forEach(function (input) {
-      input.onmidimessage = onMidiMessage;
-    });
-    access.onstatechange = function () {
-      state.midiInputs = Array.from(access.inputs.values()).map(i => i.name);
-      Array.from(access.inputs.values()).forEach(input => { input.onmidimessage = onMidiMessage; });
-      if (isActive('hotkeys')) renderTabInto('hotkeys');
-    };
-    if (isActive('hotkeys')) renderTabInto('hotkeys');
-    notify('🎹 MIDI: знайдено пристроїв — ' + state.midiInputs.length);
-  }).catch(function () { notify('⚠️ Немає доступу до MIDI (дозволь у браузері/системі)'); });
-}
-function onMidiMessage(e) {
-  const [status, note, velocity] = e.data;
-  const cmd = status & 0xf0;
-  if (cmd !== 0x90 || !velocity) return;   // цікавить лише «нота натиснута» (note-on)
-  const key = 'note:' + note;
-  if (state.midiLearn) {
-    state.midiMap[state.midiLearn] = key;
-    state.midiLearn = null;
-    saveMidiMap();
-    renderTabInto('hotkeys');
-    notify('🎹 Прив\'язано: нота ' + note);
-    return;
-  }
-  const action = Object.keys(state.midiMap).find(a => state.midiMap[a] === key);
-  if (action && typeof applyStationCommand === 'function') applyStationCommand({ action: action, from: 'MIDI' });
-}
-function midiStartLearn(action) {
-  state.midiLearn = action;
-  renderTabInto('hotkeys');
-  notify('🎹 Натисни клавішу/пад на MIDI-контролері для «' + action + '»…');
-}
-function midiClear(action) {
-  delete state.midiMap[action];
-  saveMidiMap();
-  renderTabInto('hotkeys');
-}
-
 // ============================================================
 // OSC-ТРИГЕРИ (UDP, слухаємо адреси на порту 9000,
 // прив'язуємо до дій, як MIDI)
@@ -1009,7 +1003,7 @@ function loadOscMap() {
   if (window.electronAPI && window.electronAPI.oscGetMap) {
     window.electronAPI.oscGetMap().then(map => {
       state.oscMap = map || {};
-      if (isActive('hotkeys')) renderTabInto('hotkeys');
+      if (isActive('hotkeys')) markDirty('hotkeys');
     });
   }
 }
@@ -1017,7 +1011,7 @@ function startOscServer() {
   if (!window.electronAPI) return;
   window.electronAPI.startOscServer().then(() => {
     state.oscRunning = true;
-    if (isActive('hotkeys')) renderTabInto('hotkeys');
+    if (isActive('hotkeys')) markDirty('hotkeys');
     notify('🎚️ OSC-сервер запущено на порту 9000');
   }).catch(() => notify('⚠️ Не вдалося запустити OSC-сервер'));
 }
@@ -1025,7 +1019,7 @@ function stopOscServer() {
   if (!window.electronAPI) return;
   window.electronAPI.stopOscServer().then(() => {
     state.oscRunning = false;
-    if (isActive('hotkeys')) renderTabInto('hotkeys');
+    if (isActive('hotkeys')) markDirty('hotkeys');
     notify('🎚️ OSC-сервер зупинено');
   });
 }
@@ -1033,14 +1027,14 @@ function oscStartLearn(action) {
   if (!window.electronAPI) return;
   state.oscLearn = action;
   window.electronAPI.oscLearn(action);
-  renderTabInto('hotkeys');
+  markDirty('hotkeys');
   notify('🎚️ Чекаю OSC-адреси для «' + action + '» — надішли повідомлення з контролера…');
 }
 function oscClear(action) {
   if (!window.electronAPI) return;
   window.electronAPI.oscClear(action).then(() => {
     delete state.oscMap[action];
-    renderTabInto('hotkeys');
+    markDirty('hotkeys');
   });
 }
 
@@ -1057,7 +1051,7 @@ if (window.electronAPI && window.electronAPI.onOscLearned) {
   window.electronAPI.onOscLearned((data) => {
     state.oscLearn = null;
     state.oscMap[data.action] = data.address;
-    renderTabInto('hotkeys');
+    markDirty('hotkeys');
     notify('🎚️ Прив\'язано: ' + data.address + ' → ' + data.action);
   });
 }
@@ -1065,99 +1059,54 @@ if (window.electronAPI && window.electronAPI.onOscLearned) {
 // ============================================================
 // ЖИВІ СУБТИТРИ (Web Speech API — розпізнування мови
 // з комп'ютерного мікрофона в реальному часі, офлайн)
+// + автопропозиція вірша + індикатор рівня звуку — усе живе в окремій
+// вкладці «🎤 Субтитри» (renderCaptionsTab, extras-3.js), не в «Шари».
 // ============================================================
-let _speechRecognition = null;
-function initCaptions() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    notify('⚠️ Web Speech API недоступна в цій версії');
-    return;
-  }
-  _speechRecognition = new SpeechRecognition();
-  _speechRecognition.continuous = true;
-  _speechRecognition.interimResults = true;
-  _speechRecognition.lang = 'uk-UA'; // українська за замовчуванням
-  
-  _speechRecognition.onstart = () => {
-    state.captions.listening = true;
-    renderTabInto('layers');
-    notify('🎤 Слухаємо мікрофон…');
-  };
-  _speechRecognition.onend = () => {
-    state.captions.listening = false;
-    renderTabInto('layers');
-  };
-  _speechRecognition.onresult = (event) => {
-    let interim = '';
-    let final = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const transcript = event.results[i].transcript;
-      if (event.results[i].isFinal) {
-        final += transcript + ' ';
-      } else {
-        interim += transcript;
-      }
-    }
-    if (final) {
-      state.captions.text = (state.captions.text + ' ' + final).trim();
-    }
-    state.captions.interim = interim;
-    // Передаємо текст у вихід
-    const outputKind = state.captions.targetOutput || 1;
-    if (window.electronAPI && window.electronAPI.sendToOutput) {
-      window.electronAPI.sendToOutput(outputKind, 'captions', {
-        text: state.captions.text,
-        interim: state.captions.interim
-      });
-    }
-  };
-  _speechRecognition.onerror = (event) => {
-    notify('⚠️ Помилка розпізнавання: ' + event.error);
-  };
-}
-function startCaptions() {
-  if (!_speechRecognition) initCaptions();
-  if (!_speechRecognition) return;
-  state.captions.enabled = true;
-  state.captions.text = '';
-  _speechRecognition.start();
-}
-function stopCaptions() {
-  if (_speechRecognition) _speechRecognition.stop();
-  state.captions.enabled = false;
-  state.captions.listening = false;
-  renderTabInto('layers');
-}
-function clearCaptions() {
-  state.captions.text = '';
-  state.captions.interim = '';
-  renderTabInto('layers');
-  if (window.electronAPI && window.electronAPI.sendToOutput) {
-    window.electronAPI.sendToOutput(state.captions.targetOutput || 1, 'captions', { text: '', interim: '' });
-  }
-}
-function setCaptionLang(lang) {
-  if (_speechRecognition) _speechRecognition.lang = lang;
-  renderTabInto('layers');
-}
-function setCaptionOutput(outputNum) {
-  state.captions.targetOutput = outputNum || 1;
-  renderTabInto('layers');
+// ---- Автопропозиція вірша під час проповіді (локально, без AI/інтернету) ----
+// Той самий fuzzy-пошук, що й у вкладці «Біблія» (fuzzySearchIndexed), просто
+// запускається автоматично на щойно розпізнаний фрагмент мови. НІКОЛИ не
+// надсилає в зал сама — лише пропонує, оператор підтверджує кліком. Свідомо
+// без AI/API — щоб працювало офлайн і безкоштовно (користувач це підтвердив).
+function detectVerseInSpeech(chunk) {
+  const text = String(chunk || '').trim();
+  const wordCount = text.split(/\s+/).filter(Boolean).length;
+  // Занадто короткий фрагмент — забагато випадкових збігів, не варто пропонувати
+  if (text.length < 15 || wordCount < 4) return;
+  if (typeof fuzzySearchIndexed !== 'function' || typeof currentTranslationId === 'undefined' || !currentTranslationId) return;
+  let results;
+  try { results = fuzzySearchIndexed(text, currentTranslationId, 3); } catch (e) { return; }
+  if (!results || !results.length) return;
+  const top = results[0];
+  // Два різних масштаби score в fuzzySearchIndexed: якщо весь запит знайшовся
+  // ЯК ЄДИНИЙ підрядок у вірші — score = 1000-позиція (майже завжди ≥900,
+  // дослівна цитата). Якщо ні — це сума за окремими влучними словами
+  // (~2-3 бали за слово), перевірено ізольованим тестом на реальній фразі
+  // (score ≈13.7 для 5-6 влучних слів) — тож поріг тут має рахуватись від
+  // кількості слів, а не бути фіксованим числом.
+  const isSubstringMatch = top.score >= 900;
+  const wordScoreOk = top.score >= wordCount * 2.2;
+  if (!isSubstringMatch && !wordScoreOk) return;
+  const parts = top.key.split('.');
+  const ref = (typeof getBookName === 'function' ? getBookName(parts[0]) : parts[0]) + ' ' + parts[1] + ':' + parts[2];
+  // Та сама пропозиція, що вже висить — не смикаємо інтерфейс повторно
+  if (state.captions.suggestion && state.captions.suggestion.key === top.key) return;
+  state.captions.suggestion = { key: top.key, ref: ref, text: top.text };
+  markDirty('captions');
+  notify('🔍 Схоже на цитату: ' + ref);
 }
 
+// ---- Індикатор рівня звуку з ВИБРАНОГО пристрою (напр. SQ-6 по USB) ----
+// Той самий підхід, що вже є для мультивью ATEM (atem-ui.js): getUserMedia
+// з явним deviceId — стандартний веб-API, без нативних модулів. НЕ підключено
+// до самого розпізнавання мови (Web Speech API технічно не приймає довільний
+// потік — завжди слухає системний мікрофон за замовчуванням, окреме питання).
+// Це лише щоб на око бачити: кабель/захоплення від пульта дійсно працює.
+let _audioMeterStream = null;
+let _audioMeterCtx = null;
+let _audioMeterRAF = null;
 // ============================================================
 // ХМАРНА СИНХРОНІЗАЦІЯ БІБЛІОТЕКИ (папка Dropbox/Google Drive/OneDrive)
 // ============================================================
-function pickCloudSyncFolder() {
-  if (!window.electronAPI || !window.electronAPI.pickCloudSyncFolder) return;
-  window.electronAPI.pickCloudSyncFolder().then(folder => {
-    if (folder) {
-      state.cloudSync.folder = folder;
-      renderTabInto('settings');
-      notify('☁️ Папка синхронізації: ' + folder);
-    }
-  });
-}
 function getCloudSyncFolder() {
   if (!window.electronAPI) return Promise.resolve(null);
   return window.electronAPI.getCloudSyncFolder().then(folder => {
@@ -1165,134 +1114,6 @@ function getCloudSyncFolder() {
     return folder;
   });
 }
-function syncLibraryToCloud() {
-  if (!window.electronAPI || !state.cloudSync.folder) {
-    notify('⚠️ Вкажи папку синхронізації спочатку');
-    return;
-  }
-  const libraryData = {
-    songs: state.songs || [],
-    translations: state.multiTrans || {},
-    shortcuts: state.aliases || {},
-    themes: (state.looks || []).filter(t => !t._system),
-    exportedAt: new Date().toISOString()
-  };
-  window.electronAPI.syncToCloud(libraryData).then(result => {
-    if (result.status === 'ok') {
-      state.cloudSync.lastSync = new Date().toLocaleString('uk-UA');
-      notify('☁️ Синхронізовано в ' + result.path);
-    } else {
-      notify('⚠️ Помилка синхронізації: ' + (result.message || result.status));
-    }
-  });
-}
-function syncLibraryFromCloud() {
-  if (!window.electronAPI || !state.cloudSync.folder) {
-    notify('⚠️ Вкажи папку синхронізації спочатку');
-    return;
-  }
-  window.electronAPI.syncFromCloud().then(result => {
-    if (result.status === 'ok') {
-      const data = result.data;
-      if (data.songs && Array.isArray(data.songs)) {
-        state.songs = data.songs;
-        renderPlaylist();
-      }
-      if (data.translations) state.multiTrans = Object.assign(state.multiTrans || {}, data.translations);
-      if (data.themes && Array.isArray(data.themes)) {
-        state.looks = (state.looks || []).filter(t => t._system);
-        state.looks.push(...data.themes);
-      }
-      state.cloudSync.lastSync = new Date().toLocaleString('uk-UA');
-      notify('☁️ Завантажено з хмари (' + (data.songs ? data.songs.length : 0) + ' пісень)');
-    } else if (result.status === 'not-found') {
-      notify('⚠️ Файл синхронізації не знайдено в папці');
-    } else {
-      notify('⚠️ Помилка: ' + (result.message || result.status));
-    }
-  });
-}
-function setAutoCloudSync(on) {
-  state.cloudSync.autoSync = on;
-  renderTabInto('settings');
-}
-
-function loadMediaFiles(input) {
-const files = Array.from(input.files);
-if(!files.length) return;
-const UNSUP = ['mov','mkv','avi','wmv','flv','m4v','mpg','mpeg','3gp','ts','flac','wma','opus','aiff','heic','heif','tif','tiff'];
-files.forEach(f => {
-const ext = (String(f.name).split('.').pop() || '').toLowerCase();
-// Непідтримувані (MOV/MKV/FLAC…) з відомим шляхом — конвертуємо й беремо file://
-// (для відео dataURL і так завеликий; шлях економніший).
-if (UNSUP.indexOf(ext) >= 0 && f.path && typeof pathToFileUrl === 'function' && typeof ensureSupportedMedia === 'function') {
-ensureSupportedMedia(f.path, function(cpath) {
-state.mediaFiles.push({name: f.name, type: f.type, data: pathToFileUrl(cpath)});
-renderMediaList();
-});
-return;
-}
-const r = new FileReader();
-r.onload = function(e) {
-state.mediaFiles.push({name: f.name, type: f.type, data: e.target.result});
-renderMediaList();
-};
-r.readAsDataURL(f);
-});
-}
-
-
-function loadPlaylist() {
-try {
-const saved = loadJSON(STORAGE_KEYS.playlistSaved) || [];
-if(!saved.length) { notify('Немає'); return; }
-const names = saved.map((p, i) => (i+1) + '. ' + p.name);
-pv2Prompt('Введи номер плейлиста:\n' + names.join('\n'), function(choice){
-if(choice) {
-const idx = parseInt(choice) - 1;
-if(idx >= 0 && idx < saved.length) {
-state.playlist = saved[idx].items || [];
-state.playlistIndex = 0;
-savePlaylistData();
-renderPlaylist();
-const status = $('#playlistStatus');
-if(status) status.textContent = '● Завантажено: ' + saved[idx].name;
-}
-}
-});
-} catch(e) {}
-}
-
-function loadPlaylistData() {
-try { const data = loadJSON(STORAGE_KEYS.playlist); if(Array.isArray(data)) state.playlist = data; } catch(e) { state.playlist = []; }
-renderPlaylist();
-}
-
-function loadStageNotes() {
-const notes = loadJSON(STORAGE_KEYS.stageNotes) || '';
-const el = $('#stageNotes');
-if(el) el.value = notes;
-updateStageDisplay();
-}
-
-function loadStatistics() {
-try { const d = loadJSON(STORAGE_KEYS.statistics); if(d) state.statsData = d; } catch(e) {}
-updateStatistics();
-}
-
-
-function loadYouTube() {
-const url = $('#youtubeUrl')?.value?.trim() || '';
-if(!url) { notify('Введіть посилання'); return; }
-const vid = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})(?:[&?]|$)/);
-if(!vid) { notify('Невірне посилання'); return; }
-const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}iframe{width:100%;height:100%;border:none}</style></head><body><iframe src="https://www.youtube-nocookie.com/embed/${vid[1]}?autoplay=1&playsinline=1&rel=0&modestbranding=1" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="origin"></iframe></body></html>`;
-doSendHTML(html, 'YouTube');
-const status = $('#youtubeStatus');
-if(status) status.textContent = '✓ Відправлено';
-}
-
-
 function movePlaylistItem(i, dir) {
 const ni = i + dir;
 if(i < 0 || i >= state.playlist.length) return;
@@ -1302,146 +1123,6 @@ state.playlist[i] = state.playlist[ni];
 state.playlist[ni] = t;
 savePlaylistData();
 renderPlaylist();
-}
-
-function openStageDisplay() {
-if(state.stageWindow && !state.stageWindow.closed) { state.stageWindow.focus(); return; }
-state.stageWindow = window.open('', '_blank', 'width=1280,height=720,menubar=no,toolbar=no,location=no');
-if(!state.stageWindow) { notify('Дозвольте спливаючі вікна'); return; }
-state.stageWindow.document.write(`<html><head><meta charset="UTF-8"><title>Stage Display</title><style>body{margin:0;background:#0a0a1a;color:#fff;font-family:Georgia,serif;height:100vh;display:flex;flex-direction:column;padding:16px 30px}.header{display:flex;justify-content:space-between;color:#c8a84b;font-size:2.2vh;border-bottom:1px solid rgba(255,255,255,0.05);padding-bottom:6px}.main{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center}.label{color:rgba(255,255,255,0.3);font-size:1.8vh;letter-spacing:2px}.current{font-size:5vh;line-height:1.3;margin:4px 0;max-width:85%}.next-box{border-top:1px solid rgba(255,255,255,0.03);padding-top:6px}.next-label{color:rgba(255,255,255,0.3);font-size:1.6vh}.next-text{color:rgba(255,255,255,0.45);font-size:2.6vh}.footer{display:flex;justify-content:space-between;border-top:1px solid rgba(255,255,255,0.03);padding-top:6px;font-size:1.8vh;color:rgba(255,255,255,0.4)}.timer{font-family:monospace;font-size:3vh;color:#f56565}</style></head><body><div class="header"><span>⛪ Церква Прага</span><span id="stageClock">00:00</span></div><div class="main"><div class="label">📖 ПОТОЧНИЙ</div><div class="current" id="stageCurrent">—</div><div class="next-box"><div class="next-label">▶ НАСТУПНИЙ</div><div class="next-text" id="stageNext">—</div></div></div><div class="footer"><span id="stageNotes">📝</span><span class="timer" id="stageTimer">⏱ 10:00</span></div><script>setInterval(function(){var d=new Date();document.getElementById("stageClock").textContent=d.toLocaleTimeString("uk-UA");},1000);window.addEventListener("message",function(e){if(e.data.current)document.getElementById("stageCurrent").textContent=e.data.current;if(e.data.next)document.getElementById("stageNext").textContent=e.data.next;if(e.data.timer)document.getElementById("stageTimer").textContent="⏱ "+e.data.timer;if(e.data.notes)document.getElementById("stageNotes").textContent="📝 "+e.data.notes;});</script></body></html>`);
-state.stageWindow.document.close();
-updateStageDisplay();
-const status = $('#stageStatus');
-if(status) status.textContent = '✓ Stage Display відкрито';
-}
-
-
-function playMedia(i) {
-state.currentMediaIndex = i;
-const f = state.mediaFiles[i];
-if(!f) return;
-const v = $('#videoPlayer');
-const a = $('#audioPlayer');
-const p = $('#mediaPlaceholder');
-if(!v || !a || !p) return;
-if(f.type.startsWith('video')) {
-v.style.display = 'block';
-a.style.display = 'none';
-p.style.display = 'none';
-v.src = f.data;
-v.load();
-v.play();
-state.mediaPlayer = v;
-} else {
-a.style.display = 'block';
-v.style.display = 'none';
-p.style.display = 'none';
-a.src = f.data;
-a.load();
-a.play();
-state.mediaPlayer = a;
-}
-if(state.mediaPlayer) {
-state.mediaPlayer.ontimeupdate = function() {
-const c = fmtTime(state.mediaPlayer.currentTime);
-const t = fmtTime(state.mediaPlayer.duration || 0);
-const timeEl = $('#mediaTime');
-if(timeEl) timeEl.textContent = c + '/' + t;
-};
-}
-}
-
-function playlistNext() {
-if(state.playlistIndex < state.playlist.length - 1) {
-state.playlistIndex++;
-sendPlaylistItem(state.playlistIndex);
-if($('#playlistAutoMode')?.value === 'timer') startPlaylistTimer();
-} else {
-const status = $('#playlistStatus');
-if(status) status.textContent = '● Кінець';
-}
-}
-
-function playlistPrev() {
-if(state.playlistIndex > 0) { state.playlistIndex--; sendPlaylistItem(state.playlistIndex); }
-}
-
-function playlistSendCurrent() { if(state.playlist.length && state.playlist[state.playlistIndex]) sendPlaylistItem(state.playlistIndex); }
-
-function pptNextPreview() {
-if(state.pptPreviewIndex < state.songs.length - 1) { state.pptPreviewIndex++; renderPPTPreview(); }
-}
-
-function pptPrevPreview() {
-if(state.pptPreviewIndex > 0) { state.pptPreviewIndex--; renderPPTPreview(); }
-}
-
-function previewAnimation() {
-const text = $('#animPreviewText');
-if(!text) return;
-const entry = getAnimationCSS(state.animSettings.entry, 'in');
-text.style.transition = 'all ' + state.animSettings.speed + 'ms ease';
-text.style.opacity = '0';
-text.style.transform = entry.transform;
-setTimeout(() => {
-text.style.opacity = '1';
-text.style.transform = 'translate(0,0) scale(1)';
-}, 80);
-setTimeout(() => {
-const exit = getAnimationCSS(state.animSettings.exit, 'out');
-text.style.opacity = '0';
-text.style.transform = exit.transform;
-}, state.animSettings.speed + 1000);
-}
-
-
-function previewPlaylistItem(i) {
-const item = state.playlist[i];
-if(!item) return;
-const p = $('#playlistPreview');
-if(p) { p.textContent = item.ref + ' (' + item.type + ')'; p.style.color = '#fff'; }
-}
-
-function removeFont(i) {
-state.customFonts.splice(i, 1);
-renderFontsList();
-updateFontSelectors();
-}
-
-function removeMedia(i) {
-state.mediaFiles.splice(i, 1);
-if(state.currentMediaIndex === i) {
-state.currentMediaIndex = -1;
-const v = $('#videoPlayer');
-const a = $('#audioPlayer');
-const p = $('#mediaPlaceholder');
-if(v) v.style.display = 'none';
-if(a) a.style.display = 'none';
-if(p) p.style.display = 'block';
-}
-renderMediaList();
-}
-
-
-function removePlaylistItem(i) { state.playlist.splice(i, 1); savePlaylistData(); renderPlaylist(); if(state.playlistIndex >= state.playlist.length) state.playlistIndex = Math.max(0, state.playlist.length - 1); }
-
-function renderAnimationsTab() {
-return `<div class="card"><div class="card-title">🎨 Анімації</div> <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-bottom:3px"> <div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Вхід</div><select id="animEntry" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="updateAnimationPreview()"><option value="fade">Fade</option><option value="slideLeft">Slide</option><option value="zoom">Zoom</option><option value="none">Немає</option></select></div> <div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Вихід</div><select id="animExit" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="updateAnimationPreview()"><option value="fade">Fade</option><option value="slideLeft">Slide</option><option value="zoom">Zoom</option><option value="none">Немає</option></select></div> <div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Швидкість</div><input type="range" id="animSpeed" min="100" max="2000" value="500" style="width:100%" oninput="document.getElementById('animSpeedVal').textContent=this.value+'ms';updateAnimationPreview()"><div style="font-size:11px;color:var(--text2)"><span id="animSpeedVal">500ms</span></div></div></div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-primary btn-sm" onclick="applyAnimations()">💾</button><button class="btn btn-ghost btn-sm" onclick="resetAnimations()">↺</button><button class="btn btn-ghost btn-sm" onclick="previewAnimation()">▶</button></div> <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px"><div id="animPreviewBox" style="aspect-ratio:16/9;background:#0a1628;border-radius:2px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);overflow:hidden;position:relative"><div id="animPreviewText" style="color:#fff;font-size:14px;font-family:Georgia,serif;text-shadow:0 2px 6px rgba(0,0,0,0.5);padding:4px;text-align:center;transition:all 0.5s ease">🎨 Анімація</div></div> <div><div style="font-size:11px;color:var(--text2)">Пресети</div><div class="flex"><button class="btn btn-ghost btn-sm" onclick="applyPresetAnim('gentle')" style="font-size:11px;padding:4px 7px">🌊</button><button class="btn btn-ghost btn-sm" onclick="applyPresetAnim('fast')" style="font-size:11px;padding:4px 7px">🚀</button></div></div></div></div>`;
-}
-
-function renderFontsList() {
-const c = $('#fontsList');
-if(!c) return;
-if(!state.customFonts.length) { c.innerHTML = '<p class="text-muted">Немає</p>'; return; }
-let html = '';
-state.customFonts.forEach((f, i) => {
-html += `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--border);font-size:11px"><span style="font-family:'${f.name}'">${esc(f.name)}</span><button class="btn btn-danger btn-sm" onclick="removeFont(${i})" style="font-size:11px;padding:2px 6px">✕</button></div>`;
-});
-c.innerHTML = html;
-}
-
-function renderFontsTab() {
-return `<div class="card"><div class="card-title">🎨 Шрифти</div> <div onclick="document.getElementById('fontInput').click()" style="padding:4px;border:1px dashed var(--border);border-radius:2px;text-align:center;cursor:pointer"><input type="file" id="fontInput" accept=".ttf,.otf,.woff" multiple style="display:none" onchange="loadFonts(this)"><div style="font-size:14px">🖋️</div><div style="font-size:11px;color:var(--text)">Завантажити</div></div> <div id="fontsList" style="max-height:80px;overflow-y:auto;font-size:11px;color:var(--text)"><p class="text-muted">Немає</p></div> <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-top:3px"><select id="fontSongs" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="applyFontSettings()"><option value="Georgia, serif">Georgia</option></select><select id="fontBible" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="applyFontSettings()"><option value="Georgia, serif">Georgia</option></select><select id="fontHeaders" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="applyFontSettings()"><option value="Georgia, serif">Georgia</option></select></div> <button class="btn btn-primary btn-sm" onclick="applyFontSettings()">✓</button> <div id="fontPreview" style="margin-top:3px;background:var(--bg);border-radius:2px;padding:4px;text-align:center;font-size:12px;color:var(--text)"><div id="fontPreviewText" style="font-family:Georgia,serif">Аа Бб Вв</div></div></div>`;
 }
 
 // ---- Готові стилі-пресети графіки Біблії (фон/колір/декор одним кліком) -----
@@ -1457,7 +1138,7 @@ function applyBibleGfxPreset(key) {
   const p = BIBLE_GFX_PRESETS[key]; if (!p) return;
   Object.assign(state.graphicsSettings, p.s);
   persistGraphicsSettings();
-  renderTabInto('graphics');
+  markDirty('graphics');
   if (typeof redrawGraphicsFrame === 'function') redrawGraphicsFrame();
   notify('🎨 Стиль Біблії: ' + p.label);
 }
@@ -1617,6 +1298,30 @@ function renderGraphicsTab() {
     </div>
 
     <div>
+      <!-- ПІДНЯТО НА ВЕРХ правої колонки: це найчастіші дії під час служби
+           (вивести вірш, перемкнути переклади), тож вони мають бути
+           одразу на очах, без прокрутки повз прев'ю й пресети.
+           Кілька перекладів + вивід просто тут, щоб не бігати у вкладку
+           Біблія під час служби. Це ТА САМА картка (renderMultiTransCard),
+           що й там — контейнер інший, дані спільні, тож налаштування не
+           можуть розійтись між двома місцями. -->
+      <div id="multiTransBoxGfx" style="margin-top:10px"></div>
+
+      <div class="card">
+        <div class="card-title">📖 Вивести вірш з цим оформленням</div>
+        <div class="card-sub">Ті самі кнопки, що у вкладці Біблія — вірш береться звідти ж. «2 виводи» — це Проектор + Трансляція.</div>
+        <div class="flex mt8" style="gap:5px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="sendBibleWithGraphics(1)">▶ Проектор</button>
+          <button class="btn btn-ghost btn-sm" onclick="sendBibleWithGraphics(2)">▶ Трансляція</button>
+          <button class="btn btn-primary btn-sm" onclick="sendBibleGraphicsMulti([1,2])">2 виводи (Проектор + Трансляція)</button>
+          <button class="btn btn-ghost btn-sm" onclick="sendBibleGraphicsMulti([1,2,3,4])">Усі 4</button>
+        </div>
+        <div class="flex mt8" style="gap:5px;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="prevBibleVerse()">◀ Вірш</button>
+          <button class="btn btn-ghost btn-sm" onclick="nextBibleVerse()">Вірш ▶</button>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-title">👁 Як це виглядатиме на екрані</div>
         <div style="position:relative;width:100%;aspect-ratio:16/9;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:#000">
@@ -1629,11 +1334,8 @@ function renderGraphicsTab() {
         <div class="card-title">▶ Вивід</div>
         <div style="display:flex;gap:4px;flex-wrap:wrap">
           <button class="btn btn-primary btn-sm" onclick="sendGraphicsToAll()">На всі екрани</button>
-          <button class="btn btn-ghost btn-sm" onclick="sendGraphicsToOutput(1)">${OUT_NAME[1]}</button>
-          <button class="btn btn-ghost btn-sm" onclick="sendGraphicsToOutput(2)">${OUT_NAME[2]}</button>
-          <button class="btn btn-ghost btn-sm" onclick="sendGraphicsToOutput(3)">${OUT_NAME[3]}</button>
-          <button class="btn btn-ghost btn-sm" onclick="sendGraphicsToOutput(4)">${OUT_NAME[4]}</button>
         </div>
+        <div id="graphicsOutBtns" style="margin-top:6px"></div>
         <div class="card-sub" style="margin-top:6px">Береться поточний куплет або вірш — той самий, що на екрані.</div>
         <button class="btn btn-ghost btn-sm btn-block" style="margin-top:6px" onclick="saveGraphicsPreset()">💾 Зберегти як пресет</button>
       </div>
@@ -1652,7 +1354,7 @@ function renderGraphicsTab() {
 function setGraphicsTemplate(t) {
   state.graphicsSettings.template = t;
   persistGraphicsSettings();
-  renderTabInto('graphics');
+  markDirty('graphics');
   redrawGraphicsFrame();
   notify('🧩 Шаблон: ' + ({verse:'Вірш + посилання', title:'Заголовок + текст', quote:'Цитата', list:'Список пунктів'}[t] || t));
 }
@@ -1665,13 +1367,13 @@ function setGraphicsExtraTitle(v) {
 function setGraphicsAlign(a) {
   state.graphicsSettings.align = a;
   persistGraphicsSettings();
-  renderTabInto('graphics');
+  markDirty('graphics');
   updateGraphicsPreview();
 }
 function setGraphicsStyleFlag(key, on) {
   state.graphicsSettings[key] = !!on;
   persistGraphicsSettings();
-  renderTabInto('graphics');
+  markDirty('graphics');
   updateGraphicsPreview();
 }
 function setGraphicsOutlineColor(c) {
@@ -1753,7 +1455,7 @@ function outputBgAlpha(n) {
 function setGraphicsLayout(l) {
   state.graphicsSettings.layout = l;
   persistGraphicsSettings();
-  renderTabInto('graphics');
+  markDirty('graphics');
   updateGraphicsPreview();
   notify(l === 'lower' ? '🎬 Титр для трансляції (камера видно)' : '🖼 Слайд на весь екран');
 }
@@ -1793,7 +1495,36 @@ if(decor) decor.style.background = accent;
 }
 
 function renderH2RTab() {
-return `<div class="grid2"><div> <div class="card"><div class="card-title">📺 Lower Third</div> <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;margin-bottom:2px"><input type="text" id="h2rLine1" placeholder="Текст 1" value="Олександр" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none" oninput="updateH2RPreview()"><input type="text" id="h2rLine2" placeholder="Текст 2" value="Проповідник" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none" oninput="updateH2RPreview()"><input type="text" id="h2rLine3" placeholder="Текст 3" value="Церква Прага" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none" oninput="updateH2RPreview()"><select id="h2rStyle" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="updateH2RPreview()"><option value="classic">Класичний</option><option value="modern">Сучасний</option><option value="elegant">Елегантний</option><option value="neon">Неоновий</option></select></div> <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-bottom:2px"><input type="color" id="h2rAccent" value="#7c6af7" style="width:100%;height:22px;border:none;border-radius:2px;cursor:pointer;background:none" oninput="updateH2RPreview()"><input type="color" id="h2rTextColor" value="#ffffff" style="width:100%;height:22px;border:none;border-radius:2px;cursor:pointer;background:none" oninput="updateH2RPreview()"><select id="h2rAnimation" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="updateH2RPreview()"><option value="slideLeft">Slide</option><option value="fade">Fade</option><option value="pop">Pop</option><option value="none">Немає</option></select></div> <div style="margin-bottom:2px"><span style="font-size:11px;color:var(--text2)">Розмір титрів: <b id="h2rScaleLabel">${Math.round((state.h2rConfig.scale||2)*100)}%</b></span><input type="range" id="h2rScale" min="100" max="400" value="${Math.round((state.h2rConfig.scale||2)*100)}" oninput="updateH2RPreview()" style="width:100%"></div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-success btn-sm" onclick="sendH2RLowerThird()">▶</button><button class="btn btn-primary btn-sm" onclick="saveH2RTemplate()">💾</button><button class="btn btn-ghost btn-sm" onclick="clearH2R()">✕</button></div> <div class="flex"><span style="font-size:11px;color:var(--text2)">Пресети:</span><button class="btn btn-ghost btn-sm" onclick="applyH2RPreset('speaker')" style="font-size:11px;padding:4px 7px">🎤</button><button class="btn btn-ghost btn-sm" onclick="applyH2RPreset('worship')" style="font-size:11px;padding:4px 7px">🙏</button><button class="btn btn-ghost btn-sm" onclick="applyH2RPreset('bible')" style="font-size:11px;padding:4px 7px">📖</button></div> </div></div><div> <div class="card"><div class="card-title">👁 Прев\'ю H2R</div> <div id="h2rPreviewBox" style="aspect-ratio:16/9;background:#0a0a1a;border-radius:3px;border:1px solid var(--border);position:relative;overflow:hidden"> <div id="h2rPreviewContent" style="width:100%;height:100%;display:flex;align-items:center;padding:12px;color:#fff;font-family:Georgia,serif;font-size:12px;line-height:1.3;text-align:center;justify-content:center;flex-direction:column"> <div id="h2rPreviewLine1" style="font-size:16px;font-weight:700;margin-bottom:2px">Олександр</div> <div id="h2rPreviewLine2" style="font-size:12px;color:#c8a84b">Проповідник</div> <div id="h2rPreviewLine3" style="font-size:12px;color:rgba(255,255,255,0.3);margin-top:2px">Церква Прага</div> <div id="h2rPreviewDecor" style="position:absolute;bottom:0;left:0;right:0;height:2px;background:#7c6af7;border-radius:0 0 3px 3px"></div></div></div></div> </div></div>
+return `<div class="grid2"><div> <div class="card"><div class="card-title">📺 Lower Third</div> <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;margin-bottom:2px"><input type="text" id="h2rLine1" placeholder="Текст 1" value="Олександр" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none" oninput="updateH2RPreview()"><input type="text" id="h2rLine2" placeholder="Текст 2" value="Проповідник" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none" oninput="updateH2RPreview()"><input type="text" id="h2rLine3" placeholder="Текст 3" value="Церква Прага" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none" oninput="updateH2RPreview()"><select id="h2rStyle" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="updateH2RPreview()"><option value="classic">Класичний</option><option value="modern">Сучасний</option><option value="elegant">Елегантний</option><option value="neon">Неоновий</option></select></div> <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-bottom:2px"><input type="color" id="h2rAccent" value="#7c6af7" style="width:100%;height:22px;border:none;border-radius:2px;cursor:pointer;background:none" oninput="updateH2RPreview()"><input type="color" id="h2rTextColor" value="#ffffff" style="width:100%;height:22px;border:none;border-radius:2px;cursor:pointer;background:none" oninput="updateH2RPreview()"><select id="h2rAnimation" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none" onchange="updateH2RPreview()"><option value="slideLeft">Slide ←</option><option value="slideRight">Slide →</option><option value="slideUp">Slide ↑</option><option value="fade">Fade</option><option value="pop">Pop</option><option value="none">Немає</option></select></div> <div style="margin-bottom:2px"><span style="font-size:11px;color:var(--text2)">Розмір титрів: <b id="h2rScaleLabel">${Math.round((state.h2rConfig.scale||2)*100)}%</b></span><input type="range" id="h2rScale" min="100" max="400" value="${Math.round((state.h2rConfig.scale||2)*100)}" oninput="updateH2RPreview()" style="width:100%"></div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-success btn-sm" onclick="sendH2RLowerThird()">▶</button><button class="btn btn-primary btn-sm" onclick="saveH2RTemplate()">💾</button><button class="btn btn-ghost btn-sm" onclick="clearH2R()">✕ Прибрати</button></div> <div id="h2rLowerOutBtns" style="margin-bottom:2px"></div> <div class="flex"><span style="font-size:11px;color:var(--text2)">Пресети:</span><button class="btn btn-ghost btn-sm" onclick="applyH2RPreset('speaker')" style="font-size:11px;padding:4px 7px">🎤</button><button class="btn btn-ghost btn-sm" onclick="applyH2RPreset('worship')" style="font-size:11px;padding:4px 7px">🙏</button><button class="btn btn-ghost btn-sm" onclick="applyH2RPreset('bible')" style="font-size:11px;padding:4px 7px">📖</button></div> </div></div><div> <div class="card"><div class="card-title">👁 Прев\'ю H2R</div> <div id="h2rPreviewBox" style="aspect-ratio:16/9;background:#0a0a1a;border-radius:3px;border:1px solid var(--border);position:relative;overflow:hidden"> <div id="h2rPreviewContent" style="width:100%;height:100%;display:flex;align-items:center;padding:12px;color:#fff;font-family:Georgia,serif;font-size:12px;line-height:1.3;text-align:center;justify-content:center;flex-direction:column"> <div id="h2rPreviewLine1" style="font-size:16px;font-weight:700;margin-bottom:2px">Олександр</div> <div id="h2rPreviewLine2" style="font-size:12px;color:#c8a84b">Проповідник</div> <div id="h2rPreviewLine3" style="font-size:12px;color:rgba(255,255,255,0.3);margin-top:2px">Церква Прага</div> <div id="h2rPreviewDecor" style="position:absolute;bottom:0;left:0;right:0;height:2px;background:#7c6af7;border-radius:0 0 3px 3px"></div></div></div></div> </div></div>
+<div class="card" style="margin-top:8px"><div class="card-title">🎬 Прокрутка подяки (як у кінці фільму)</div>
+<div class="card-sub">Кожен рядок — окремий пункт. Перший рядок виділяється кольором акценту (як заголовок). Порожній рядок — проміжок між групами.</div>
+<textarea id="creditsLines" rows="5" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px;outline:none;font-family:inherit;margin-top:6px" oninput="state.creditsConfig.lines=this.value">${esc(state.creditsConfig.lines)}</textarea>
+<div class="flex" style="margin-top:6px;gap:6px;align-items:center">
+<span style="font-size:11px;color:var(--text2)">Тривалість:</span>
+<input type="number" id="creditsDuration" min="5" max="300" value="${state.creditsConfig.durationSec}" style="width:56px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:3px;color:var(--text);font-size:12px" onchange="state.creditsConfig.durationSec=parseInt(this.value,10)||30">
+<span style="font-size:11px;color:var(--text2)">сек</span>
+<button class="btn btn-success btn-sm" onclick="sendCredits()">▶ Показати</button>
+</div>
+<div id="creditsOutBtns" style="margin-top:6px"></div>
+</div>
+<div class="card" style="margin-top:8px"><div class="card-title">🎉 Конфеті</div>
+<div class="card-sub">Короткий святковий ефект (~6с) — для хрещення, ювілею, особливих моментів. Сам прибирається, нічого чекати не треба.</div>
+<div class="flex" style="margin-top:6px;gap:3px">
+<button class="btn btn-success btn-sm" onclick="sendConfetti()">▶ Запустити</button>
+<div id="confettiOutBtns" style="margin-top:6px;width:100%"></div>
+</div></div>
+<div class="card" style="margin-top:8px"><div class="card-title">📰 Тікер (біжучий рядок)</div>
+<div class="card-sub">Крутиться внизу екрана по колу, доки не зупиниш — для оголошень/цитат, що йдуть постійно, не перериваючи основний контент.</div>
+<input id="tickerText" type="text" value="${esc(state.tickerConfig.text)}" placeholder="Текст тікера…" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:12px;outline:none;margin-top:6px" oninput="state.tickerConfig.text=this.value">
+<div class="flex" style="margin-top:6px;gap:6px;align-items:center">
+<span style="font-size:11px;color:var(--text2)">Швидкість:</span>
+<input type="number" min="5" max="60" value="${state.tickerConfig.speedSec}" style="width:50px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:3px;color:var(--text);font-size:12px" onchange="state.tickerConfig.speedSec=parseInt(this.value,10)||18">
+<span style="font-size:11px;color:var(--text2)">сек/коло</span>
+<button class="btn btn-success btn-sm" onclick="sendTicker()">▶ Запустити</button>
+<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="stopTicker()">⏹ Зупинити</button>
+</div>
+<div id="tickerOutBtns" style="margin-top:6px"></div>
+</div>
   <div class="card">
     <div class="card-title">🎨 Готові H2R-шаблони</div>
     <div class="card-sub">Готові оверлеї — заповни поля й виведи. Раніше були в окремій вкладці «H2R Темплейти».</div>
@@ -1811,74 +1542,10 @@ $$('.hotkey-input').forEach(inp => {
 const a = inp.dataset.action;
 if(a && state.hotkeys[a]) inp.value = state.hotkeys[a];
 });
-}
-
-function renderMidiCard() {
-  const rows = MIDI_ACTIONS.map(a => {
-    const bound = state.midiMap[a.action];
-    const learning = state.midiLearn === a.action;
-    return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
-      <span style="font-size:11px;flex:1">${a.label}</span>
-      <button class="btn ${learning ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="midiStartLearn('${a.action}')">
-        ${learning ? '⏺ Чекаю ноту…' : (bound ? bound.replace('note:', 'нота ') : 'Призначити')}
-      </button>
-      ${bound ? `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="midiClear('${a.action}')">✕</button>` : ''}
-    </div>`;
-  }).join('');
-  const oscRows = MIDI_ACTIONS.map(a => {
-    const bound = state.oscMap[a.action];
-    const learning = state.oscLearn === a.action;
-    return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0">
-      <span style="font-size:11px;flex:1">${a.label}</span>
-      <button class="btn ${learning ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="oscStartLearn('${a.action}')">
-        ${learning ? '⏺ Чекаю адресу…' : (bound ? bound : 'Призначити')}
-      </button>
-      ${bound ? `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="oscClear('${a.action}')">✕</button>` : ''}
-    </div>`;
-  }).join('');
-  return `<div class="card" style="margin-top:10px">
-    <div class="card-title">🎹 MIDI & 🎚️ OSC тригери</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-      <div>
-        <div style="font-size:11px;color:var(--text);font-weight:bold;margin-bottom:4px">🎹 MIDI (Web MIDI API)</div>
-        <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
-          Пристрої: ${state.midiInputs.length ? esc(state.midiInputs.join(', ')) : 'не підключено'}
-        </div>
-        <button class="btn btn-ghost btn-sm" onclick="initMidi()">🔌 Оновити</button>
-        <div style="margin-top:8px;max-width:350px">${rows}</div>
-      </div>
-      <div>
-        <div style="font-size:11px;color:var(--text);font-weight:bold;margin-bottom:4px">🎚️ OSC (UDP :9000)</div>
-        <div style="font-size:11px;color:var(--text2);margin-bottom:6px">
-          ${state.oscRunning ? '<span style="color:var(--green)">✓ Слухаємо</span>' : 'зупинено'}
-        </div>
-        <div style="display:flex;gap:4px;margin-bottom:8px">
-          <button class="btn ${state.oscRunning ? 'btn-ghost' : 'btn-primary'} btn-sm" onclick="startOscServer()">▶ Запустити</button>
-          <button class="btn btn-ghost btn-sm" onclick="stopOscServer()">⏹ Стоп</button>
-        </div>
-        <div style="margin-top:8px;max-width:350px">${oscRows}</div>
-      </div>
-    </div>
-  </div>`;
-}
-function renderHotkeysTab() {
-return `<div class="card"><div class="card-title">⌨️ Гарячі клавіші</div> <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;max-width:350px"><div style="font-size:11px;color:var(--text2);padding:1px">Дія</div><div style="font-size:11px;color:var(--text2);padding:1px">Клавіша</div> <div style="font-size:11px;padding:1px">▶ Куплет</div><div><input type="text" class="hotkey-input" data-action="next-verse" value="Space" readonly style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;cursor:pointer;text-align:center" onclick="startHotkeyCapture(this)"></div> <div style="font-size:11px;padding:1px">◀ Куплет</div><div><input type="text" class="hotkey-input" data-action="prev-verse" value="ArrowLeft" readonly style="font-size:11px" onclick="startHotkeyCapture(this)"></div> <div style="font-size:11px;padding:1px">📺 Відправити</div><div><input type="text" class="hotkey-input" data-action="send" value="Enter" readonly style="font-size:11px" onclick="startHotkeyCapture(this)"></div> <div style="font-size:11px;padding:1px">✕ Очистити</div><div><input type="text" class="hotkey-input" data-action="clear" value="Escape" readonly style="font-size:11px" onclick="startHotkeyCapture(this)"></div> <div style="font-size:11px;padding:1px">⬛ Чорний екран</div><div><input type="text" class="hotkey-input" data-action="blackout" value="B" readonly style="font-size:11px" onclick="startHotkeyCapture(this)"></div> <div style="font-size:11px;padding:1px">↶ Скасувати</div><div><input type="text" class="hotkey-input" data-action="undo" value="" readonly style="font-size:11px" onclick="startHotkeyCapture(this)"></div> <div style="font-size:11px;padding:1px">📢 Нижня третина</div><div><input type="text" class="hotkey-input" data-action="lower" value="" readonly style="font-size:11px" onclick="startHotkeyCapture(this)"></div> <div style="font-size:11px;padding:1px">❄️ Заморозка</div><div><input type="text" class="hotkey-input" data-action="freeze" value="" readonly style="font-size:11px" onclick="startHotkeyCapture(this)"></div></div> <div class="flex" style="margin-top:3px"><button class="btn btn-primary btn-sm" onclick="saveHotkeyProfile()">💾</button><button class="btn btn-ghost btn-sm" onclick="resetHotkeys()">↺</button></div> <div id="hotkeyStatus" class="text-muted mt8"></div></div>` + renderMidiCard();
-}
-
-function renderMediaList() {
-const c = $('#mediaList');
-if(!c) return;
-if(!state.mediaFiles.length) { c.innerHTML = '<p class="text-muted">Немає</p>'; return; }
-let html = '';
-state.mediaFiles.forEach((f, i) => {
-const icon = f.type.startsWith('video') ? '🎬' : '🎵';
-html += `<div style="display:flex;align-items:center;gap:2px;padding:4px 7px;border-bottom:1px solid var(--border);font-size:11px"> <span>${icon}</span><span style="flex:1;cursor:pointer" onclick="playMedia(${i})">${esc(f.name)}</span> <button class="btn btn-success btn-sm" onclick="playMedia(${i})" style="font-size:11px;padding:2px 6px">▶</button> <button class="btn btn-danger btn-sm" onclick="removeMedia(${i})" style="font-size:11px;padding:2px 6px">✕</button> </div>`;
-});
-c.innerHTML = html;
-}
-
-function renderMediaTab() {
-return `<div class="grid2"><div> <div class="card"><div class="card-title">🎬 Завантажити</div> <div onclick="document.getElementById('mediaInput').click()" style="padding:4px;border:1px dashed var(--border);border-radius:2px;text-align:center;cursor:pointer"><input type="file" id="mediaInput" accept="video/*,audio/*,.mp4,.webm,.mov,.mkv,.avi,.wmv,.flv,.m4v,.mpg,.mpeg,.3gp,.ts,.mts,.m2ts,.m2v,.vob,.divx,.asf,.mxf,.mp3,.wav,.m4a,.aac,.ogg,.flac,.wma,.opus,.aiff,.aif,.amr,.ac3,.m4b" multiple style="display:none" onchange="loadMediaFiles(this)"><div style="font-size:16px">🎬</div><div style="font-size:11px;color:var(--text)">Відео/аудіо</div></div> <div id="mediaList" style="max-height:60px;overflow-y:auto"><p class="text-muted">Немає</p></div></div> <div class="card"><div class="card-title">🎵 YouTube</div> <div class="flex"><input type="text" id="youtubeUrl" placeholder="https://youtube.com/..." style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 3px;color:var(--text);font-size:12px;outline:none"><button class="btn btn-primary btn-sm" onclick="loadYouTube()">▶</button></div> <div id="youtubeStatus" class="text-muted mt8"></div></div> </div><div> <div class="card"><div class="card-title">▶ Програвач</div> <div id="mediaPlayer" style="aspect-ratio:16/9;background:#000;border-radius:2px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border)"><video id="videoPlayer" style="width:100%;height:100%;display:none" controls></video><audio id="audioPlayer" style="width:100%;display:none" controls></audio><div id="mediaPlaceholder" style="color:var(--text2);font-size:12px">Оберіть файл</div></div> <div class="flex" style="margin-top:2px"><button class="btn btn-success btn-sm" onclick="sendMediaToProjector()">📺</button><button class="btn btn-ghost btn-sm" onclick="toggleMediaPlay()">▶⏸</button><button class="btn btn-ghost btn-sm" onclick="stopMedia()">⏹</button><span id="mediaTime" class="text-muted" style="font-size:11px;padding:2px">00:00/00:00</span></div> </div></div>`;
+// Тримає підказку в send bar (index.html) синхронною зі справжніми
+// прив'язками — цю ж функцію викликано і після завантаження (loadHotkeys),
+// і після кожної зміни клавіші (captureHotkey/скидання).
+if (typeof refreshHotkeyHint === 'function') refreshHotkeyHint();
 }
 
 function renderPPTPreview() {
@@ -1903,85 +1570,17 @@ if(counter) counter.textContent = (state.pptPreviewIndex + 1) + '/' + state.song
 }
 
 
-function renderPlaylist() {
-const c = $('#playlistItems');
-if(!c) return;
-if(!state.playlist.length) {
-c.innerHTML = '<p class="text-muted" style="text-align:center;padding:4px">Черга порожня</p>';
-const preview = $('#playlistPreview');
-const counter = $('#playlistCounter');
-if(preview) preview.textContent = 'Черга порожня';
-if(counter) counter.textContent = '0/0';
-return;
-}
-const icons = {song:'🎵', bible:'📖', announce:'📢', text:'📄', html:'💻'};
-let html = '<div style="display:flex;flex-direction:column;gap:1px;max-height:100px;overflow-y:auto">';
-state.playlist.forEach((item, i) => {
-const icon = icons[item.type] || '📄';
-const isActive = i === state.playlistIndex;
-const bg = isActive ? 'var(--panel)' : 'var(--bg)';
-const border = isActive ? '1px solid var(--accent)' : '1px solid var(--border)';
-html += `<div style="display:flex;align-items:center;gap:2px;background:${bg};border:${border};border-radius:2px;padding:4px 7px;font-size:11px"> <span>${icon}</span><span style="color:var(--text2);font-size:11px;min-width:12px">${item.type}</span> <span style="flex:1;color:var(--text);cursor:pointer" onclick="previewPlaylistItem(${i})">${esc(item.ref.substring(0,12))}</span> ${isActive ? '<span style="color:var(--green);font-size:11px">●</span>' : ''} <button class="btn btn-ghost btn-sm" onclick="movePlaylistItem(${i},-1)" style="font-size:11px;padding:2px 6px">↑</button> <button class="btn btn-ghost btn-sm" onclick="movePlaylistItem(${i},1)" style="font-size:11px;padding:2px 6px">↓</button> <button class="btn btn-success btn-sm" onclick="sendPlaylistItem(${i})" style="font-size:11px;padding:2px 6px">▶</button> <button class="btn btn-danger btn-sm" onclick="removePlaylistItem(${i})" style="font-size:11px;padding:2px 6px">✕</button> </div>`;
-});
-html += '</div>';
-c.innerHTML = html;
-const counter = $('#playlistCounter');
-if(counter) counter.textContent = (state.playlistIndex + 1) + '/' + state.playlist.length;
-const preview = $('#playlistPreview');
-if(preview && state.playlist[state.playlistIndex]) { preview.textContent = state.playlist[state.playlistIndex].ref; preview.style.color = '#fff'; }
+function loadStageMonitorBinding() {
+  const fp = loadJSON(STORAGE_KEYS.stageMonitor);
+  if (!fp || !window.electronAPI || !window.electronAPI.bindStageMonitorFingerprint) return;
+  state.stageMonitorFingerprint = fp;
+  window.electronAPI.bindStageMonitorFingerprint(fp).then(res => {
+    if (res && res.id) { state.stageMonitorId = res.id; renderStageMonitorOptions(); }
+  }).catch(() => {});
 }
 
-function renderPlaylistTab() {
-return `<div class="grid2"><div> <div class="card"><div class="card-title">📋 Черга</div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-success btn-sm" onclick="addCurrentToPlaylist()">➕</button><button class="btn btn-primary btn-sm" onclick="runPlaylist()">▶</button><button class="btn btn-danger btn-sm" onclick="clearPlaylist()">✕</button><button class="btn btn-ghost btn-sm" onclick="savePlaylist()">💾</button><button class="btn btn-ghost btn-sm" onclick="loadPlaylist()">📂</button></div> <div id="playlistItems" style="min-height:30px;border:1px dashed var(--border);border-radius:2px;padding:2px"><p class="text-muted" style="text-align:center;padding:4px">Черга порожня</p></div> <div class="flex" style="margin-top:2px"><span style="font-size:11px;color:var(--text2)">Авто:</span><select id="playlistAutoMode" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none"><option value="off">Вимк</option><option value="timer">Таймер</option></select><input type="number" id="playlistTimer" value="10" style="width:24px;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:4px 7px;color:var(--text);font-size:11px;outline:none"><span style="font-size:11px;color:var(--text2)">сек</span><span id="playlistStatus" style="font-size:11px;color:var(--green)">● Стоп</span></div></div> </div><div> <div class="card"><div class="card-title">👁 Прев\'ю</div> <div class="preview-box" style="height:40px"><div class="preview-text" id="playlistPreview" style="color:#444;font-size:11px">Черга порожня</div></div> <div class="flex" style="margin-top:2px"><button class="btn btn-ghost btn-sm" onclick="playlistPrev()">◀</button><button class="btn btn-ghost btn-sm" onclick="playlistNext()">▶</button><button class="btn btn-success btn-sm" onclick="playlistSendCurrent()">📺</button></div> <div class="text-muted mt8" id="playlistCounter">0/0</div></div> </div></div>`;
-}
-
-function renderPowerPointTab() {
-return `<div class="grid2"><div> <div class="card"><div class="card-title">📊 Експорт</div> <div class="flex" style="margin-bottom:2px"><span style="font-size:11px;color:var(--text2)">Шаблон:</span><button class="btn btn-ghost btn-sm" onclick="setPPTtemplate('classic')" id="pptTemplateClassic" style="border:1px solid var(--accent)">📜</button><button class="btn btn-ghost btn-sm" onclick="setPPTtemplate('modern')" id="pptTemplateModern">✨</button><button class="btn btn-ghost btn-sm" onclick="setPPTtemplate('dark')" id="pptTemplateDark">🌑</button></div> <div class="flex"><button class="btn btn-primary" onclick="exportToPPTX()">⬇ PPTX</button><button class="btn btn-ghost btn-sm" onclick="exportToHTML()">🌐</button></div> <div id="pptStatus" class="text-muted mt8"></div></div> </div><div> <div class="card"><div class="card-title">👁 Прев\'ю</div> <div id="pptPreview" style="aspect-ratio:16/9;background:linear-gradient(135deg,#0a1628,#1e3a5f);border-radius:2px;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid var(--border);padding:6px;text-align:center"> <div id="pptPreviewTitle" style="color:#f0c040;font-size:12px;font-weight:700">Назва пісні</div> <div id="pptPreviewAuthor" style="color:rgba(255,255,255,0.3);font-size:11px">Автор</div> <div id="pptPreviewVerses" style="color:#fff;font-size:12px;line-height:1.2;margin-top:2px">Текст куплету</div></div> <div class="flex" style="margin-top:2px"><button class="btn btn-ghost btn-sm" onclick="pptPrevPreview()">◀</button><button class="btn btn-ghost btn-sm" onclick="pptNextPreview()">▶</button><span class="text-muted" id="pptPreviewCounter" style="font-size:11px;padding:1px">1/1</span></div></div> </div></div>`;
-}
-
-function renderStageTab() {
-return `<div class="grid2"><div> <div class="card"><div class="card-title">🖥 Stage Display</div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-primary btn-sm" onclick="openStageDisplay()">📺 Відкрити</button><button class="btn btn-ghost btn-sm" onclick="closeStageDisplay()">✕</button><button class="btn btn-ghost btn-sm" onclick="updateStageDisplay()">🔄</button></div> <div id="stageStatus" class="text-muted mt8"></div></div> <div class="card"><div class="card-title">📝 Нотатки</div><textarea id="stageNotes" placeholder="Нотатки..." style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:2px 4px;color:var(--text);font-size:12px;outline:none;min-height:24px;resize:vertical;font-family:inherit"></textarea><div class="flex" style="margin-top:2px"><button class="btn btn-ghost btn-sm" onclick="saveStageNotes()">💾</button><button class="btn btn-ghost btn-sm" onclick="loadStageNotes()">📂</button></div></div> </div><div> <div class="card"><div class="card-title">👁 Прев\'ю</div> <div id="stagePreview" style="aspect-ratio:16/9;background:linear-gradient(135deg,#0a0a1a,#1a1a3e);border-radius:2px;border:1px solid var(--border);padding:6px;display:flex;flex-direction:column;justify-content:space-between;position:relative"> <div style="display:flex;justify-content:space-between"><div style="color:#c8a84b;font-size:12px;font-weight:700">⛪</div><div style="color:rgba(255,255,255,0.15);font-size:12px;font-family:monospace" id="stagePreviewClock">12:00</div></div> <div style="text-align:center;padding:2px 0"><div style="color:rgba(255,255,255,0.15);font-size:11px">Поточний</div><div style="color:#fff;font-size:12px;font-family:Georgia,serif" id="stagePreviewCurrent">Бо так возлюбив Бог...</div></div> <div style="border-top:1px solid rgba(255,255,255,0.05);padding-top:2px"><div style="color:rgba(255,255,255,0.15);font-size:11px">▶ Наступний</div><div style="color:rgba(255,255,255,0.3);font-size:12px;font-family:Georgia,serif" id="stagePreviewNext">Великий Бог...</div></div> <div style="position:absolute;bottom:3px;right:6px;color:rgba(255,255,255,0.08);font-size:11px" id="stagePreviewTimer">⏱ 10:00</div></div></div> </div></div>`;
-}
-
-function renderStatisticsTab() {
-return `<div class="grid2"><div> <div class="card"><div class="card-title">📊 Статистика</div> <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-bottom:3px"><div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Всього</div><div id="statTotalOutputs" style="font-size:12px;font-weight:700;color:var(--accent)">0</div></div><div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Найчастіше</div><div id="statMostUsed" style="font-size:12px;font-weight:700;color:var(--gold)">—</div></div><div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Активність</div><div id="statActivity" style="font-size:12px;font-weight:700;color:var(--green)">0%</div></div></div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-ghost btn-sm" onclick="updateStatistics()">🔄</button><button class="btn btn-ghost btn-sm" onclick="exportStatisticsExcel()">⬇ Excel</button><select id="statPeriod" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:1px 2px;color:var(--text);font-size:11px;outline:none" onchange="updateStatistics()"><option value="day">День</option><option value="week">Тиждень</option><option value="month">Місяць</option><option value="year">Рік</option></select></div> <div id="statChart" style="background:var(--bg);border-radius:2px;padding:3px;height:35px;display:flex;align-items:flex-end;gap:1px;justify-content:space-between"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:6px;background:var(--accent);border-radius:1px;opacity:0.3"></div><div style="font-size:11px;color:var(--text2)">Пн</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:12px;background:var(--accent);border-radius:1px;opacity:0.5"></div><div style="font-size:11px;color:var(--text2)">Вт</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:18px;background:var(--accent);border-radius:1px;opacity:0.7"></div><div style="font-size:11px;color:var(--text2)">Ср</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:24px;background:var(--accent);border-radius:1px;opacity:0.9"></div><div style="font-size:11px;color:var(--text2)">Чт</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:30px;background:var(--accent);border-radius:1px;opacity:1"></div><div style="font-size:11px;color:var(--text2)">Пт</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:18px;background:var(--gold);border-radius:1px;opacity:0.7"></div><div style="font-size:11px;color:var(--text2)">Сб</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:8px;background:var(--gold);border-radius:1px;opacity:0.4"></div><div style="font-size:11px;color:var(--text2)">Нд</div></div></div> </div></div><div> <div class="card"><div class="card-title">🎵 Топ пісень</div><div id="statTopSongs"><p class="text-muted">Немає</p></div></div> <div class="card"><div class="card-title">📖 Топ віршів</div><div id="statTopBible"><p class="text-muted">Немає</p></div></div> </div></div>`;
-}
-
-
-function renderTextControlTab() {
-const t = state.textSettings[state.currentTextOutput === 'all' ? 1 : state.currentTextOutput] || state.textSettings[1];
-return `<div class=\"card\"><div class=\"card-title\">🔤 Шрифт</div><select id=\"textFont\" onchange=\"setTextFont(this.value)\" style=\"width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none\"></select><div class=\"card-sub\">Свої шрифти додаються у вкладці «Шрифти».</div></div> <div class="card"><div class="card-title">📝 Управління текстом</div> <div class="flex" style="margin-bottom:3px"><span style="font-size:11px;color:var(--text2)">Екран:</span><button class="btn btn-primary btn-sm" id="textOutput1" onclick="setTextOutput(1)" style="font-size:11px;padding:1px 5px;border:1px solid var(--accent)">1</button><button class="btn btn-ghost btn-sm" id="textOutput2" onclick="setTextOutput(2)" style="font-size:11px;padding:1px 5px">2</button><button class="btn btn-ghost btn-sm" id="textOutput3" onclick="setTextOutput(3)" style="font-size:11px;padding:1px 5px">3</button><button class="btn btn-ghost btn-sm" id="textOutput4" onclick="setTextOutput(4)" style="font-size:11px;padding:1px 5px">4</button><button class="btn btn-ghost btn-sm" id="textOutputAll" onclick="setTextOutput('all')" style="font-size:11px;padding:1px 5px">Всі</button></div> <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-bottom:3px"> <div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Розмір</div><div class="flex" style="justify-content:center"><button class="btn btn-ghost btn-sm" onclick="changeTextSize(-5)">−</button><span id="textSizeDisplay" style="font-size:12px;font-weight:700;min-width:24px;text-align:center;color:var(--accent)">58</span><button class="btn btn-ghost btn-sm" onclick="changeTextSize(5)">+</button></div><input type="range" id="textSizeSlider" min="12" max="150" value="58" style="width:100%;margin-top:1px" oninput="updateTextSize(this.value)"></div> <div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Позиція</div><div class="flex" style="justify-content:center;gap:1px"><button class="btn btn-ghost btn-sm" onclick="setTextPosition('top-left')" style="font-size:11px;padding:1px 2px">↖</button><button class="btn btn-ghost btn-sm" onclick="setTextPosition('center')" style="font-size:11px;padding:1px 2px;border:1px solid var(--accent)">●</button><button class="btn btn-ghost btn-sm" onclick="setTextPosition('bottom-center')" style="font-size:11px;padding:1px 2px">↓</button></div> <div style="font-size:11px;color:var(--text2)" id="textPositionLabel">Центр</div></div> <div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Вирівнювання</div><div class="flex" style="justify-content:center"><button class="btn btn-ghost btn-sm" onclick="setTextAlign('left')" style="font-size:11px;padding:1px 2px">⬅</button><button class="btn btn-primary btn-sm" onclick="setTextAlign('center')" style="font-size:11px;padding:1px 2px">↔</button><button class="btn btn-ghost btn-sm" onclick="setTextAlign('right')" style="font-size:11px;padding:1px 2px">➡</button></div> <div style="font-size:11px;color:var(--text2)" id="textAlignLabel">Центр</div></div></div> <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:2px;margin-bottom:3px"><div><input type="color" id="textColorPicker" value="#ffffff" style="width:100%;height:16px;border:none;border-radius:2px;cursor:pointer" oninput="updateTextColor(this.value)"></div><div><input type="color" id="textBgColorPicker" value="#000000" style="width:100%;height:16px;border:none;border-radius:2px;cursor:pointer" oninput="updateTextBgColor(this.value)"></div><div class="flex" style="justify-content:center"><button class="btn btn-ghost btn-sm" id="styleBold" onclick="toggleTextStyle('bold')" style="font-size:11px;padding:4px 7px;font-weight:700">B</button><button class="btn btn-ghost btn-sm" id="styleShadow" onclick="toggleTextStyle('shadow')" style="font-size:11px;padding:4px 7px">S</button></div><div><button class="btn btn-primary btn-sm" onclick="applyTextSettingsToOutput()" style="width:100%;font-size:11px;padding:4px 7px">✓</button></div></div> <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px"><div id="textPreviewBox" style="aspect-ratio:16/9;background:#000;border-radius:2px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);position:relative;overflow:hidden"><div id="textPreviewContent" style="text-align:center;padding:6px;color:#fff;font-family:Georgia,serif;font-size:14px;line-height:1.3;max-width:90%"><div id="textPreviewRef" style="color:#c8a84b;font-size:12px;margin-bottom:2px">Від Матвія 5:3</div><div id="textPreviewBody" style="font-size:14px">Блаженні вбогі духом...</div></div></div> <div><div style="font-size:11px;color:var(--text2);margin-bottom:2px">Статус виходів</div><div id="textStatus1" style="font-size:11px;color:var(--accent)">📺1: 58px</div><div id="textStatus2" style="font-size:11px;color:var(--green)">🎥2: 58px</div><div id="textStatus3" style="font-size:11px;color:var(--gold)">🖥3: 58px</div><div id="textStatus4" style="font-size:11px;color:var(--red)">🖥4: 58px</div></div></div></div>` +
-`<div class="card"><div class="card-title">✨ Додатково</div>` +
-`<label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Обведення: <span id="textStrokeVal">${t.strokeWidth||0}</span>px</label>` +
-`<input type="range" id="textStroke" min="0" max="6" value="${t.strokeWidth||0}" oninput="document.getElementById('textStrokeVal').textContent=this.value;setTextStroke(this.value)" style="width:100%;margin-bottom:6px">` +
-`<div class="flex" style="margin-bottom:10px;gap:8px"><input type="color" id="textStrokeColor" value="${t.strokeColor||'#000000'}" oninput="setTextStrokeColor(this.value)" style="width:40px;height:32px;border:none;border-radius:6px;cursor:pointer;background:none"><span style="font-size:11px;color:var(--text2);align-self:center">Колір обведення</span></div>` +
-`<label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Підкладка: <span id="textScrimVal">${Math.round((t.scrim||0)*100)}</span>%</label>` +
-`<input type="range" id="textScrim" min="0" max="90" value="${Math.round((t.scrim||0)*100)}" oninput="document.getElementById('textScrimVal').textContent=this.value;setTextScrim(this.value)" style="width:100%;margin-bottom:10px">` +
-`<label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Безпечна зона: <span id="textSafeAreaVal">${t.safeArea||0}</span>%</label>` +
-`<input type="range" id="textSafeArea" min="0" max="10" value="${t.safeArea||0}" oninput="document.getElementById('textSafeAreaVal').textContent=this.value;setTextSafeArea(this.value)" style="width:100%;margin-bottom:10px">` +
-`<label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Міжлітерний: <span id="textLetterSpacingVal">${t.letterSpacing||0}</span>px</label>` +
-`<input type="range" id="textLetterSpacing" min="0" max="10" value="${t.letterSpacing||0}" oninput="document.getElementById('textLetterSpacingVal').textContent=this.value;setTextLetterSpacing(this.value)" style="width:100%;margin-bottom:10px">` +
-`<label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Міжрядковий: <span id="textLineHeightVal">${(t.lineHeight||1.4).toFixed(2)}</span></label>` +
-`<input type="range" id="textLineHeight" min="100" max="220" value="${Math.round((t.lineHeight||1.4)*100)}" oninput="document.getElementById('textLineHeightVal').textContent=(this.value/100).toFixed(2);setTextLineHeight(this.value)" style="width:100%;margin-bottom:10px">` +
-`<label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px">Швидкість переходу: <span id="textFadeMsVal">${t.fadeMs||600}</span> мс</label>` +
-`<input type="range" id="textFadeMs" min="100" max="1500" step="50" value="${t.fadeMs||600}" oninput="document.getElementById('textFadeMsVal').textContent=this.value;setTextFadeMs(this.value)" style="width:100%">` +
-`</div>` +
-`<div class="card"><div class="card-title">🖼 Фон (замість суцільного кольору)</div>` +
-`<div class="flex" style="gap:4px;margin-bottom:8px">` +
-`<button class="btn ${(t.bgType||'color')==='color'?'btn-primary':'btn-ghost'} btn-sm" onclick="setTextBgType('color')">Колір</button>` +
-`<button class="btn ${t.bgType==='video'?'btn-primary':'btn-ghost'} btn-sm" onclick="setTextBgType('video')">Відео</button>` +
-`<button class="btn ${t.bgType==='image'?'btn-primary':'btn-ghost'} btn-sm" onclick="setTextBgType('image')">Фото</button>` +
-`</div>` +
-(t.bgType==='video' ? (
-  `<input type="file" accept="video/*,.mp4,.webm,.mov,.mkv,.avi,.wmv,.flv,.m4v,.mpg,.mpeg,.3gp,.ts,.mts,.m2ts,.m2v,.vob,.divx,.asf,.mxf,.ogv" onchange="loadTextBgVideo(this)" style="font-size:11px;width:100%">` +
-  (t.bgVideo ? `<div style="font-size:11px;color:var(--green);margin-top:4px">▶ ${esc(t.bgVideo.name||'')}</div><button class="btn btn-ghost btn-sm" style="margin-top:4px;color:var(--red)" onclick="clearTextBgVideo()">✕ Прибрати</button>` : '')
-) : t.bgType==='image' ? (
-  `<input type="file" accept="image/*" onchange="loadTextBgImage(this)" style="font-size:11px;width:100%">` +
-  (t.bgImage ? `<div style="font-size:11px;color:var(--green);margin-top:4px">🖼 Фото завантажено</div><button class="btn btn-ghost btn-sm" style="margin-top:4px;color:var(--red)" onclick="clearTextBgImage()">✕ Прибрати</button>` : '')
-) : `<div class="card-sub">Колір фону — той самий пікер, що вище, поруч із кольором тексту.</div>`) +
-`</div>`;
-}
-
+// Іконка для типу запису журналу — 'html' охоплює графіку/QR/медіа/таймер/
+// H2R/оголошення (усе, що йде через doSendHTML), розрізняються лише назвою.
 function renderTopBible(usageOverride) {
 const c = $('#statTopBible');
 if(!c) return;
@@ -2008,44 +1607,13 @@ html += `<div style="display:flex;justify-content:space-between;padding:3px 0;bo
 c.innerHTML = html;
 }
 
-function resetAnimations() {
-const entry = $('#animEntry');
-const exit = $('#animExit');
-const speed = $('#animSpeed');
-if(entry) entry.value = 'fade';
-if(exit) exit.value = 'fade';
-if(speed) speed.value = 500;
-const speedVal = $('#animSpeedVal');
-if(speedVal) speedVal.textContent = '500ms';
-updateAnimationPreview();
-applyAnimations();
-}
-
-function resetHotkeys() {
-if(!confirm('Скинути?')) return;
-state.hotkeys = {'next-verse':'Space','prev-verse':'ArrowLeft','send':'Enter','clear':'Escape'};
-saveHotkeys();
-}
-
-
-function runPlaylist() {
-if(!state.playlist.length) { notify('Черга порожня'); return; }
-state.playlistIndex = 0;
-sendPlaylistItem(0);
-state.playlistRunning = true;
-const status = $('#playlistStatus');
-if(status) status.textContent = '● Виконується...';
-if($('#playlistAutoMode')?.value === 'timer') startPlaylistTimer();
-}
-
-
 function saveGraphicsPreset() {
 pv2Prompt('Назва пресету:', function(name){
 if(!name) return;
 const p = loadJSON(STORAGE_KEYS.graphicsPresets) || [];
 p.push({name, date: new Date().toISOString().split('T')[0], settings: JSON.parse(JSON.stringify(state.graphicsSettings))});
 saveJSON(STORAGE_KEYS.graphicsPresets, p);
-renderTabInto('graphics');
+markDirty('graphics');
 notify('✓ Пресет «' + name + '» збережено');
 });
 }
@@ -2074,7 +1642,7 @@ function applyGraphicsPreset(i) {
   if (!item) return;
   Object.assign(state.graphicsSettings, JSON.parse(JSON.stringify(item.settings || {})));
   persistGraphicsSettings();
-  renderTabInto('graphics');
+  markDirty('graphics');
   updateGraphicsPreview();
   updateLivePanels();
   notify('🎨 Пресет «' + item.name + '» застосовано');
@@ -2086,7 +1654,7 @@ function deleteGraphicsPreset(i) {
   if (!item || !confirm('Видалити пресет «' + item.name + '»?')) return;
   p.splice(i, 1);
   saveJSON(STORAGE_KEYS.graphicsPresets, p);
-  renderTabInto('graphics');
+  markDirty('graphics');
   notify('🗑 Пресет видалено');
 }
 
@@ -2103,48 +1671,12 @@ notify('✅ Шаблон збережено');
 });
 }
 
-function saveHotkeyProfile() {
-pv2Prompt('Назва профілю:', function(name){
-if(!name) return;
-const p = loadJSON(STORAGE_KEYS.hotkeyProfiles) || [];
-p.push({name, date: new Date().toISOString().split('T')[0], hotkeys: state.hotkeys});
-saveJSON(STORAGE_KEYS.hotkeyProfiles, p);
-const status = $('#hotkeyStatus');
-if(status) status.textContent = '✓ Профіль збережено';
-});
-}
-
 function saveHotkeys() {
 saveJSON(STORAGE_KEYS.hotkeys, state.hotkeys);
 renderHotkeys();
 const status = $('#hotkeyStatus');
 if(status) { status.textContent = '✓ Збережено'; setTimeout(() => { status.textContent = ''; }, 1000); }
 }
-
-
-function savePlaylist() {
-pv2Prompt('Назва:', function(name){
-if(!name) return;
-const data = {name, date: new Date().toISOString().split('T')[0], items: state.playlist};
-try {
-const saved = loadJSON(STORAGE_KEYS.playlistSaved) || [];
-saved.push(data);
-saveJSON(STORAGE_KEYS.playlistSaved, saved);
-notify('✓ Плейлист збережено');
-} catch(e) {}
-});
-}
-
-function savePlaylistData() { saveJSON(STORAGE_KEYS.playlist, state.playlist); }
-
-function saveStageNotes() {
-const notes = $('#stageNotes')?.value || '';
-saveJSON(STORAGE_KEYS.stageNotes, notes);
-notify('✓ Нотатки збережено');
-updateStageDisplay();
-}
-
-function saveStatistics() { saveJSON(STORAGE_KEYS.statistics, state.statsData); }
 
 
 // Поточний текст для графіки: обраний вірш пісні/Біблії, або демо
@@ -2169,7 +1701,7 @@ function pv2GraphicsContent() {
   // Далі — обраний куплет пісні (незалежно від того, яка вкладка відкрита)
   const s = state.selectedSong;
   if (s && s.verses && s.verses[state.selectedVerseIdx]) {
-    return { text: esc(String(s.verses[state.selectedVerseIdx])).replace(/\n/g, '<br>'), ref: s.title || '' };
+    return { text: esc(String(s.verses[state.selectedVerseIdx])).replace(/\n/g, '<br>'), ref: songRefForDisplay(s.title) };
   }
   try {
     const cur = getCurrentContent();
@@ -2184,8 +1716,8 @@ function pv2GraphicsContent() {
 // вкладки «Графіка» цього не робили, тож на трансляцію графіка йшла з непрозорим
 // фоном і камери не було видно (той самий недогляд, що й у мультиперекладі).
 function gfxAlphaFor(n) {
-  return (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none' && typeof streamBgAlpha === 'function')
-    ? streamBgAlpha() : undefined;
+  return (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none' && typeof outputBgAlpha === 'function')
+    ? outputBgAlpha(n) : undefined;
 }
 
 function sendGraphicsToAll() {
@@ -2193,110 +1725,315 @@ function sendGraphicsToAll() {
   doSendHTML(getGraphicsHTML(c.text, c.ref), 'Графіка (всі виходи)');
 }
 
+// Які виходи ЗАРАЗ показують графіку — той самий патерн, що вже є в H2R/
+// QR/Таймері (qrLiveMap/timerLiveMap): кнопка сама підсвічується 🔴.
+var graphicsLiveMap = { 1: false, 2: false, 3: false, 4: false };
+function renderGraphicsOutBtns() {
+  const el = document.getElementById('graphicsOutBtns');
+  if (!el || typeof OUT_NAME === 'undefined') return;
+  const outBtns = [1, 2, 3, 4].map(n => {
+    const isLive = !!graphicsLiveMap[n];
+    return `<button class="btn ${isLive ? 'btn-success' : 'btn-ghost'} btn-sm" onclick="sendGraphicsToOutput(${n})" title="Показати саме на ${esc(OUT_NAME[n] || ('Вихід ' + n))}">${isLive ? '🔴 ' : ''}${esc(OUT_NAME[n] || ('В.' + n))}</button>`;
+  }).join('');
+  const clearBtns = [1, 2, 3, 4].filter(n => graphicsLiveMap[n]).map(n =>
+    `<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="clearGraphicsFrom(${n})" title="Прибрати з ${esc(OUT_NAME[n] || ('Вихід ' + n))}">✕ ${esc(OUT_NAME[n] || ('В.' + n))}</button>`
+  ).join('');
+  el.innerHTML = `<div class="flex" style="gap:4px;flex-wrap:wrap">${outBtns}</div>` +
+    (clearBtns ? `<div class="flex mt8" style="gap:4px;flex-wrap:wrap">${clearBtns}</div>` : '');
+}
 function sendGraphicsToOutput(num) {
   const c = pv2GraphicsContent();
   sendHTMLToOutputN(num, getGraphicsHTML(c.text, c.ref, gfxAlphaFor(num)), 'Графіка');
+  graphicsLiveMap[num] = true;
+  renderGraphicsOutBtns();
+}
+function clearGraphicsFrom(n) {
+  if (typeof pv2ClearOutput === 'function') pv2ClearOutput(n);
+  graphicsLiveMap[n] = false;
+  renderGraphicsOutBtns();
 }
 
 
-function sendH2RLowerThird() {
-doSendHTML(getH2RHTML(), 'H2R: ' + state.h2rConfig.line1);
+// Які виходи ЗАРАЗ показують Lower Third — той самий патерн, що вже є в
+// H2R-файлах (htmlLiveMap), QR, Таймері, Графіці.
+var h2rLowerLiveMap = { 1: false, 2: false, 3: false, 4: false };
+function renderH2RLowerOutBtns() {
+  const el = document.getElementById('h2rLowerOutBtns');
+  if (!el || typeof OUT_NAME === 'undefined') return;
+  const outBtns = [1, 2, 3, 4].map(n => {
+    const isLive = !!h2rLowerLiveMap[n];
+    return `<button class="btn ${isLive ? 'btn-success' : 'btn-ghost'} btn-sm" style="font-size:10px;padding:3px 6px" onclick="sendH2RLowerThird(${n})" title="Показати саме на ${esc(OUT_NAME[n]||('Вихід '+n))}">${isLive ? '🔴 ' : ''}${esc(OUT_NAME[n]||('В.'+n))}</button>`;
+  }).join('');
+  const clearBtns = [1, 2, 3, 4].filter(n => h2rLowerLiveMap[n]).map(n =>
+    `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:3px 6px;color:var(--red)" onclick="clearH2R(${n})" title="Прибрати саме з ${esc(OUT_NAME[n]||('Вихід '+n))}">✕ ${esc(OUT_NAME[n]||('В.'+n))}</button>`
+  ).join('');
+  el.innerHTML = `<span style="font-size:10px;color:var(--text2);margin-right:3px">На вихід:</span>${outBtns}` +
+    (clearBtns ? `<div class="flex mt8" style="gap:3px;flex-wrap:wrap"><span style="font-size:10px;color:var(--text2)">Прибрати з:</span>${clearBtns}</div>` : '');
 }
 
-function sendMediaToProjector() {
-if(state.currentMediaIndex === -1 || !state.mediaFiles[state.currentMediaIndex]) {
-notify('Оберіть медіа');
-return;
-}
-const f = state.mediaFiles[state.currentMediaIndex];
-let html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden}video,audio{max-width:100%;max-height:100vh;width:100%}</style></head><body>`;
-if(f.type.startsWith('video')) {
-html += `<video src="${f.data}" controls autoplay style="width:100%;height:100%;object-fit:contain"></video>`;
-} else {
-html += `<audio src="${f.data}" controls autoplay style="width:80%"></audio><div style="position:absolute;bottom:30px;color:#fff;font-size:14px">🎵 ${esc(f.name)}</div>`;
-}
-html += '</body></html>';
-doSendHTML(html, 'Медіа: ' + f.name);
+// n=0 (за замовчуванням) — на всі дзеркальні виходи, як і раніше.
+// n=1..4 — саме на цей вихід, не займаючи решту (той самий підхід,
+// що вже є для графіки/HTML-оверлеїв/QR-екрана).
+function sendH2RLowerThird(n) {
+  const html = getH2RHTML();
+  const label = 'H2R: ' + state.h2rConfig.line1;
+  if (!n) doSendHTML(html, label);
+  else if (typeof sendHTMLToOutputN === 'function') sendHTMLToOutputN(n, html, label);
+  if (n) { h2rLowerLiveMap[n] = true; renderH2RLowerOutBtns(); }
 }
 
-function sendPlaylistItem(i) {
-const item = state.playlist[i];
-if(!item) return;
-state.playlistIndex = i;
-if(item.content) {
-if(item.content.type === 'text' || item.content.type === 'song' || item.content.type === 'bible') doSend(item.html || '', item.ref || '');
-else doSendHTML(item.html || '', item.ref || '');
-} else {
-doSend(item.html || '', item.ref || '');
+// Титри подяки — прокрутка знизу вгору, як у кінці фільму/трансляції.
+// Кожен рядок textarea стає окремим пунктом; порожні рядки — невеликий
+// проміжок (природний спосіб згрупувати «Звук: Іван» / «Відео: Марія»).
+function getCreditsHTML() {
+  const c = state.creditsConfig;
+  const lines = (c.lines || '').split('\n').map(l => l.trim());
+  const items = lines.map(l => l ? '<div class="credit-line">' + esc(l) + '</div>' : '<div class="credit-gap"></div>').join('');
+  const dur = Math.max(5, c.durationSec || 30);
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:${c.bg || '#0a0a1a'};width:100vw;height:100vh;overflow:hidden;font-family:Georgia,serif}
+    .credits-track{position:absolute;left:0;right:0;top:100%;text-align:center;animation:creditsScroll ${dur}s linear forwards}
+    .credit-line{color:${c.textColor || '#fff'};font-size:26px;line-height:1.8;padding:2px 20px}
+    .credit-line:first-child{color:${c.accent || '#c8a84b'};font-size:32px;font-weight:700;margin-bottom:20px}
+    .credit-gap{height:24px}
+    @keyframes creditsScroll{from{top:100%}to{top:-100%}}
+  </style></head><body><div class="credits-track">${items}</div></body></html>`;
 }
-renderPlaylist();
-const status = $('#playlistStatus');
-if(status) status.textContent = '● Відправлено: ' + item.ref;
+// Які виходи ЗАРАЗ показують титри подяки — той самий патерн, що вже є в
+// H2R/QR/Таймері/Графіці. На відміну від H2R (де є плавний вихід), тут
+// прибираємо одразу через канонічний pv2ClearOutput — прокрутка сама не
+// має «стану паузи», зупиняти нема чого, лише прибрати з екрана.
+var creditsLiveMap = { 1: false, 2: false, 3: false, 4: false };
+function renderCreditsOutBtns() {
+  const el = document.getElementById('creditsOutBtns');
+  if (!el || typeof OUT_NAME === 'undefined') return;
+  const outBtns = [1, 2, 3, 4].map(n => {
+    const isLive = !!creditsLiveMap[n];
+    return `<button class="btn ${isLive ? 'btn-success' : 'btn-ghost'} btn-sm" style="font-size:10px;padding:3px 6px" onclick="sendCredits(${n})" title="Показати саме на ${esc(OUT_NAME[n]||('Вихід '+n))}">${isLive ? '🔴 ' : ''}${esc(OUT_NAME[n]||('В.'+n))}</button>`;
+  }).join('');
+  const clearBtns = [1, 2, 3, 4].filter(n => creditsLiveMap[n]).map(n =>
+    `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:3px 6px;color:var(--red)" onclick="clearCredits(${n})" title="Прибрати з ${esc(OUT_NAME[n]||('Вихід '+n))}">✕ ${esc(OUT_NAME[n]||('В.'+n))}</button>`
+  ).join('');
+  el.innerHTML = `<span style="font-size:10px;color:var(--text2);margin-right:3px">На вихід:</span>${outBtns}` +
+    (clearBtns ? `<div class="flex mt8" style="gap:3px;flex-wrap:wrap">${clearBtns}</div>` : '');
 }
-
-function setPPTtemplate(t) {
-state.pptTemplate = t;
-$$('[id^="pptTemplate"]').forEach(el => el.style.border = '1px solid transparent');
-const btn = $('#pptTemplate' + t.charAt(0).toUpperCase() + t.slice(1));
-if(btn) btn.style.border = '1px solid var(--accent)';
-updatePPTPreview();
+function clearCredits(n) {
+  if (typeof pv2ClearOutput === 'function') pv2ClearOutput(n);
+  creditsLiveMap[n] = false;
+  renderCreditsOutBtns();
 }
-
-
-function setTextAlign(a) {
-if(state.currentTextOutput === 'all') {
-for(let i = 1; i <= 4; i++) state.textSettings[i].align = a;
-} else {
-state.textSettings[state.currentTextOutput].align = a;
-}
-const label = $('#textAlignLabel');
-if(label) label.textContent = a.toUpperCase();
-updateTextPreview();
-}
-
-function setTextOutput(num) {
-state.currentTextOutput = num;
-$$('[id^="textOutput"]').forEach(el => {
-el.className = 'btn btn-ghost btn-sm';
-if(el.id === 'textOutput' + num) el.className = 'btn btn-primary btn-sm';
-if(num === 'all' && el.id === 'textOutputAll') el.className = 'btn btn-primary btn-sm';
-});
-const s = num === 'all' ? state.textSettings[1] : state.textSettings[num] || state.textSettings[1];
-if(s) {
-const sizeDisplay = $('#textSizeDisplay');
-const sizeSlider = $('#textSizeSlider');
-const colorPicker = $('#textColorPicker');
-const bgPicker = $('#textBgColorPicker');
-if(sizeDisplay) sizeDisplay.textContent = s.size || 58;
-if(sizeSlider) sizeSlider.value = s.size || 58;
-if(colorPicker) colorPicker.value = s.color || '#ffffff';
-if(bgPicker) bgPicker.value = s.bgColor || '#000000';
-updateTextStatus();
-updateTextPreview();
-}
+function sendCredits(n) {
+  const html = getCreditsHTML();
+  const label = '🎬 Прокрутка подяки';
+  if (!n) doSendHTML(html, label);
+  else if (typeof sendHTMLToOutputN === 'function') sendHTMLToOutputN(n, html, label);
+  if (n) { creditsLiveMap[n] = true; renderCreditsOutBtns(); }
 }
 
-function setTextPosition(p) {
-if(state.currentTextOutput === 'all') {
-for(let i = 1; i <= 4; i++) state.textSettings[i].position = p;
-} else {
-state.textSettings[state.currentTextOutput].position = p;
+// Конфеті — короткий святковий ефект (хрещення, ювілей тощо). За своєю
+// природою тимчасовий, тож САМ прибирає себе через кілька секунд (скрипт
+// усередині надісланої сторінки, той самий підхід, що й у getTimerHTML) —
+// оператору не треба окремо тиснути «прибрати».
+function getConfettiHTML() {
+  const colors = ['#ff6b6b','#4ecdc4','#ffe66d','#a685e2','#ff9f43','#54a0ff'];
+  const count = 70;
+  const pieces = Array.from({length: count}, (_, i) => {
+    const left = Math.random() * 100;
+    const delay = (Math.random() * 1.5).toFixed(2);
+    const dur = (3 + Math.random() * 2).toFixed(2);
+    const color = colors[i % colors.length];
+    const w = Math.round(6 + Math.random() * 6);
+    const rot = Math.round(Math.random() * 360);
+    return '<div class="confetti-piece" style="left:' + left + '%;background:' + color + ';width:' + w + 'px;height:' + Math.round(w * 0.4) + 'px;animation-delay:' + delay + 's;animation-duration:' + dur + 's;transform:rotate(' + rot + 'deg)"></div>';
+  }).join('');
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+    *{margin:0;padding:0}body{background:transparent;width:100vw;height:100vh;overflow:hidden;position:relative}
+    .confetti-piece{position:absolute;top:-20px;opacity:0.9;animation-name:confettiFall;animation-timing-function:ease-in;animation-fill-mode:forwards}
+    @keyframes confettiFall{to{top:110%;transform:rotate(720deg)}}
+  </style></head><body>${pieces}
+  <script>setTimeout(function(){ try { document.body.innerHTML=''; } catch(e){} }, 6500);</script>
+  </body></html>`;
 }
-const label = $('#textPositionLabel');
-if(label) label.textContent = p.replace('-', ' ').toUpperCase();
-updateTextPreview();
+// Конфеті — короткий ефект, сам зникає за ~6.5с (скрипт усередині сторінки
+// сам чистить body). «Живим» вважаємо лише на цей короткий проміжок — після
+// нього мапу знімаємо самі (setTimeout), щоб кнопка не лишалась 🔴 назавжди
+// на те, чого вже давно немає на екрані.
+var confettiLiveMap = { 1: false, 2: false, 3: false, 4: false };
+var confettiLiveTimers = {};
+function renderConfettiOutBtns() {
+  const el = document.getElementById('confettiOutBtns');
+  if (!el || typeof OUT_NAME === 'undefined') return;
+  const outBtns = [1, 2, 3, 4].map(n => {
+    const isLive = !!confettiLiveMap[n];
+    return `<button class="btn ${isLive ? 'btn-success' : 'btn-ghost'} btn-sm" style="font-size:10px;padding:3px 6px" onclick="sendConfetti(${n})" title="Запустити саме на ${esc(OUT_NAME[n]||('Вихід '+n))}">${isLive ? '🔴 ' : ''}${esc(OUT_NAME[n]||('В.'+n))}</button>`;
+  }).join('');
+  const clearBtns = [1, 2, 3, 4].filter(n => confettiLiveMap[n]).map(n =>
+    `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:3px 6px;color:var(--red)" onclick="clearConfetti(${n})" title="Зупинити раніше на ${esc(OUT_NAME[n]||('Вихід '+n))}">✕ ${esc(OUT_NAME[n]||('В.'+n))}</button>`
+  ).join('');
+  el.innerHTML = `<span style="font-size:10px;color:var(--text2);margin-right:3px">На вихід:</span>${outBtns}` +
+    (clearBtns ? `<div class="flex mt8" style="gap:3px;flex-wrap:wrap">${clearBtns}</div>` : '');
+}
+function clearConfetti(n) {
+  if (typeof pv2ClearOutput === 'function') pv2ClearOutput(n);
+  if (confettiLiveTimers[n]) { clearTimeout(confettiLiveTimers[n]); delete confettiLiveTimers[n]; }
+  confettiLiveMap[n] = false;
+  renderConfettiOutBtns();
+}
+function sendConfetti(n) {
+  const html = getConfettiHTML();
+  const label = '🎉 Конфеті';
+  if (!n) doSendHTML(html, label);
+  else if (typeof sendHTMLToOutputN === 'function') sendHTMLToOutputN(n, html, label);
+  if (n) {
+    confettiLiveMap[n] = true;
+    renderConfettiOutBtns();
+    if (confettiLiveTimers[n]) clearTimeout(confettiLiveTimers[n]);
+    confettiLiveTimers[n] = setTimeout(() => { confettiLiveMap[n] = false; delete confettiLiveTimers[n]; renderConfettiOutBtns(); }, 6500);
+  }
 }
 
-
-function startHotkeyCapture(inp) {
-if(state._hotkeyCapture) { state._hotkeyCapture.style.borderColor = ''; state._hotkeyCapture = null; }
-state._hotkeyCapture = inp;
-inp.style.borderColor = 'var(--accent)';
-inp.value = '...';
-const status = $('#hotkeyStatus');
-if(status) status.textContent = '⏳ Очікування...';
+// Тікер — горизонтальний біжучий рядок унизу екрана, крутиться ПО КОЛУ, доки
+// не зупинять вручну (на відміну від титрів подяки й конфеті, які завершуються
+// самі). Текст дублюємо двічі підряд і анімуємо зсув на -50% — це стандартний
+// прийом для безшовної, непомітної для ока «склейки» циклу.
+function getTickerHTML() {
+  const c = state.tickerConfig;
+  const text = esc(c.text || '');
+  const spd = Math.max(5, c.speedSec || 18);
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:transparent;width:100vw;height:100vh;overflow:hidden;position:relative;font-family:Georgia,serif}
+    .ticker-bar{position:absolute;bottom:0;left:0;right:0;background:${c.bg || '#0a0a1a'};padding:10px 0;white-space:nowrap;overflow:hidden;border-top:2px solid ${c.accent || '#c8a84b'}}
+    .ticker-track{display:inline-block;animation:tickerScroll ${spd}s linear infinite}
+    .ticker-item{display:inline-block;color:${c.textColor || '#fff'};font-size:22px;padding:0 60px}
+    @keyframes tickerScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+  </style></head><body><div class="ticker-bar"><div class="ticker-track"><span class="ticker-item">${text}</span><span class="ticker-item">${text}</span></div></div></body></html>`;
+}
+// Які виходи ЗАРАЗ крутять тікер — той самий патерн, що вже є в H2R/QR/
+// Таймері/Графіці/Титрах. stopTicker(n) уже й був канонічним «прибрати»
+// для цієї фічі (миттєво, без плавного виходу) — лишаємо його як є, просто
+// додаємо трекінг і робимо кнопку умовною (лише для активних виходів).
+var tickerLiveMap = { 1: false, 2: false, 3: false, 4: false };
+function renderTickerOutBtns() {
+  const el = document.getElementById('tickerOutBtns');
+  if (!el || typeof OUT_NAME === 'undefined') return;
+  const outBtns = [1, 2, 3, 4].map(n => {
+    const isLive = !!tickerLiveMap[n];
+    return `<button class="btn ${isLive ? 'btn-success' : 'btn-ghost'} btn-sm" style="font-size:10px;padding:3px 6px" onclick="sendTicker(${n})" title="Запустити саме на ${esc(OUT_NAME[n]||('Вихід '+n))}">${isLive ? '🔴 ' : ''}${esc(OUT_NAME[n]||('В.'+n))}</button>`;
+  }).join('');
+  const clearBtns = [1, 2, 3, 4].filter(n => tickerLiveMap[n]).map(n =>
+    `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:3px 6px;color:var(--red)" onclick="stopTicker(${n})" title="Зупинити саме на ${esc(OUT_NAME[n]||('Вихід '+n))}">✕ ${esc(OUT_NAME[n]||('В.'+n))}</button>`
+  ).join('');
+  el.innerHTML = `<span style="font-size:10px;color:var(--text2);margin-right:3px">На вихід:</span>${outBtns}` +
+    (clearBtns ? `<div class="flex mt8" style="gap:3px;flex-wrap:wrap">${clearBtns}</div>` : '');
+}
+function sendTicker(n) {
+  const html = getTickerHTML();
+  const label = '📰 Тікер: ' + state.tickerConfig.text;
+  if (!n) doSendHTML(html, label);
+  else if (typeof sendHTMLToOutputN === 'function') sendHTMLToOutputN(n, html, label);
+  if (n) { tickerLiveMap[n] = true; renderTickerOutBtns(); }
+}
+// На відміну від H2R (де є плавний вихід) тікер прибираємо одразу — це
+// службовий, фоновий елемент, а не акцентна графіка, різка зміна тут не
+// впадає в очі так само помітно.
+function stopTicker(n) {
+  const blank = '<!DOCTYPE html><html><body style="background:transparent"></body></html>';
+  if (!n) doSendHTML(blank, '');
+  else if (typeof sendHTMLToOutputN === 'function') sendHTMLToOutputN(n, blank, '');
+  if (n) { tickerLiveMap[n] = false; renderTickerOutBtns(); }
 }
 
+// ============================================================
+// 🚨 АВАРІЙНА ПАНЕЛЬ — об'єднує вже наявні, окремо перевірені дії
+// (blackout/freeze/logo) в одному місці, доступному з БУДЬ-ЯКОЇ вкладки.
+// Свідомо НЕ будує нову логіку показу/приховування — лише викликає вже
+// перевірені toggleBlackout()/toggleFreeze()/showLogo(), щоб не дублювати
+// й не ризикувати розсинхронізацією зі станом, яким керують ці функції.
+// ============================================================
+function toggleEmergencyPanel() {
+  var panel = document.getElementById('emergencyPanel');
+  if (!panel) return;
+  if (panel.style.display === 'none' || !panel.style.display) {
+    renderEmergencyPanel();
+    panel.style.display = 'block';
+  } else {
+    panel.style.display = 'none';
+  }
+}
+// Пакетування (rafDebounce — наявний ідіом проєкту, як updateLivePanels):
+// ця функція викликалась із багатьох місць підряд, і кожен виклик повністю
+// перебудовував список. Тепер підряд ідучі виклики склеюються в один
+// перемальовок на кадр.
+// Обгортка — саме function-декларація з ЛІНИВОЮ ініціалізацією, а не
+// `const renderEmergencyPanel = rafDebounce(...)`: const створив би temporal dead zone,
+// і будь-який виклик до цього рядка впав би з «Cannot access before
+// initialization» — рівно той баг, що вже двічі ловився в цьому проєкті
+// (loadDisplayToggles). Function-декларація піднімається (hoisting), тож
+// порядок завантаження файлів більше не має значення.
+var _renderEmergencyPanelDeb = null;
+function renderEmergencyPanel() {
+  if (!_renderEmergencyPanelDeb) _renderEmergencyPanelDeb = rafDebounce(_renderEmergencyPanelNow);
+  return _renderEmergencyPanelDeb.apply(null, arguments);
+}
+function _renderEmergencyPanelNow() {
+  var panel = document.getElementById('emergencyPanel');
+  if (!panel) return;
+  var allFrozen = [1, 2, 3, 4].every(function(n) { return state.frozen && state.frozen[n]; });
+  var logoShown = [1, 2, 3, 4].some(function(n) { return state.logoSettings && state.logoSettings[n] && state.logoSettings[n].on; });
+  panel.innerHTML =
+    '<div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:8px">🚨 Аварійна панель</div>' +
+    '<button class="btn ' + (state.blackout ? 'btn-danger' : 'btn-ghost') + ' btn-sm" style="width:100%;margin-bottom:4px;text-align:left" onclick="toggleBlackout()">' + (state.blackout ? '▶ Повернути екран' : '⬛ Blackout (чорний екран)') + '</button>' +
+    '<button class="btn ' + (allFrozen ? 'btn-danger' : 'btn-ghost') + ' btn-sm" style="width:100%;margin-bottom:4px;text-align:left" onclick="toggleFreeze()">' + (allFrozen ? '▶ Розморозити всі виходи' : '❄️ Заморозити всі виходи') + '</button>' +
+    '<button class="btn ' + (logoShown ? 'btn-danger' : 'btn-ghost') + ' btn-sm" style="width:100%;margin-bottom:8px;text-align:left" onclick="' + (logoShown ? 'emergencyHideLogoAll()' : 'emergencyShowLogoAll()') + '">' + (logoShown ? '▶ Прибрати логотип' : '🖼 Показати логотип (усі виходи)') + '</button>' +
+    '<input type="text" id="emergencyMsgInput" value="Технічні складнощі — зачекайте, будь ласка" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none;margin-bottom:4px">' +
+    '<button class="btn btn-ghost btn-sm" style="width:100%;margin-bottom:8px;text-align:left" onclick="sendEmergencyMessage()">📢 Показати повідомлення (усі виходи)</button>' +
+    '<button class="btn btn-success btn-sm" style="width:100%" onclick="emergencyRestoreAll()">✅ Відновити все — прибрати всі аварійні стани</button>';
+}
+function emergencyShowLogoAll() {
+  if (!state.logo) { notify('⚠️ Спершу завантаж логотип у вкладці «Виходи»'); return; }
+  [1, 2, 3, 4].forEach(function(n) { if (typeof showLogo === 'function') showLogo(n, true); });
+  renderEmergencyPanel();
+  notify('🖼 Логотип показано на всіх виходах');
+}
+function emergencyHideLogoAll() {
+  [1, 2, 3, 4].forEach(function(n) { if (typeof showLogo === 'function') showLogo(n, false); });
+  renderEmergencyPanel();
+  notify('▶ Логотип прибрано з усіх виходів');
+}
+function sendEmergencyMessage() {
+  var input = document.getElementById('emergencyMsgInput');
+  var text = (input && input.value.trim()) || 'Технічні складнощі — зачекайте, будь ласка';
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>' +
+    '*{margin:0;padding:0;box-sizing:border-box}body{background:#1a0a0a;width:100vw;height:100vh;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif}' +
+    '.msg{color:#fff;font-size:36px;text-align:center;padding:0 60px;border-top:3px solid #e05555;border-bottom:3px solid #e05555;padding-top:20px;padding-bottom:20px}' +
+    '</style></head><body><div class="msg">' + esc(text) + '</div></body></html>';
+  doSendHTML(html, '🚨 ' + text);
+  notify('📢 Аварійне повідомлення показано');
+}
+// Повертає ВСЕ до нормального стану одним кліком — знімає blackout,
+// розморожує, прибирає логотип і аварійне повідомлення (порожня сторінка
+// на всі виходи, той самий безпечний підхід, що вже використовує тікер).
+function emergencyRestoreAll() {
+  if (state.blackout && typeof toggleBlackout === 'function') toggleBlackout();
+  // НАПРЯМУ розморожуємо всі 4, а не через toggleFreeze() — та функція
+  // дивиться «чи заморожені ВСІ» і при ЧАСТКОВІЙ заморозці заморозила б
+  // решту замість розморозити геть усе, як тут і треба.
+  var anyFrozen = [1, 2, 3, 4].some(function(n) { return state.frozen && state.frozen[n]; });
+  if (anyFrozen && window.electronAPI && window.electronAPI.freezeOutput) {
+    [1, 2, 3, 4].forEach(function(n) { state.frozen[n] = false; });
+    window.electronAPI.freezeOutput(false);
+  }
+  emergencyHideLogoAll();
+  var blank = '<!DOCTYPE html><html><body style="background:transparent"></body></html>';
+  doSendHTML(blank, '');
+  renderEmergencyPanel();
+  notify('✅ Усі аварійні стани знято');
+}
+
+// Які виходи ЗАРАЗ показують медіа — той самий патерн, що вже є в H2R/QR/
+// Таймері/Графіці/Титрах/Тікері.
 function startPlaylistTimer() {
 stopPlaylistTimer();
 const sec = parseInt($('#playlistTimer')?.value || 10);
@@ -2305,56 +2042,8 @@ const status = $('#playlistStatus');
 if(status) status.textContent = '● Таймер: ' + sec + 'с';
 }
 
-function stopMedia() {
-if(!state.mediaPlayer) return;
-state.mediaPlayer.pause();
-state.mediaPlayer.currentTime = 0;
-}
-
 function stopPlaylistTimer() {
 if(state.playlistTimer) { clearInterval(state.playlistTimer); state.playlistTimer = null; }
-}
-
-function toggleMediaPlay() {
-if(!state.mediaPlayer) return;
-if(state.mediaPlayer.paused) state.mediaPlayer.play();
-else state.mediaPlayer.pause();
-}
-
-function toggleTextStyle(st) {
-if(state.currentTextOutput === 'all') {
-for(let i = 1; i <= 4; i++) state.textSettings[i].styles[st] = !state.textSettings[i].styles[st];
-} else {
-state.textSettings[state.currentTextOutput].styles[st] = !state.textSettings[state.currentTextOutput].styles[st];
-}
-const el = $('#style' + st.charAt(0).toUpperCase() + st.slice(1));
-if(el) {
-const is = state.currentTextOutput === 'all' ? state.textSettings[1].styles[st] : state.textSettings[state.currentTextOutput].styles[st];
-el.className = 'btn btn-ghost btn-sm' + (is ? ' active' : '');
-}
-updateTextPreview();
-}
-
-function updateAnimationPreview() {
-state.animSettings.entry = $('#animEntry')?.value || 'fade';
-state.animSettings.exit = $('#animExit')?.value || 'fade';
-state.animSettings.speed = parseInt($('#animSpeed')?.value || 500);
-}
-
-function updateFontSelectors() {
-['fontSongs','fontBible','fontHeaders'].forEach(id => {
-const sel = $(`#${id}`);
-if(!sel) return;
-const current = sel.value;
-while(sel.options.length > 1) sel.remove(1);
-state.customFonts.forEach(f => {
-const o = document.createElement('option');
-o.value = f.name;
-o.textContent = f.name;
-sel.appendChild(o);
-});
-if(state.customFonts.some(f => f.name === current)) sel.value = current;
-});
 }
 
 function updateGraphicsPreview() {
@@ -2453,7 +2142,7 @@ function loadGraphicsBgVideo(input) {
   const finish = function() {
     state.graphicsSettings.bgType = 'video';
     persistGraphicsSettings();
-    renderTabInto('graphics');
+    markDirty('graphics');
     redrawGraphicsFrame();
     notify('🎬 Відео-фон графіки: ' + f.name);
   };
@@ -2472,7 +2161,7 @@ function loadGraphicsBgVideo(input) {
 function clearGraphicsBgVideo() {
   state.graphicsSettings.bgVideo = null;
   persistGraphicsSettings();
-  renderTabInto('graphics');
+  markDirty('graphics');
   redrawGraphicsFrame();
   notify('Відео-фон прибрано');
 }
@@ -2515,7 +2204,7 @@ function graphicsFromTheme() {
     else s.bgType = 'color';
     if (typeof t.bgDim === 'number') s.bgDim = t.bgDim;
     if (typeof t.textShadow === 'boolean') s.shadow = t.textShadow;
-    renderTabInto('graphics');
+    markDirty('graphics');
     notify('✓ Стиль перенесено з Теми проектора');
   } catch(e) { notify('⚠️ Не вдалось прочитати тему'); }
 }
@@ -2534,15 +2223,26 @@ function renderTabInto(tabId) {
     try { if (typeof logChange === 'function') logChange('⚠️ Помилка рендера вкладки «' + tabId + '»: ' + (e && e.message || e)); } catch (_) {}
     return;
   }
-  if (tabId === 'graphics') { updateGraphicsFontList(); updateGraphicsPreview(); }
+  // Живий перерендер (напр. після зміни налаштування) малює свіжий
+  // український HTML — одразу перекладаємо його назад на поточну мову.
+  if (typeof uiTranslateNode === 'function') uiTranslateNode(host);
+  if (tabId === 'graphics') { updateGraphicsFontList(); updateGraphicsPreview(); if (typeof renderGraphicsOutBtns === 'function') renderGraphicsOutBtns(); }
   // Статуси виходів оновлюємо при відкритті — індикатора в лівій панелі більше немає
   if (tabId === 'router') pv2SyncOutputStates();
+  if (tabId === 'captions' && typeof audioMeterRefreshDevices === 'function') audioMeterRefreshDevices();
   if (tabId === 'h2r' && typeof renderH2RTemplates === 'function') { try { renderH2RTemplates(); } catch (e) {} }
+  if (tabId === 'h2r' && typeof renderH2RLowerOutBtns === 'function') { try { renderH2RLowerOutBtns(); } catch (e) {} }
+  if (tabId === 'h2r' && typeof renderCreditsOutBtns === 'function') { try { renderCreditsOutBtns(); } catch (e) {} }
+  if (tabId === 'h2r' && typeof renderConfettiOutBtns === 'function') { try { renderConfettiOutBtns(); } catch (e) {} }
+  if (tabId === 'h2r' && typeof renderTickerOutBtns === 'function') { try { renderTickerOutBtns(); } catch (e) {} }
   if (tabId === 'textcontrol') updateTextPreview();
   if (tabId === 'live') updateLivePanels();
   if (tabId === 'stream') updateLowerPreview();
-  if (tabId === 'qrscreen') updateQrPreview();
+  if (tabId === 'qrscreen') { updateQrPreview(); if (typeof renderQrOutputRow === 'function') renderQrOutputRow(); }
   if (tabId === 'stations') { renderStationClients(); renderRemoteUsersList(); }
+  if (tabId === 'settings' && typeof refreshAppVersion === 'function') refreshAppVersion();
+  if (tabId === 'atem' && typeof videoCaptureRefreshDevices === 'function') videoCaptureRefreshDevices('h2rMvDeviceSel');
+  if (tabId === 'theme' && typeof renderCustomLooksList === 'function') renderCustomLooksList();
   if (tabId === 'service' && typeof svcRenderSongBookFilter === 'function') svcRenderSongBookFilter();
   // План служби тепер вбудований і у вкладку «Пісні» — синхронізуємо обидва
   // місця з ОДНОГО й того самого renderServiceTab(), без дублювання логіки.
@@ -2589,131 +2289,6 @@ if(verses) { verses.style.color = t.textColor; verses.style.fontFamily = t.fontF
 }
 
 
-function updateStageDisplay() {
-  // ПОТОЧНИЙ і НАСТУПНИЙ слайд для сцени.
-  // (Раніше читалося state.selectedSong / state.currentBibleBook / getVerse(...) —
-  //  усе неправильні посилання; справжні — глобальні selectedSong / currentBibleBook
-  //  / getVerseText, тому «наступний» і таймер на сцені не працювали.)
-  let cur = '', next = '';
-  const songLive = (typeof lastLiveSource !== 'undefined' && lastLiveSource === 'song');
-  if (songLive && typeof selectedSong !== 'undefined' && selectedSong) {
-    cur = selectedSong.verses[selectedVerseIdx] || '';
-    next = selectedSong.verses[selectedVerseIdx + 1] || '';
-  } else if (typeof currentBibleBook !== 'undefined' && currentBibleBook && currentBibleChapter && currentBibleVerseNum) {
-    const r = (typeof verseRange === 'function') ? verseRange() : { from: currentBibleVerseNum, to: currentBibleVerseNum };
-    const rangeFn = (typeof getVerseRangeText === 'function');
-    cur = rangeFn ? getVerseRangeText(null, currentBibleBook, currentBibleChapter, r.from, r.to)
-                  : (getVerseText(currentBibleBook, currentBibleChapter, currentBibleVerseNum) || '');
-    const size = r.to - r.from + 1, nf = r.to + 1;   // наступний блок такого ж розміру
-    next = rangeFn ? getVerseRangeText(null, currentBibleBook, currentBibleChapter, nf, nf + size - 1)
-                   : (getVerseText(currentBibleBook, currentBibleChapter, nf) || '');
-  } else if (typeof selectedSong !== 'undefined' && selectedSong) {
-    cur = selectedSong.verses[selectedVerseIdx] || '';
-    next = selectedSong.verses[selectedVerseIdx + 1] || '';
-  }
-  if (!cur) cur = '—';
-  if (!next) next = '—';
-  const timer = (typeof timerState !== 'undefined' && timerState) ? timerFmt(timerState.remaining) : '--:--';
-  const notes = $('#stageNotes')?.value || '';
-  if (state.stageWindow && !state.stageWindow.closed) {
-    state.stageWindow.postMessage({ current: cur.substring(0, 200), next: next.substring(0, 200), timer, notes: notes.substring(0, 60) }, '*');
-  }
-  const curEl = $('#stagePreviewCurrent');
-  const nextEl = $('#stagePreviewNext');
-  const timerEl = $('#stagePreviewTimer');
-  const clockEl = $('#stagePreviewClock');
-  if (curEl) curEl.textContent = cur.substring(0, 40);
-  if (nextEl) nextEl.textContent = next.substring(0, 40);
-  if (timerEl) timerEl.textContent = '⏱ ' + timer;
-  if (clockEl) clockEl.textContent = new Date().toLocaleTimeString('uk-UA');
-}
-
-function updateStatistics() {
-const period = ($('#statPeriod') && $('#statPeriod').value) || 'month';
-const spanMs = period === 'day' ? 24 * 3600 * 1000 : period === 'week' ? 7 * 24 * 3600 * 1000 : period === 'year' ? 365 * 24 * 3600 * 1000 : 30 * 24 * 3600 * 1000;
-const cutoff = Date.now() - spanMs;
-const logInPeriod = (state.statsData.log || []).filter(e => e.t >= cutoff);
-
-const total = logInPeriod.length;
-const totalEl = $('#statTotalOutputs');
-if(totalEl) totalEl.textContent = total;
-
-let most = '', max = 0;
-const songUsageInPeriod = {}, bibleUsageInPeriod = {};
-logInPeriod.forEach(e => {
-  if (!e.name) return;
-  if (e.kind === 'song') songUsageInPeriod[e.name] = (songUsageInPeriod[e.name] || 0) + 1;
-  if (e.kind === 'bible') bibleUsageInPeriod[e.name] = (bibleUsageInPeriod[e.name] || 0) + 1;
-});
-Object.keys(songUsageInPeriod).forEach(k => {
-if(songUsageInPeriod[k] > max) { max = songUsageInPeriod[k]; most = k; }
-});
-Object.keys(bibleUsageInPeriod).forEach(k => {
-if(bibleUsageInPeriod[k] > max) { max = bibleUsageInPeriod[k]; most = k; }
-});
-const mostEl = $('#statMostUsed');
-if(mostEl) mostEl.textContent = most || '—';
-
-const days = 30;
-let active = 0;
-const dayKeys = Object.keys(state.statsData.dailyActivity || {});
-for(let i = 0; i < Math.min(dayKeys.length, days); i++) {
-if(state.statsData.dailyActivity[dayKeys[i]] > 0) active;
-}
-const activityEl = $('#statActivity');
-if(activityEl) activityEl.textContent = Math.round(active / days * 100) + '%';
-
-renderTopSongs(songUsageInPeriod);
-renderTopBible(bibleUsageInPeriod);
-}
-
-function updateTextBgColor(c) {
-if(state.currentTextOutput === 'all') {
-for(let i = 1; i <= 4; i++) state.textSettings[i].bgColor = c;
-} else {
-state.textSettings[state.currentTextOutput].bgColor = c;
-}
-updateTextPreview();
-}
-
-function updateTextColor(c) {
-if(state.currentTextOutput === 'all') {
-for(let i = 1; i <= 4; i++) state.textSettings[i].color = c;
-} else {
-state.textSettings[state.currentTextOutput].color = c;
-}
-updateTextPreview();
-}
-
-function updateTextPreview() {
-const s = state.currentTextOutput === 'all' ? state.textSettings[1] : state.textSettings[state.currentTextOutput] || state.textSettings[1];
-const ref = $('#textPreviewRef');
-const body = $('#textPreviewBody');
-const cont = $('#textPreviewContent');
-if(ref) { ref.style.color = '#c8a84b'; ref.style.fontSize = Math.round((s.size || 58) * 0.6) + 'px'; }
-if(body) {
-body.style.color = s.color || '#ffffff';
-body.style.fontSize = (s.size || 58) + 'px';
-body.style.fontWeight = s.styles.bold ? '700' : 'normal';
-body.style.textShadow = s.styles.shadow ? '0 2px 10px rgba(0,0,0,0.8)' : 'none';
-body.textContent = 'Блаженні вбогі духом...';
-}
-if(cont) { cont.style.background = s.bgColor || '#000000'; cont.style.borderRadius = '4px'; cont.style.padding = '8px'; }
-}
-
-function updateTextSize(v) {
-const s = parseInt(v);
-if(state.currentTextOutput === 'all') {
-for(let i = 1; i <= 4; i++) state.textSettings[i].size = s;
-} else {
-state.textSettings[state.currentTextOutput].size = s;
-}
-const sizeDisplay = $('#textSizeDisplay');
-if(sizeDisplay) sizeDisplay.textContent = s;
-updateTextStatus();
-updateTextPreview();
-}
-
 function updateTextStatus() {
 for(let i = 1; i <= 4; i++) {
 const el = $('#textStatus' + i);
@@ -2726,7 +2301,11 @@ el.textContent = (i === 1 ? '📺' : i === 2 ? '🎥' : '🖥') + i + ': ' + (s.
 
 // ---- Збір статистики: обгортаємо doSend / doSendHTML додатку ----
 // (у прототипі статистика тільки відображалась, але не збиралась — виправлено)
-function recordStat(kind, name) {
+// output: номер виходу (1-4), коли відомо, куди саме пішов запис (адресна
+// відправка через sendHTMLToOutputN) — 'all', коли на всі дзеркальні
+// (doSend/doSendHTML), або відсутній/null, коли невідомо. Дозволяє «Журналу
+// ефіру» показувати й фільтрувати за виходом, а не лише хронологію.
+function recordStat(kind, name, output) {
   try {
     const sd = state.statsData;
     sd.totalOutputs = (sd.totalOutputs || 0) + 1;
@@ -2738,9 +2317,14 @@ function recordStat(kind, name) {
       if (kind === 'bible') { sd.bibleUsage = sd.bibleUsage || {}; sd.bibleUsage[name] = (sd.bibleUsage[name] || 0) + 1; }
     }
     sd.log = sd.log || [];
-    sd.log.push({t: Date.now(), kind: kind, name: name || ''});
+    sd.log.push({t: Date.now(), kind: kind, name: name || '', output: output || null});
     if (sd.log.length > 5000) sd.log = sd.log.slice(-5000);   // ~рік щотижневих служб для великої церкви
     saveStatistics();
     if (isActive('statistics')) updateStatistics();
   } catch(e) {}
 }
+
+// Перенесено в кінець файлу (див. коментар біля loadDisplayToggles вище) —
+// на цей момент усі top-level const/var extras-1.js уже ініціалізовані,
+// тож більше жодної TDZ-залежності підловити не може.
+safeInit(loadDisplayToggles, 'loadDisplayToggles');

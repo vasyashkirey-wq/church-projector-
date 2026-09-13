@@ -16,44 +16,6 @@ function collectAllData() {
   }
   return data;
 }
-function backupAll() {
-  const payload = {
-    app: 'church-presentation',
-    version: 3,
-    date: new Date().toISOString(),
-    data: collectAllData()
-  };
-  const n = Object.keys(payload.data).length;
-  downloadFile(JSON.stringify(payload, null, 2),
-    'церква-резервна-копія-' + new Date().toISOString().slice(0, 10) + '.json',
-    'application/json');
-  notify('💾 Резервна копія: ' + n + ' розділів збережено');
-}
-function restoreAll(input) {
-  const f = input.files[0];
-  if (!f) return;
-  const r = new FileReader();
-  r.onload = e => {
-    let payload;
-    try { payload = JSON.parse(e.target.result); } catch (err) { notify('✗ Файл пошкоджено'); return; }
-    if (!payload.data || typeof payload.data !== 'object') { notify('✗ Це не файл резервної копії'); return; }
-    if (!confirm('Відновити з копії? Поточні дані буде замінено на дані з файлу від ' +
-                 (payload.date ? payload.date.slice(0, 10) : '?') + '.')) return;
-    let n = 0;
-    Object.keys(payload.data).forEach(k => {
-      if (k.indexOf('church_') === 0) {
-        if (typeof bigStoreSet === 'function') bigStoreSet(k, payload.data[k]);
-        else localStorage.setItem(k, payload.data[k]);
-        n++;
-      }
-    });
-    notify('✓ Відновлено ' + n + ' розділів. Перезапусти програму.');
-    setTimeout(() => { if (confirm('Перезавантажити зараз, щоб застосувати?')) location.reload(); }, 500);
-  };
-  r.readAsText(f);
-  input.value = '';
-}
-
 // ---- 2. Профілі налаштувань (ранкова / вечірня / молодіжна) ----
 function loadProfiles() {
   state.profiles = loadJSON('church_profiles') || { list: [], active: null };
@@ -64,48 +26,6 @@ function saveProfilesMeta() { saveJSON('church_profiles', state.profiles); }
 const PROFILE_KEYS = ['church_output_routes','church_output_chroma','church_named_themes',
   'church_live_config','church_output_bg','church_graphics_presets','church_h2r_templates'];
 
-function saveProfile() {
-  pv2Prompt('Назва профілю (напр. «Ранкова», «Молодіжна»):', '', function(name){
-  if (!name) return;
-  const snap = {};
-  PROFILE_KEYS.forEach(k => {
-    const v = (typeof bigStoreGet === 'function') ? bigStoreGet(k) : localStorage.getItem(k);
-    if (v != null) snap[k] = v;
-  });
-  // збираємо й усі ключі, що починаються з church_live_config (там підрозділи через _)
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k && k.indexOf('church_live_config') === 0) snap[k] = (typeof bigStoreGet === 'function') ? bigStoreGet(k) : localStorage.getItem(k);
-  }
-  state.profiles.list = state.profiles.list.filter(p => p.name !== name);
-  state.profiles.list.push({ name: name, date: new Date().toISOString().slice(0, 10), snap: snap });
-  state.profiles.active = name;
-  saveProfilesMeta();
-  renderTabInto('settings');
-  notify('👤 Профіль «' + name + '» збережено');
-  });
-}
-function applyProfile(i) {
-  const p = state.profiles.list[i];
-  if (!p) return;
-  if (!confirm('Застосувати профіль «' + p.name + '»? Поточне оформлення й виходи буде замінено.')) return;
-  Object.keys(p.snap).forEach(k => {
-    if (typeof bigStoreSet === 'function') bigStoreSet(k, p.snap[k]);
-    else localStorage.setItem(k, p.snap[k]);
-  });
-  state.profiles.active = p.name;
-  saveProfilesMeta();
-  notify('👤 Профіль «' + p.name + '» — перезавантаження...');
-  setTimeout(() => location.reload(), 600);
-}
-function deleteProfile(i) {
-  const p = state.profiles.list[i];
-  if (!p || !confirm('Видалити профіль «' + p.name + '»?')) return;
-  state.profiles.list.splice(i, 1);
-  saveProfilesMeta();
-  renderTabInto('settings');
-}
-
 // ---- 3. Підтвердження небезпечних дій ----
 function loadUiPrefs() {
   state.ui = Object.assign({ confirmDanger: true, scale: 100, sound: false, light: false, highContrast: false, boldText: false },
@@ -114,14 +34,6 @@ function loadUiPrefs() {
   applyUiTheme();
 }
 function saveUiPrefs() { saveJSON('church_ui_prefs', state.ui); }
-function setUi(key, val) {
-  state.ui[key] = val;
-  saveUiPrefs();
-  if (key === 'scale') applyUiScale();
-  if (key === 'light' || key === 'highContrast' || key === 'boldText') applyUiTheme();
-  if (key !== 'scale') renderTabInto('settings');
-}
-
 // ---- 4. Розмір інтерфейсу ----
 function applyUiScale() {
   const s = (state.ui && state.ui.scale) || 100;
@@ -130,19 +42,6 @@ function applyUiScale() {
 }
 
 // ---- 5. Звуковий сигнал ----
-function uiBeep() {
-  if (!state.ui || !state.ui.sound) return;
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    const ctx = new AC();
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.connect(g); g.connect(ctx.destination);
-    o.frequency.value = 880; g.gain.value = 0.08;
-    o.start(); o.stop(ctx.currentTime + 0.12);
-  } catch (e) {}
-}
-
 // ---- 6. Світла тема панелі ----
 function applyUiTheme() {
   const light = state.ui && state.ui.light;
@@ -152,18 +51,6 @@ function applyUiTheme() {
 }
 
 // ---- 7. Автозапуск разом з Windows ----
-function setAutoLaunch(on) {
-  state.ui.autoLaunch = on;
-  saveUiPrefs();
-  if (window.electronAPI && window.electronAPI.setAutoLaunch) {
-    window.electronAPI.setAutoLaunch(on).then(() => {
-      notify(on ? '✓ Запускатиметься разом з Windows' : 'Автозапуск вимкнено');
-    }).catch(() => notify('⚠️ Не вдалось змінити автозапуск'));
-  }
-  renderTabInto('settings');
-}
-
-
 // Скільки місця займають дані програми (щоб переповнення не застало зненацька)
 function storageUsage() {
   let total = 0;
@@ -203,135 +90,6 @@ function renderStorageCard() {
   </div>`;
 }
 
-function renderSettingsTab() {
-  const ui = state.ui || {};
-  const profiles = (state.profiles && state.profiles.list) || [];
-  const profList = profiles.map((p, i) =>
-    `<div style="display:flex;align-items:center;gap:4px;padding:4px 0;border-bottom:1px solid var(--border)">
-       <span style="flex:1;font-size:12px">${state.profiles.active === p.name ? '● ' : ''}${esc(p.name)}
-         <span style="color:var(--text2);font-size:12px">${p.date}</span></span>
-       <button class="btn btn-primary btn-sm" onclick="applyProfile(${i})">Застосувати</button>
-       <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteProfile(${i})">✕</button>
-     </div>`).join('') || '<div style="font-size:11px;color:var(--text2)">Профілів ще немає</div>';
-
-  return `
-  <div class="grid2">
-    <div class="card" style="border-color:var(--accent)">
-      <div class="card-title">💾 Резервна копія всіх даних</div>
-      <div class="card-sub">Один файл із усім: пісні, плани, теми, налаштування, PIN-и, прив'язки моніторів. Збережи його на флешку — якщо ПК зламається, відновиш усе за хвилину.</div>
-      <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">
-        <button class="btn btn-success btn-sm" onclick="backupAll()">💾 Зберегти все у файл</button>
-        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('restoreInput').click()">📥 Відновити з файлу</button>
-        <input type="file" id="restoreInput" accept=".json" style="display:none" onchange="restoreAll(this)">
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">👤 Профілі служб</div>
-      <div class="card-sub">Ранкова, вечірня, молодіжна — у кожної свої теми, виходи, стилі. Перемкнув одним кліком.</div>
-      <button class="btn btn-primary btn-sm" style="margin-top:6px" onclick="saveProfile()">➕ Зберегти поточні як профіль</button>
-      <div style="margin-top:8px">${profList}</div>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🛡 Захист від помилок</div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-        <input type="checkbox" ${ui.confirmDanger !== false ? 'checked' : ''} onchange="setUi('confirmDanger', this.checked)">
-        Питати підтвердження перед очищенням ефіру й видаленням
-      </label>
-      <div class="card-sub" style="margin-top:4px">Радимо тримати увімкненим — щоб випадкове натискання посеред служби не зіпсувало вивід.</div>
-    </div>
-
-    <div class="card">
-      <div class="card-title">🖥 Автозапуск</div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-        <input type="checkbox" ${ui.autoLaunch ? 'checked' : ''} onchange="setAutoLaunch(this.checked)">
-        Запускати разом з Windows
-      </label>
-      <div class="card-sub" style="margin-top:4px">Увімкнув ПК — програма вже відкрита й готова.</div>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🔍 Вигляд панелі</div>
-      <div style="font-size:12px;color:var(--text2)">Розмір інтерфейсу: <b id="uiScaleLabel">${ui.scale || 100}%</b></div>
-      <input type="range" min="80" max="140" step="5" value="${ui.scale || 100}"
-             oninput="document.getElementById('uiScaleLabel').textContent=this.value+'%'; setUi('scale', parseInt(this.value,10))" style="width:100%">
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-top:8px">
-        <input type="checkbox" ${ui.light ? 'checked' : ''} onchange="setUi('light', this.checked)">
-        Світла тема панелі (для роботи вдень)
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;margin-top:6px">
-        <input type="checkbox" ${ui.highContrast ? 'checked' : ''} onchange="setUi('highContrast', this.checked)">
-        <b>Високий контраст</b> (яскравіший текст — якщо погано видно)
-      </label>
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;margin-top:6px">
-        <input type="checkbox" ${ui.boldText ? 'checked' : ''} onchange="setUi('boldText', this.checked)">
-        <b>Жирний шрифт</b> (товщий текст панелі)
-      </label>
-    </div>
-
-    <div class="card">
-      <div class="card-title">🔔 Звук</div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-        <input type="checkbox" ${ui.sound ? 'checked' : ''} onchange="setUi('sound', this.checked)">
-        Звуковий сигнал (пульт підключився, автостарт таймера)
-      </label>
-      <button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="uiBeep()">🔔 Перевірити звук</button>
-    </div>
-
-    <div class="card" style="border-color:${state.trainingMode ? 'var(--red)' : 'var(--border)'}">
-      <div class="card-title">🎓 Режим тренування</div>
-      <div class="card-sub">Новий волонтер може практикуватись із усіма кнопками — прев'ю й «В ЕФІР» працюють як завжди, але <b>нічого не йде на реальний екран</b>. Вимикається завжди при перезапуску програми — не забудеш увімкненим.</div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-top:8px">
-        <input type="checkbox" ${state.trainingMode ? 'checked' : ''} onchange="setTrainingMode(this.checked)">
-        <b>${state.trainingMode ? '🎓 Увімкнено — нічого не в ефірі' : 'Вимкнено — усе працює насправді'}</b>
-      </label>
-    </div>
-
-    <div class="card">
-      <div class="card-title">📜 Журнал змін налаштувань</div>
-      <div class="card-sub">Що і коли змінилось — маршрути, хромакей, прив'язка моніторів, теми служіння. Корисно, коли щось «саме зламалось», а насправді хтось торкнувся.</div>
-      <div style="max-height:220px;overflow-y:auto;margin-top:6px">
-        ${(state.changeLog || []).length
-          ? state.changeLog.slice(0, 50).map(e => `
-            <div style="padding:5px 0;border-bottom:1px solid var(--border);font-size:11px">
-              <span style="color:var(--text2)">${new Date(e.t).toLocaleString('uk-UA')}</span> —
-              <b>${esc(e.what)}</b>${e.detail ? ': ' + esc(e.detail) : ''}
-            </div>`).join('')
-          : '<div class="card-sub">Поки що порожньо.</div>'}
-      </div>
-      ${(state.changeLog || []).length ? '<button class="btn btn-ghost btn-sm" style="margin-top:6px;color:var(--red)" onclick="clearChangeLog()">🗑 Очистити журнал</button>' : ''}
-    </div>
-
-    <div class="card" style="border-color:var(--blue)">
-      <div class="card-title">☁️ Хмарна синхронізація</div>
-      <div class="card-sub">Папка Dropbox/Google Drive/OneDrive → пісні, теми, скорочення синхронізуються між ПК. Без інтернету — працює офлайн, при підключенні синхронізує автоматично.</div>
-      <div style="font-size:11px;color:var(--text2);margin:6px 0">
-        Папка: ${state.cloudSync.folder ? '<span style="color:var(--green)">✓ ' + esc(state.cloudSync.folder) + '</span>' : 'не вибрана'}
-      </div>
-      <div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">
-        <button class="btn btn-primary btn-sm" onclick="pickCloudSyncFolder()">📁 Вибрати папку…</button>
-        ${state.cloudSync.folder ? `
-          <button class="btn btn-success btn-sm" onclick="syncLibraryToCloud()">⬆️ Синхронізувати в хмару</button>
-          <button class="btn btn-ghost btn-sm" onclick="syncLibraryFromCloud()">⬇️ Завантажити з хмари</button>
-        ` : ''}
-      </div>
-      ${state.cloudSync.lastSync ? `
-        <div style="font-size:11px;color:var(--text2)">Остання синхронізація: ${state.cloudSync.lastSync}</div>
-      ` : ''}
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;margin-top:6px">
-        <input type="checkbox" ${state.cloudSync.autoSync ? 'checked' : ''} onchange="setAutoCloudSync(this.checked)">
-        Автоматична синхронізація (при відкритті програми)
-      </label>
-    </div>
-  </div>`;
-}
-
-
 // ============================================================
 // КЕРУВАННЯ ПІД ЧАС СЛУЖБИ
 // ============================================================
@@ -339,66 +97,12 @@ function renderSettingsTab() {
 // ---- 1. BLACKOUT — миттєвий чорний екран, з поверненням того самого ----
 // Відрізняється від «Очистити»: запам'ятовує, що було, і повертає одним натисканням.
 let _blackoutSaved = null;
-function toggleBlackout() {
-  if (state.blackout) {
-    // Повертаємо збережений вміст
-    state.blackout = false;
-    if (isClientStation()) stationSend('blackout', { on: false });
-    else if (window.electronAPI && window.electronAPI.blackout) window.electronAPI.blackout(false);
-    if (_blackoutSaved && !isClientStation()) {
-      if (_blackoutSaved.kind === 'text') { setGoingLive(true); try { doSend(_blackoutSaved.rawText, _blackoutSaved.ref); } finally { setGoingLive(false); } }
-      else if (_blackoutSaved.kind === 'htmlraw') { setGoingLive(true); try { doSendHTML(_blackoutSaved.html, _blackoutSaved.label); } finally { setGoingLive(false); } }
-    }
-    updateLivePanels();
-    notify('▶ Екран повернуто');
-  } else {
-    _blackoutSaved = state.onAir ? Object.assign({}, state.onAir) : null;
-    state.blackout = true;
-    if (isClientStation()) stationSend('blackout', { on: true });
-    else if (window.electronAPI && window.electronAPI.blackout) window.electronAPI.blackout(true);
-    updateLivePanels();
-    notify('⬛ Чорний екран (натисни ще раз — повернеться те саме)');
-  }
-}
-
 // ---- 2. Центральна гучність (відео-фон + фонова музика разом) ----
-function setMasterVolume(v) {
-  state.masterVolume = v / 100;
-  // фонова музика
-  if (typeof _bgAudioEl !== 'undefined' && _bgAudioEl && state.bgAudio && state.bgAudio.playing) {
-    _bgAudioEl.volume = state.bgAudio.volume * state.masterVolume;
-  }
-  // відео-фон на виходах
-  if (window.electronAPI && window.electronAPI.setMasterVolume) window.electronAPI.setMasterVolume(state.masterVolume);
-  saveJSON(STORAGE_KEYS.live + '_master', { v: state.masterVolume });
-  const lbl = $('#masterVolLabel'); if (lbl) lbl.textContent = v + '%';
-}
 function loadMasterVolume() {
   const m = loadJSON(STORAGE_KEYS.live + '_master');
   if (m && typeof m.v === 'number') state.masterVolume = m.v;
 }
-function duckAll() {
-  // Швидко приглушити все перед молитвою (до 15%)
-  setMasterVolume(15);
-  const sl = $('#masterVol'); if (sl) sl.value = 15;
-  notify('🔉 Приглушено (молитва)');
-}
-
 // ---- 3. Таймер проповіді (тільки для сцени/музикантів) ----
-function sermonStart(minutes) {
-  state.sermon = { running: true, startedAt: Date.now(), planned: (minutes || 30) * 60 };
-  saveJSON(STORAGE_KEYS.live + '_sermon', state.sermon);
-  if (!_sermonTick) _sermonTick = setInterval(sermonUpdate, 1000);
-  renderTabInto('control');
-  notify('📣 Таймер проповіді запущено: ' + (minutes || 30) + ' хв');
-}
-function sermonStop() {
-  state.sermon = { running: false };
-  clearInterval(_sermonTick); _sermonTick = null;
-  if (window.electronAPI && window.electronAPI.sendStageTimer) window.electronAPI.sendStageTimer(null);
-  renderTabInto('control');
-  notify('⏹ Таймер проповіді зупинено');
-}
 let _sermonTick = null;
 function sermonUpdate() {
   if (!state.sermon || !state.sermon.running) return;
@@ -409,6 +113,7 @@ function sermonUpdate() {
   if (window.electronAPI && window.electronAPI.sendStageTimer) {
     window.electronAPI.sendStageTimer({ elapsed: elapsed, left: left, warn: warn });
   }
+  if (typeof updateStageDisplay === 'function') updateStageDisplay();
   const lbl = $('#sermonElapsed');
   if (lbl) lbl.textContent = fmtMMSS(elapsed) + (left >= 0 ? ' / лишилось ' + fmtMMSS(left) : ' / +' + fmtMMSS(-left));
 }
@@ -420,31 +125,6 @@ function fmtMMSS(s) {
 
 // ---- 4. Швидкі закладки ----
 function loadBookmarks() { state.bookmarks = loadJSON(STORAGE_KEYS.live + '_bookmarks') || []; }
-function addBookmark() {
-  const c = state.onAir;
-  if (!c) { notify('⚠️ Немає що додати — спершу виведи щось у зал'); return; }
-  const label = c.ref || c.label || (c.rawText ? String(c.rawText).slice(0, 30) : 'Слайд');
-  state.bookmarks = state.bookmarks || [];
-  state.bookmarks.unshift({ kind: c.kind, rawText: c.rawText, html: c.html, ref: c.ref, label: label, at: Date.now() });
-  if (state.bookmarks.length > 30) state.bookmarks.pop();
-  saveJSON(STORAGE_KEYS.live + '_bookmarks', state.bookmarks);
-  renderTabInto('control');
-  notify('⭐ У закладки: ' + label);
-}
-function showBookmark(i) {
-  const b = (state.bookmarks || [])[i];
-  if (!b) return;
-  if (b.kind === 'htmlraw') { setGoingLive(true); try { doSendHTML(b.html, b.label); } finally { setGoingLive(false); } }
-  else { setGoingLive(true); try { doSend(b.rawText, b.ref); } finally { setGoingLive(false); } }
-  notify('▶ ' + b.label);
-}
-function removeBookmark(i) {
-  if (!state.bookmarks) return;
-  state.bookmarks.splice(i, 1);
-  saveJSON(STORAGE_KEYS.live + '_bookmarks', state.bookmarks);
-  renderTabInto('control');
-}
-
 // ---- 5. Прев'ю «що в залі» (для пульта/іншого ПК) ----
 // Хост уже розсилає стан; тут просто показуємо його як текст-прев'ю
 function livePreviewText() {
@@ -456,22 +136,6 @@ function livePreviewText() {
 }
 
 // ---- 6. Блокування панелі оператора ----
-function lockPanel() {
-  const pin = loadJSON('church_panel_pin');
-  if (!pin) {
-    pv2Prompt('Задай PIN для блокування панелі (4 цифри):', '', function(set){
-      if (!set || !/^\d{4}$/.test(set)) { notify('PIN має бути 4 цифри'); return; }
-      saveJSON('church_panel_pin', set);
-      state.panelLocked = true;
-      showLockScreen();
-      notify('🔒 Панель заблоковано');
-    });
-    return;
-  }
-  state.panelLocked = true;
-  showLockScreen();
-  notify('🔒 Панель заблоковано');
-}
 function showLockScreen() {
   let el = document.getElementById('panelLock');
   if (!el) {
@@ -606,7 +270,7 @@ function macroAddStep(a) {
     pv2Prompt('Скільки хвилин відлік?', '5', function(mins) {
       if (mins === null) return;
       state.macroDraft.steps.push({ a: a, v: Math.max(1, parseInt(mins, 10) || 5) });
-      renderTabInto('control');
+      markDirty('control');
     });
     return;
   }
@@ -616,17 +280,17 @@ function macroAddStep(a) {
     pv2Prompt('Номер Look (' + list.map((l, i) => (i + 1) + '=' + l.name).join(', ') + '):', '1', function(pick) {
       if (pick === null) return;
       state.macroDraft.steps.push({ a: a, v: Math.max(0, (parseInt(pick, 10) || 1) - 1) });
-      renderTabInto('control');
+      markDirty('control');
     });
     return;
   }
   state.macroDraft.steps.push({ a: a, v: null });
-  renderTabInto('control');
+  markDirty('control');
 }
 function macroDraftRemove(pos) {
   if (!state.macroDraft) return;
   state.macroDraft.steps.splice(pos, 1);
-  renderTabInto('control');
+  markDirty('control');
 }
 function saveMacroDraft() {
   const d = state.macroDraft;
@@ -635,7 +299,7 @@ function saveMacroDraft() {
   state.macros.push({ name: name, steps: d.steps.slice() });
   saveMacros();
   state.macroDraft = { name: '', steps: [] };
-  renderTabInto('control');
+  markDirty('control');
   notify('⚡ Макрос «' + name + '» збережено');
 }
 function deleteMacro(i) {
@@ -643,7 +307,7 @@ function deleteMacro(i) {
   if (!confirm('Видалити макрос «' + state.macros[i].name + '»?')) return;
   state.macros.splice(i, 1);
   saveMacros();
-  renderTabInto('control');
+  markDirty('control');
 }
 function runMacroStep(st) {
   switch (st.a) {
@@ -702,148 +366,6 @@ function renderMacrosCard() {
 // ============================================================
 // МУЛЬТИВʼЮ — чотири вихідні екрани в мініатюрах 2x2
 // ============================================================
-function renderMultiviewTab() {
-  const outputs = [
-    { num: 1, kind: 'projector', label: 'Проектор (Вихід 1)', bg: '#1a1a2e' },
-    { num: 2, kind: 'stream', label: 'Трансляція (Вихід 2)', bg: '#0d1b2e' },
-    { num: 3, kind: 'out3', label: 'Вихід 3', bg: '#1a2e2e' },
-    { num: 4, kind: 'out4', label: 'Вихід 4', bg: '#2e1a1a' }
-  ];
-
-  const cards = outputs.map(o => {
-    const win = state.outputStatus && state.outputStatus[o.kind];
-    const status = win ? (win.content ? '✓ ' + win.content.slice(0, 30) : '⚫ Чорний екран') : '❌ Не відкрито';
-    const color = !win ? 'var(--red)' : (win.content ? 'var(--green)' : 'var(--orange)');
-    return `
-      <div style="display:flex;flex-direction:column;height:100%;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:${o.bg}">
-        <div style="padding:6px;border-bottom:1px solid var(--border);background:var(--panel2)">
-          <div style="font-size:12px;color:var(--text);font-weight:bold">${o.label}</div>
-          <div style="font-size:10px;color:${color};margin-top:2px">${status}</div>
-        </div>
-        <div style="flex:1;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center">
-          <iframe id="mv-frame-${o.num}" style="width:100%;height:100%;border:0;position:absolute;top:0;left:0;background:${o.bg}" 
-                  onload="updateMultiviewFrame(${o.num})"></iframe>
-          <div style="position:absolute;z-index:1;text-align:center;opacity:0.7">
-            <div style="font-size:48px">🎬</div>
-            <div style="font-size:11px;color:var(--text2)">завантаження…</div>
-          </div>
-        </div>
-      </div>`;
-  }).join('');
-
-  return `
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;height:calc(100vh - 140px);padding:8px">
-    ${cards}
-  </div>
-  
-  <div style="position:fixed;bottom:12px;right:12px;font-size:11px;color:var(--text2)">
-    Оновлюється в реальному часі • F5 для повного оновлення
-  </div>`;
-}
-
-let _multiviewUpdateTimer = null;
-function updateMultiviewFrame(num) {
-  const kinds = ['projector', 'stream', 'out3', 'out4'];
-  const kind = kinds[num - 1];
-  const f = document.getElementById('mv-frame-' + num);
-  if (!f) return;
-  
-  // Генеруємо простий HTML для кожного виходу — показуємо тільки то, що зараз у ефірі
-  const c = state.onAir || {};
-  const content = c.label || '';
-  const ref = c.ref || '';
-  const html = c.html || '';
-  
-  const previewHtml = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { margin:0; padding:20px; background:#111; color:#fff; font-family:Arial,sans-serif; overflow:hidden; }
-    .preview { text-align:center; font-size:20px; }
-    .label { color:#aaa; margin:10px 0; }
-    .ref { color:#888; font-size:14px; }
-  </style>
-</head>
-<body>
-  <div class="preview">
-    <div style="font-size:24px;margin:20px 0">${content ? esc(content) : '(порожньо)'}</div>
-    ${ref ? '<div class="ref">' + esc(ref) + '</div>' : ''}
-    ${html ? '<div style="margin-top:20px;border:1px solid #333;padding:10px;border-radius:4px;background:#1a1a1a">' + html.slice(0, 200) + '…</div>' : ''}
-  </div>
-</body>
-</html>`;
-  f.srcdoc = previewHtml;
-}
-function updateMultiviewFrames() {
-  // Оновлюємо всі 4 фрейми в режимі реального часу
-  for (let i = 1; i <= 4; i++) {
-    if (typeof updateMultiviewFrame === 'function') updateMultiviewFrame(i);
-  }
-}
-
-function renderControlTab() {
-  const bm = (state.bookmarks || []).map((b, i) =>
-    `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;border-bottom:1px solid var(--border)">
-       <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(b.label)}</span>
-       <button class="btn btn-success btn-sm" onclick="showBookmark(${i})">▶</button>
-       <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="removeBookmark(${i})">✕</button>
-     </div>`).join('') || '<div style="font-size:11px;color:var(--text2)">Закладок немає. Виведи щось у зал і тисни «⭐».</div>';
-
-  const mv = Math.round((state.masterVolume != null ? state.masterVolume : 1) * 100);
-  const s = state.sermon || {};
-
-  return `
-  <div id="preflightBox">${renderPreflight()}</div>
-
-  <div class="card" style="border-color:${state.blackout ? 'var(--red)' : 'var(--accent)'}">
-    <div class="card-title">${state.blackout ? '<span style="color:var(--red)">⬛ ЧОРНИЙ ЕКРАН</span>' : '🎬 Швидке керування'}</div>
-    <div class="card-sub">Зараз у залі: <b>${esc(livePreviewText())}</b></div>
-    <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
-      <button class="btn ${state.blackout ? 'btn-primary' : 'btn-ghost'}" style="flex:1;font-weight:700" onclick="toggleBlackout()">
-        ⬛ ${state.blackout ? 'ПОВЕРНУТИ ЕКРАН' : 'Чорний екран (B)'}
-      </button>
-      <button class="btn btn-ghost" style="flex:1" onclick="addBookmark()">⭐ У закладки</button>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🔊 Гучність (усе разом)</div>
-      <div style="font-size:12px;color:var(--text2)">Відео-фон + фонова музика: <b id="masterVolLabel">${mv}%</b></div>
-      <input id="masterVol" type="range" min="0" max="100" value="${mv}" oninput="setMasterVolume(parseInt(this.value,10))" style="width:100%">
-      <button class="btn btn-ghost btn-sm btn-block" style="margin-top:4px" onclick="duckAll()">🔉 Приглушити для молитви</button>
-    </div>
-
-    <div class="card">
-      <div class="card-title">📣 Таймер проповіді (на екран сцени)</div>
-      ${s.running
-        ? `<div style="font-size:13px;color:var(--green)" id="sermonElapsed">—</div>
-           <button class="btn btn-ghost btn-sm btn-block" style="margin-top:6px" onclick="sermonStop()">⏹ Зупинити</button>`
-        : `<div style="display:flex;gap:4px;flex-wrap:wrap">
-             <button class="btn btn-primary btn-sm" onclick="sermonStart(20)">20 хв</button>
-             <button class="btn btn-primary btn-sm" onclick="sermonStart(30)">30 хв</button>
-             <button class="btn btn-primary btn-sm" onclick="sermonStart(45)">45 хв</button>
-           </div>
-           <div class="card-sub" style="margin-top:4px">Бачить лише проповідник на моніторі сцени. За 5 хв до кінця — жовте попередження.</div>`}
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">⭐ Закладки</div>
-      <div style="max-height:200px;overflow-y:auto">${bm}</div>
-    </div>
-    <div class="card">
-      <div class="card-title">🔒 Захист панелі</div>
-      <div class="card-sub">Заблокуй екран PIN-ом, якщо до ПК можуть підійти під час служби.</div>
-      <button class="btn btn-ghost btn-sm btn-block" style="margin-top:6px" onclick="lockPanel()">🔒 Заблокувати панель</button>
-    </div>
-    ${renderMacrosCard()}
-  </div>`;
-}
-
-
 // ============================================================
 // НАДІЙНІСТЬ ТА ІНТЕГРАЦІЇ
 // ============================================================
@@ -866,18 +388,6 @@ function loadScheduler() {
   // items: [{ weekday:0-6, time:'09:30', profile:'Ранкова', on:true }]
 }
 function saveScheduler() { saveJSON('church_scheduler', state.scheduler); }
-function addSchedule() {
-  state.scheduler.items.push({ weekday: 0, time: '09:30', profile: '', on: true });
-  saveScheduler(); renderTabInto('automation');
-}
-function setSchedule(i, key, val) {
-  if (!state.scheduler.items[i]) return;
-  state.scheduler.items[i][key] = val;
-  saveScheduler();
-  if (key !== 'time' && key !== 'weekday') renderTabInto('automation');
-}
-function removeSchedule(i) { state.scheduler.items.splice(i, 1); saveScheduler(); renderTabInto('automation'); }
-
 let _schedulerLast = '';
 function schedulerTick() {
   if (!state.scheduler || !state.scheduler.items.length) return;
@@ -912,12 +422,6 @@ function loadAutoBackup() {
   state.autoBackup = loadJSON('church_autobackup') || { on: false, everyDays: 7, last: 0 };
   maybeAutoBackup();
 }
-function setAutoBackup(key, val) {
-  state.autoBackup[key] = val;
-  saveJSON('church_autobackup', state.autoBackup);
-  renderTabInto('automation');
-  if (key === 'on' && val) maybeAutoBackup(true);
-}
 function maybeAutoBackup(force) {
   if (!state.autoBackup || !state.autoBackup.on) return;
   const days = state.autoBackup.everyDays || 7;
@@ -941,49 +445,49 @@ function trashSong(song) {
   if (state.songTrash.length > 50) state.songTrash.pop();   // тримаємо останні 50
   saveJSON('church_song_trash', state.songTrash);
 }
-function restoreSong(i) {
-  const t = (state.songTrash || [])[i];
-  if (!t) return;
-  if (typeof currentSongs !== 'undefined' && Array.isArray(currentSongs)) {
-    currentSongs.push(t.song);
-    // БУВ виклик saveSongs() без аргументу: saveSongs(songs) робить
-    // JSON.stringify(songs), а bigStoreSet трактує undefined як '' —
-    // церковна база пісень (church_songs_db) записувалась ПОРОЖНЬОЮ.
-    // Сама сесія працювала б далі нормально (currentSongs у пам'яті вже
-    // мав пісню), але наступний запуск програми (loadSongs) бачив би
-    // порожній рядок, вважав би, що збереженого нема, і тихо скидав усю
-    // базу до кількох вбудованих пісень за замовчуванням — щойно
-    // оператор відновив пісню з кошика й закрив програму без жодної
-    // іншої зміни.
-    if (typeof saveSongs === 'function') saveSongs(currentSongs);
-    if (typeof renderAllSongs === 'function') renderAllSongs();
-  }
-  state.songTrash.splice(i, 1);
-  saveJSON('church_song_trash', state.songTrash);
-  renderTabInto('automation');
-  notify('↩ Пісню «' + (t.song.title || '') + '» відновлено');
-}
-function emptyTrash() {
-  if (!confirm('Очистити кошик остаточно?')) return;
-  state.songTrash = [];
-  saveJSON('church_song_trash', state.songTrash);
-  renderTabInto('automation');
-}
-
 // ---- Мова інтерфейсу (UA / CZ / EN) ----
+// Перекладає меню навігації (назви розділів і всіх 38 вкладок нагорі —
+// те, що видно на екрані завжди, незалежно від того, яка вкладка відкрита).
+// Вміст усередині самих вкладок (картки, кнопки, підказки) лишається
+// українською — перекласти геть усе це окрема набагато більша робота.
 const I18N = {
-  ua: { name: 'Українська', settings: 'Налаштування', control: 'Керування', clear: 'Очистити', blackout: 'Чорний екран' },
-  cz: { name: 'Čeština', settings: 'Nastavení', control: 'Ovládání', clear: 'Vymazat', blackout: 'Černá obrazovka' },
-  en: { name: 'English', settings: 'Settings', control: 'Control', clear: 'Clear', blackout: 'Blackout' }
+  ua: { name: 'Українська' },
+  cz: { name: 'Čeština', nav: {
+    g_service: '🔴 Bohoslužba', g_content: '📖 Obsah', g_media: '🖼 Média',
+    g_design: '🎨 Vzhled', g_outputs: '🖥 Výstupy', g_settings: '⚙️ Nastavení',
+    live: '🔴 Živě', control: '🎬 Ovládání', layers: '🎬 Vrstvy', timer: '⏱ Časovač',
+    songs: '🎵 Písně', addsong: '➕ Přidat píseň', song: '🎵 Píseň', bible: '📖 Bible', announce: '📢 Oznámení',
+    present: '📽 PDF', slidebuilder: '🖼 Editor snímků', powerpoint: '🖨 PowerPoint',
+    playlist: '📋 Playlist', media: '🎬 Média', qrscreen: '📲 QR obrazovka', htmlgfx: '💻 HTML', h2r: '🎞 H2R titulky',
+    theme: '🎨 Motiv', graphics: '🖋 Grafika', backgrounds: '🖼 Pozadí', fonts: '🔤 Písma',
+    animations: '✨ Animace', textcontrol: '📝 Text (obrazovky)', typo: '🔠 Čitelnost',
+    router: '🔀 Výstupy', monitors: '🖥 Monitory', monitors2: '🔗 Přiřazení obrazovek',
+    stream: '📡 Vysílání', stagedisplay: '🖥 Stage', ptz: '🎥 Kamery', atem: '🎬 ATEM',
+    settings: '⚙️ Obecné', automation: '🔌 Automatizace', stations: '👥 Stanice',
+    hotkeys: '⌨️ Klávesy', statistics: '📊 Statistika', extras: '🌐 Jazyk/OBS', importdata: '📥 Import dat'
+  } },
+  en: { name: 'English', nav: {
+    g_service: '🔴 Service', g_content: '📖 Content', g_media: '🖼 Media',
+    g_design: '🎨 Design', g_outputs: '🖥 Outputs', g_settings: '⚙️ Settings',
+    live: '🔴 Live', control: '🎬 Control', layers: '🎬 Layers', timer: '⏱ Timer',
+    songs: '🎵 Songs', addsong: '➕ Add Song', song: '🎵 Song', bible: '📖 Bible', announce: '📢 Announcements',
+    present: '📽 PDF', slidebuilder: '🖼 Slide Editor', powerpoint: '🖨 PowerPoint',
+    playlist: '📋 Playlist', media: '🎬 Media', qrscreen: '📲 QR Screen', htmlgfx: '💻 HTML', h2r: '🎞 H2R Captions',
+    theme: '🎨 Theme', graphics: '🖋 Graphics', backgrounds: '🖼 Backgrounds', fonts: '🔤 Fonts',
+    animations: '✨ Animations', textcontrol: '📝 Text (Screens)', typo: '🔠 Readability',
+    router: '🔀 Outputs', monitors: '🖥 Monitors', monitors2: '🔗 Screen Binding',
+    stream: '📡 Stream', stagedisplay: '🖥 Stage', ptz: '🎥 Cameras', atem: '🎬 ATEM',
+    settings: '⚙️ General', automation: '🔌 Automation', stations: '👥 Stations',
+    hotkeys: '⌨️ Hotkeys', statistics: '📊 Statistics', extras: '🌐 Language/OBS', importdata: '📥 Import Data'
+  } }
 };
 function loadLang() { state.lang = (loadJSON('church_lang') || {}).code || 'ua'; }
-function setLang(code) {
-  state.lang = code;
-  saveJSON('church_lang', { code: code });
-  notify(I18N[code] ? I18N[code].name : code);
-  renderTabInto('automation');
-  // повний переклад усіх вкладок — після перезапуску (щоб перебудувати мітки)
-  if (confirm('Мову змінено. Перезапустити зараз?')) location.reload();
+// Переклад підпису вкладки/розділу навігації за id. Для решти тексту в
+// програмі (усередині самих вкладок) перекладів поки нема — залишається
+// українською, тут просто повертається fallback (сама українська мітка).
+function navLabel(id, fallback) {
+  const L = I18N[state.lang || 'ua'];
+  return (L && L.nav && L.nav[id]) || fallback;
 }
 function t(key) {
   const L = I18N[state.lang || 'ua'] || I18N.ua;
@@ -991,121 +495,9 @@ function t(key) {
 }
 
 // ---- Вкладка «Автоматизація» ----
-function renderAutomationTab() {
-  const days = ['Нд','Пн','Вт','Ср','Чт','Пт','Сб'];
-  const profiles = (state.profiles && state.profiles.list) || [];
-  const sched = (state.scheduler && state.scheduler.items) || [];
-  const ab = state.autoBackup || {};
-  const trash = state.songTrash || [];
-
-  const schedRows = sched.map((it, i) => {
-    const profOpts = ['<option value="">— профіль —</option>'].concat(
-      profiles.map(p => `<option value="${esc(p.name)}" ${it.profile === p.name ? 'selected' : ''}>${esc(p.name)}</option>`)).join('');
-    const dayOpts = days.map((d, di) => `<option value="${di}" ${it.weekday === di ? 'selected' : ''}>${d}</option>`).join('');
-    return `<div style="display:flex;gap:4px;align-items:center;margin-bottom:4px;flex-wrap:wrap">
-      <input type="checkbox" ${it.on ? 'checked' : ''} onchange="setSchedule(${i},'on',this.checked)">
-      <select onchange="setSchedule(${i},'weekday',parseInt(this.value,10))" style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px;color:var(--text);font-size:11px">${dayOpts}</select>
-      <input type="time" value="${it.time}" onchange="setSchedule(${i},'time',this.value)" style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px;color:var(--text);font-size:11px">
-      <select onchange="setSchedule(${i},'profile',this.value)" style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px;color:var(--text);font-size:11px">${profOpts}</select>
-      <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="removeSchedule(${i})">✕</button>
-    </div>`;
-  }).join('') || '<div style="font-size:11px;color:var(--text2)">Розкладів немає</div>';
-
-  const trashRows = trash.map((tr, i) =>
-    `<div style="display:flex;align-items:center;gap:4px;padding:3px 0;border-bottom:1px solid var(--border)">
-       <span style="flex:1;font-size:11px">${esc(tr.song.title || 'Без назви')}</span>
-       <button class="btn btn-success btn-sm" onclick="restoreSong(${i})">↩ Відновити</button>
-     </div>`).join('') || '<div style="font-size:11px;color:var(--text2)">Кошик порожній</div>';
-
-  const langBtn = (c) => `<button class="btn ${(state.lang||'ua')===c?'btn-primary':'btn-ghost'} btn-sm" onclick="setLang('${c}')">${I18N[c].name}</button>`;
-
-  return `
-  <div class="card" style="border-color:var(--accent)">
-    <div class="card-title">📅 Автозапуск профілю за розкладом</div>
-    <div class="card-sub">Напр.: щонеділі о 9:30 — профіль «Ранкова». Профілі створюються у вкладці «Налаштування».</div>
-    <div style="margin-top:8px">${schedRows}</div>
-    <button class="btn btn-primary btn-sm" style="margin-top:6px" onclick="addSchedule()">➕ Додати розклад</button>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">💾 Автобекап за розкладом</div>
-      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
-        <input type="checkbox" ${ab.on ? 'checked' : ''} onchange="setAutoBackup('on',this.checked)">
-        Автоматично зберігати копію
-      </label>
-      <div style="font-size:12px;color:var(--text2);margin-top:6px">Кожні <b>${ab.everyDays || 7}</b> днів</div>
-      <input type="range" min="1" max="30" value="${ab.everyDays || 7}" onchange="setAutoBackup('everyDays',parseInt(this.value,10))" style="width:100%">
-      <button class="btn btn-ghost btn-sm btn-block" style="margin-top:4px" onclick="window.electronAPI&&window.electronAPI.openBackupFolder&&window.electronAPI.openBackupFolder()">📂 Відкрити теку бекапів</button>
-      ${ab.last ? `<div style="font-size:12px;color:var(--text2);margin-top:4px">Останній: ${new Date(ab.last).toLocaleDateString('uk-UA')}</div>` : ''}
-    </div>
-
-    <div class="card">
-      <div class="card-title">🌐 Мова панелі</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap">${langBtn('ua')} ${langBtn('cz')} ${langBtn('en')}</div>
-      <div class="card-sub" style="margin-top:4px">Вивід у зал лишається двомовним окремо. Це — мова самої панелі керування.</div>
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">🗑 Кошик пісень (${trash.length})</div>
-      <div class="card-sub">Видалені пісні зберігаються тут — можна відновити.</div>
-      <div style="max-height:180px;overflow-y:auto;margin-top:6px">${trashRows}</div>
-      ${trash.length ? '<button class="btn btn-ghost btn-sm btn-block" style="margin-top:4px;color:var(--red)" onclick="emptyTrash()">Очистити кошик</button>' : ''}
-    </div>
-
-    <div class="card">
-      <div class="card-title">🔌 Stream Deck / Companion</div>
-      <div class="card-sub">Увімкни «Пульт» у вкладці «Станції» — і HTTP-команди стануть доступні:</div>
-      <div style="font-family:monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;margin-top:6px;color:var(--text2)">
-        http://[IP]:3939/api/next<br>
-        http://[IP]:3939/api/blackout<br>
-        http://[IP]:3939/api/go-live<br>
-        <span style="color:var(--text2)">…prev, clear, undo, lower, freeze</span>
-      </div>
-      <div class="card-sub" style="margin-top:6px"><b>Конкретна кнопка на конкретну дію</b> — не «далі», а саме ЦЯ закладка/пункт/оголошення:</div>
-      <div style="font-family:monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;margin-top:4px;color:var(--text2)">
-        …/api/bookmark?idx=0 <span style="opacity:.7">— перша закладка (номер із вкладки «Ефір»)</span><br>
-        …/api/plan-item?idx=2 <span style="opacity:.7">— третій пункт плану служби</span><br>
-        …/api/announce?id=169... <span style="opacity:.7">— конкретне оголошення (натисни 📋 біля нього у вкладці «Оголошення», щоб скопіювати готове посилання)</span>
-      </div>
-      <div class="card-sub" style="margin-top:4px">У Bitfocus Companion додай Generic HTTP і встав ці адреси на кнопки.</div>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">📋 Лог помилок</div>
-    <div class="card-sub">Якщо щось піде не так на церковному ПК — тут технічні деталі для діагностики.</div>
-    <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">
-      <button class="btn btn-ghost btn-sm" onclick="window.electronAPI&&window.electronAPI.openLogFolder&&window.electronAPI.openLogFolder()">📂 Відкрити лог</button>
-      <button class="btn btn-ghost btn-sm" onclick="if(window.electronAPI&&window.electronAPI.clearLog){window.electronAPI.clearLog();notify('Лог очищено')}">Очистити лог</button>
-    </div>
-  </div>`;
-}
-
 // ---- Вкладка «Станції» ----
 
 // ---- Пульт з телефону (перенесено зі старої вкладки «📱 Пульт») ----
-function stationsStartPult() {
-  if (!window.electronAPI || !window.electronAPI.startRemote) return;
-  const pin = ($('#stationsPultPin') && $('#stationsPultPin').value.trim()) || '';
-  window.electronAPI.startRemote(pin, state.remoteUsers || []).then(res => {
-    state.pult = { on: true, url: 'http://' + res.ip + ':' + res.port, pin: pin };
-    saveJSON('church_pult_cfg', state.pult);
-    renderTabInto('stations');
-    notify('📱 Пульт запущено: ' + state.pult.url + (pin ? ' (PIN ' + pin + ')' : ''));
-  }).catch(() => notify('⚠️ Не вдалось запустити пульт'));
-}
-function stationsStopPult() {
-  if (!window.electronAPI || !window.electronAPI.stopRemote) return;
-  window.electronAPI.stopRemote().then(() => {
-    state.pult = { on: false, url: '', pin: '' };
-    saveJSON('church_pult_cfg', state.pult);
-    renderTabInto('stations');
-    notify('Пульт зупинено');
-  }).catch(() => {});
-}
 function loadPultCfg() {
   state.pult = loadJSON('church_pult_cfg') || { on: false, url: '', pin: '' };
   state.pult.on = false;   // після перезапуску сервер не працює, поки не запустиш
@@ -1122,7 +514,11 @@ function renderPultCard() {
            <div style="font-size:15px;font-weight:700;color:var(--accent);word-break:break-all">${esc(p.url)}</div>
            ${p.pin ? `<div style="font-size:12px;color:var(--text2);margin-top:4px">PIN: <b>${esc(p.pin)}</b></div>` : ''}
          </div>
-         <button class="btn btn-ghost btn-sm btn-block" style="margin-top:6px;color:var(--red)" onclick="stationsStopPult()">Зупинити пульт</button>`
+         <button class="btn btn-ghost btn-sm btn-block" style="margin-top:6px;color:var(--red)" onclick="stationsStopPult()">Зупинити пульт</button>
+         <div style="margin-top:10px;padding:8px;background:var(--bg);border:1px solid var(--accent);border-radius:6px">
+           <div style="font-size:12px;color:var(--text2)">📋 Бюлетень служби для прихожан — БЕЗ паролю, лише перегляд плану (не пульт, нічим керувати не можна):</div>
+           <div style="font-size:15px;font-weight:700;color:var(--gold);word-break:break-all;margin-top:2px">${esc(p.url)}/bulletin</div>
+         </div>`
       : `<div style="display:flex;gap:5px;align-items:center;margin-top:6px;flex-wrap:wrap">
            <input id="stationsPultPin" type="text" maxlength="6" placeholder="Твій PIN (необов'язково)"
                   style="flex:1;min-width:120px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:6px;color:var(--text);font-size:12px">
@@ -1140,86 +536,6 @@ function renderPultCard() {
   </div>`;
 }
 
-function renderStationsTab() {
-  const s = state.station;
-  const isHost = s.mode === 'host';
-  const isClient = s.mode === 'client';
-
-  return `
-  <div class="card">
-    <div class="card-title">👥 Робота командою</div>
-    <div class="card-sub">
-      <b>Хост</b> — ПК біля проектора, лише він виводить на екрани.
-      <b>Клієнт</b> — другий ПК: повна панель, але його відправки йдуть на хост.
-      Телефони й планшети підключаються як <b>пульт</b> — налаштування нижче.
-    </div>
-    <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap">
-      <button class="btn ${isHost ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="startHost()">🖥 Я — хост (біля проектора)</button>
-      <button class="btn ${isClient ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setStationMode('client')">💻 Я — друга панель</button>
-      ${isHost ? '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="stopHost()">Зупинити хост</button>' : ''}
-      ${isClient ? '<button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="disconnectStation()">Відключитись</button>' : ''}
-    </div>
-  </div>
-
-  ${isHost ? `
-  <div class="grid2">
-    <div class="card">
-      <div class="card-title">📡 Адреса для інших</div>
-      <div style="font-size:18px;font-weight:700;color:var(--accent);font-family:monospace">${esc(s.ip || '...')}</div>
-      <div class="card-sub">Порт ${STATION_PORT}. Введи цю адресу на другому ПК.</div>
-      <div style="font-size:12px;color:var(--text2);margin-top:8px">Пароль (необов'язково)</div>
-      <div style="display:flex;gap:4px">
-        <input id="stationPin" type="text" value="${esc(s.pin || '')}" placeholder="напр. 1234"
-               style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">
-        <button class="btn btn-primary btn-sm" onclick="startHost()">Застосувати</button>
-      </div>
-      <div class="card-sub">Без пароля підключиться будь-хто з церковного Wi-Fi.</div>
-    </div>
-    <div class="card">
-      <div class="card-title">🟢 Підключені станції</div>
-      <div id="stationClientsList"><div style="font-size:11px;color:var(--text2)">Ніхто ще не підключився</div></div>
-    </div>
-  </div>` : ''}
-
-  ${isClient ? `
-  <div class="card">
-    <div class="card-title">💻 Підключення до хоста</div>
-    <div style="font-size:12px;color:var(--text2)">IP хоста</div>
-    <input id="stationIp" type="text" value="${esc(s.ip || '')}" placeholder="192.168.1.5"
-           style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none;margin-bottom:6px">
-    <div style="display:flex;gap:6px">
-      <div style="flex:1">
-        <div style="font-size:12px;color:var(--text2)">Пароль (якщо є)</div>
-        <input id="stationPinClient" type="text" value="${esc(s.pin || '')}"
-               style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">
-      </div>
-      <div style="flex:1">
-        <div style="font-size:12px;color:var(--text2)">Назва станції</div>
-        <input id="stationName" type="text" value="${esc(s.name || 'Панель 2')}"
-               style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">
-      </div>
-    </div>
-    <button class="btn btn-success btn-block btn-sm" style="margin-top:8px" onclick="connectStation()">🔗 Підключитись</button>
-    <div style="margin-top:8px;font-size:11px;color:${s.connected ? 'var(--green)' : 'var(--red)'}">
-      ${s.connected ? '✓ Підключено — усі твої відправки йдуть на хост' : '✗ Не підключено'}
-    </div>
-    <div id="stationHostState" style="font-size:11px;color:var(--text2);margin-top:4px"></div>
-  </div>` : ''}
-
-  <div class="card">
-    <div class="card-title">📱 Телефони й планшети</div>
-    <div class="card-sub">Вмикаються у вкладці «Пульт» — там адреса і QR-код. Кількість не обмежена: усі бачать спільний стан і можуть гортати куплети.</div>
-  </div>
-  ${renderPultCard()}
-  `;
-}
-
-function setStationMode(mode) {
-  state.station.mode = mode;
-  saveStationCfg();
-  renderTabInto('stations');
-}
-
 // ---- Вкладка «Виходи»: маршрут + фон для кожного з 4 екранів ----
 
 // ============================================================
@@ -1235,7 +551,15 @@ function saveMultiTrans() { saveJSON('church_multi_trans', { byOutput: state.mul
 
 // ── Стиль слайда кількох перекладів: окремо для кожного виходу ────────────
 // Проектор (1) і Трансляція (2) можуть мати свій розмір шрифту й розташування.
-const MT_STYLE_DEFAULT = { fontScale: 100, vAlign: 'center', hAlign: 'center' };
+// band: той самий принцип «смуга внизу», що вже є в GDD-шаблоні вірша
+// (templates/gdd/verse.html) — для мульти-перекладу раніше такого вигляду
+// не було взагалі, лише один фіксований «на весь екран», тож на
+// трансляції з відкритим кадром спікера кілька перекладів одразу
+// перекривали половину картинки.
+// sideBySide: для РІВНО 2 перекладів — оригінал і переклад поряд у двох
+// колонках, а не один під одним. Раніше такого вигляду не було взагалі:
+// або стовпчиком (типово), або на весь екран у форматі однієї мови.
+const MT_STYLE_DEFAULT = { fontScale: 100, vAlign: 'center', hAlign: 'center', band: false, sideBySide: false };
 function mtStyle(n) {
   return Object.assign({}, MT_STYLE_DEFAULT, (state.multiTransStyle && state.multiTransStyle[n]) || {});
 }
@@ -1274,7 +598,7 @@ function multiBlocksFor(n, failed) {
     if (!id) return;
     try {
       const text = getVerseRangeText(id, currentBibleBook, currentBibleChapter, r.from, r.to);
-      if (text) out.push({ name: getTranslationName(id), text: text });
+      if (text) out.push({ name: getTranslationName(id), text: text, language: (bibleTranslations[id] && bibleTranslations[id].language) || '' });
       else if (failed) failed.push(getTranslationName(id) || id);
     } catch (e) { if (failed) failed.push(getTranslationName(id) || id); }
   });
@@ -1338,6 +662,34 @@ function sendMultiToAll4() {
   outputs.forEach(n => sendMultiToOutput(n, true));
 }
 
+// Подвійний клік лівою кнопкою — швидкий шлях «на Проектор+Трансляцію» без
+// пошуку потрібної кнопки. Один обробник на два різні місця (текст вірша в
+// «Біблії», куплети в «Пісні») — визначаємо звідки прийшов клік за id
+// елемента й викликаємо відповідну дію. preventDefault, щоб браузер не
+// намагався виділити слово подвійним кліком (відволікає, нічого не дає тут).
+function dblClickSendBoth(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  var id = e && e.currentTarget && e.currentTarget.id;
+  if (id === 'bibleDisplay') {
+    // ФІКС (той самий клас, що й для пісень нижче): sendMultiToBoth() сама
+    // по собі лише повторно шле ПОТОЧНО вибраний вірш — не просуваючи його.
+    // Якщо оператор щойно вивів цей вірш звичайною кнопкою, повторний
+    // подвійний клік слав би ТОЙ САМИЙ текст, екран не змінювався б
+    // візуально, і виглядало б, ніби «нічого не відбувається».
+    if (typeof nextBibleVerse === 'function') nextBibleVerse();
+    if (typeof sendMultiToBoth === 'function') sendMultiToBoth();
+  } else if (id === 'songVerses') {
+    // ФІКС: songSendFirst() лише надсилає ПОТОЧНИЙ куплет (selectedVerseIdx),
+    // не просуваючи його — тож повторний подвійний клік просто повторно
+    // слав ТОЙ САМИЙ текст, екран візуально не змінювався, і виглядало,
+    // ніби «нічого не відбувається». Правильна дія для куплетів пісні —
+    // спершу ПРОСУНУТИ вибір (nextVerse — сам лише оновлює прев'ю, не шле),
+    // тоді надіслати НОВИЙ поточний куплет.
+    if (typeof nextVerse === 'function') nextVerse();
+    if (typeof sendToProjector === 'function') sendToProjector();
+  }
+}
+
 function sendMultiToOutput(n, fromGoLive) {
   if (typeof currentBibleBook === 'undefined' || !currentBibleBook) { notify('⚠️ Спочатку обери вірш'); return; }
   const chosen = (state.multiTrans[n] || []).filter(Boolean);
@@ -1349,6 +701,17 @@ function sendMultiToOutput(n, fromGoLive) {
     // щоб було видно причину (наприклад, невідповідність книги при імпорті).
     notify('⚠️ У перекладах немає ' + currentBibleRef() + ': ' + failed.join(', '));
     return;
+  }
+
+  // ФІКС: якщо маршрут цього виходу досі «Дзеркало» — будь-яка наступна
+  // звичайна відправка «на всі» (пісня, звичайний вірш, прийнята підказка
+  // з живих субтитрів) мовчки перезапише кілька перекладів тут, бо
+  // broadcastDisplay() у main.js шле саме на всі «дзеркальні» виходи,
+  // не знаючи про цей прямий адресний запис. Перемикаємо маршрут ОДИН
+  // РАЗ (лише поки він ще «mirror»), щоб вихід перестав ловити чужий
+  // broadcast — і не смикати його повторно на кожен наступний вірш.
+  if ((state.outputRoutes[n] || 'mirror') === 'mirror' && typeof setOutputRoute === 'function') {
+    setOutputRoute(n, 'text');
   }
 
   const ref = currentBibleRef();
@@ -1387,7 +750,11 @@ function sendMultiToOutput(n, fromGoLive) {
     } catch (e) {}
   }
   if (typeof exitServicePlan === 'function') exitServicePlan();
+  // Сторож узгодженості: цей вихід щойно перейшов у мульти-режим —
+  // якщо він лишився й в одиночному списку, приберемо звідти.
+  if (typeof assertOutputConsistency === 'function') assertOutputConsistency(n, 'multi');
   refreshMultiTransCard();
+  if (typeof renderBibleOutputRow === 'function') renderBibleOutputRow();
   notify(failed.length
     ? '⚠️ ' + OUT_NAME[n] + ': ' + blocks.length + ' з ' + chosen.length + ' (без вірша в: ' + failed.join(', ') + ')'
     : '📖 ' + OUT_NAME[n] + ': ' + blocks.length + ' переклад(и)');
@@ -1410,9 +777,48 @@ function multiReplay() {
 
 // Картка перекладів живе у вкладці «Біблія» (щоб була під рукою під час служби)
 function refreshMultiTransCard() {
-  const box = document.getElementById('multiTransBox');
-  if (box) { box.innerHTML = renderMultiTransCard(); return true; }
-  return false;
+  // Картка живе у ДВОХ місцях: у вкладці Біблія (#multiTransBox) і у
+  // вкладці Оформлення → Графіка (#multiTransBoxGfx). Друга додана, щоб
+  // оператор міг налаштувати переклади й вивести їх, не перемикаючись
+  // на Біблію під час служби.
+  //
+  // Свідомо той САМИЙ renderMultiTransCard() в обидва контейнери, а не
+  // копія розмітки: інакше два списки перекладів жили б окремо й з
+  // часом розійшлись би — рівно той клас проблем, який ми вже ловили
+  // з двома паралельними списками виходів.
+  let found = false;
+  ['multiTransBox', 'multiTransBoxGfx'].forEach(function (id) {
+    const box = document.getElementById(id);
+    if (box) { box.innerHTML = renderMultiTransCard(); found = true; }
+  });
+  if (typeof updateAllMultiTransPreviews === 'function') updateAllMultiTransPreviews();
+  return found;
+}
+
+// Живе прев'ю картки «Кілька перекладів» — той самий трюк, що вже є для
+// «Оформлення → Графіка» (graphicsPreviewFrame): iframe розміром 1920×1080,
+// зменшений transform:scale(), і .srcdoc = готовий HTML, без жодного IPC —
+// оператор бачить результат (у т.ч. band чи ні) ще ДО показу на реальному
+// проекторі. Картка живе у ДВОХ контейнерах (multiTransBox/multiTransBoxGfx),
+// тож іменований `id` тут не годиться — обидві копії позначені однаковим
+// класом + data-n, оновлюємо ОБИДВІ через querySelectorAll.
+function updateMultiTransPreview(n) {
+  const frames = document.querySelectorAll('iframe.multiTransPreviewFrame[data-n="' + n + '"]');
+  if (!frames.length) return;
+  let ref = (typeof currentBibleRef === 'function') ? currentBibleRef() : '';
+  const failed = [];
+  let blocks = (typeof multiBlocksFor === 'function') ? multiBlocksFor(n, failed) : [];
+  // Ще не обрано вірш/переклади — показуємо приклад, а не порожній чорний
+  // прямокутник: оператор одразу бачить, як виглядатиме шрифт/band.
+  if (!blocks.length) {
+    ref = ref || 'Приклад';
+    blocks = [{ name: 'Приклад', text: 'Так бо полюбив Бог сьвіт, що Сина свого єдинородного дав.', language: '' }];
+  }
+  const html = getMultiTransHTML(ref, blocks, n);
+  frames.forEach(function (f) { f.srcdoc = html; });
+}
+function updateAllMultiTransPreviews() {
+  [1, 2, 3, 4].forEach(updateMultiTransPreview);
 }
 
 function renderMultiTransCard() {
@@ -1420,11 +826,12 @@ function renderMultiTransCard() {
   try { langs = bibleTranslationsList(); } catch (e) {}
   const opts = (sel) => ['<option value="">— немає —</option>']
     .concat(langs.map(t => `<option value="${t.id}"${sel === t.id ? ' selected' : ''}>${esc(t.name)}</option>`)).join('');
-  const rows = [1, 2].map(n => {
+  const rows = [1, 2, 3, 4].map(n => {
     const sel = state.multiTrans[n] || [];
     const live = (state.multiLive || []).indexOf(n) >= 0;
     const st = (typeof mtStyle === 'function') ? mtStyle(n) : { fontScale: 100, vAlign: 'center', hAlign: 'center' };
     const selStyle = 'background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 4px;color:var(--text);font-size:11px';
+    const chosenCount = sel.filter(Boolean).length;
     return `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px">
       <div style="font-size:12px;font-weight:600;margin-bottom:4px">${esc(OUT_NAME[n])} ${live ? '<span style="color:var(--green)">● в ефірі</span>' : ''}</div>
       ${[0, 1, 2].map(s => `<select onchange="setMultiTrans(${n},${s},this.value)"
@@ -1434,7 +841,7 @@ function renderMultiTransCard() {
         <button class="btn btn-ghost btn-sm" style="padding:1px 7px" onclick="setMultiTransStyle(${n},'fontScale',${st.fontScale - 10})">−</button>
         <span style="min-width:34px;text-align:center">${st.fontScale}%</span>
         <button class="btn btn-ghost btn-sm" style="padding:1px 7px" onclick="setMultiTransStyle(${n},'fontScale',${st.fontScale + 10})">+</button>
-        <select onchange="setMultiTransStyle(${n},'vAlign',this.value)" title="Розташування по вертикалі" style="${selStyle}">
+        <select onchange="setMultiTransStyle(${n},'vAlign',this.value)" title="Розташування по вертикалі (ігнорується в режимі «Смуга внизу»)" ${st.band ? 'disabled' : ''} style="${selStyle}${st.band ? ';opacity:.5' : ''}">
           <option value="top"${st.vAlign === 'top' ? ' selected' : ''}>↑ Зверху</option>
           <option value="center"${st.vAlign === 'center' ? ' selected' : ''}>↕ Центр</option>
           <option value="bottom"${st.vAlign === 'bottom' ? ' selected' : ''}>↓ Знизу</option>
@@ -1445,7 +852,19 @@ function renderMultiTransCard() {
           <option value="right"${st.hAlign === 'right' ? ' selected' : ''}>⇥ Право</option>
         </select>
       </div>
-      <button class="btn btn-success btn-sm btn-block" style="margin-top:4px" onclick="sendMultiToOutput(${n})">📖 Показати на «${esc(OUT_NAME[n])}»</button>
+      <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);cursor:pointer;margin-bottom:4px">
+        <input type="checkbox" ${st.band ? 'checked' : ''} onchange="setMultiTransStyle(${n},'band',this.checked)">
+        <span>📽 Смуга внизу (для трансляції з відкритим кадром)</span>
+      </label>
+      ${chosenCount === 2 ? `<label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);cursor:pointer;margin-bottom:4px">
+        <input type="checkbox" ${st.sideBySide ? 'checked' : ''} onchange="setMultiTransStyle(${n},'sideBySide',this.checked)">
+        <span>⬌ Поряд, не стовпчиком (оригінал і переклад пліч-о-пліч)</span>
+      </label>` : ''}
+      <div style="position:relative;width:100%;aspect-ratio:16/9;border:1px solid var(--border);border-radius:4px;overflow:hidden;background:#000;margin-bottom:4px">
+        <iframe class="multiTransPreviewFrame" data-n="${n}" style="position:absolute;top:0;left:0;width:1920px;height:1080px;border:0;transform:scale(0.1719);transform-origin:top left;pointer-events:none"></iframe>
+      </div>
+      <button class="btn btn-success btn-sm btn-block" style="margin-top:4px" onclick="sendMultiToOutput(${n})">${live ? '🔴 ' : ''}📖 Показати на «${esc(OUT_NAME[n])}»</button>
+      ${live ? `<button class="btn btn-ghost btn-sm btn-block" style="margin-top:3px;color:var(--red)" onclick="clearBibleFrom(${n})">✕ Прибрати з «${esc(OUT_NAME[n])}»</button>` : ''}
     </div>`;
   }).join('');
   return `
@@ -1453,8 +872,6 @@ function renderMultiTransCard() {
     <div class="card-title">📖 Кілька перекладів — окремо на кожен екран</div>
     <div class="card-sub">Проектор і трансляція можуть показувати різні переклади того самого вірша, з окремим розміром шрифту й розташуванням для кожного. Вірш береться з вкладки «Біблія», стрілки гортають обидва екрани.</div>
     <div style="margin-top:8px">${rows}</div>
-    <button class="btn btn-primary btn-sm btn-block" onclick="sendMultiToBoth()">📖 Показати на обох</button>
-    <button class="btn btn-ghost btn-sm btn-block" onclick="sendMultiToAll4()">📖 Показати на всіх 4</button>
   </div>`;
 }
 
@@ -1475,7 +892,7 @@ function saveRoomProfile(n) {
     };
     state.roomProfiles.push(p);
     saveJSON(STORAGE_KEYS.live + '_rooms', state.roomProfiles);
-    renderTabInto('router');
+    markDirty('router');
     notify('🏠 Профіль «' + name + '» збережено для ' + OUT_NAME[n]);
   });
 }
@@ -1491,20 +908,14 @@ function deleteRoomProfile(id) {
   if (!p || !confirm('Видалити профіль «' + p.name + '»?')) return;
   state.roomProfiles = state.roomProfiles.filter(x => x.id !== id);
   saveJSON(STORAGE_KEYS.live + '_rooms', state.roomProfiles);
-  renderTabInto('router');
+  markDirty('router');
   notify('🗑 Профіль видалено');
-}
-function loadRoomProfiles() {
-  const r = loadJSON(STORAGE_KEYS.live + '_rooms');
-  if (Array.isArray(r)) state.roomProfiles = r;
 }
 
 // ---- Пресети сцени: на відміну від «Профілю» (один вихід за раз),
 // зберігає й застосовує режим+хромакей+фон одразу для ВСІХ 4 виходів
 // одним кліком — напр. «Служба з графікою» перемикає весь набір екранів
-// разом, а не по одному. Прив'язку монітора зберігаємо як fingerprint
-// (state.outputBind), а не старий displayId-індекс — так само, як уже
-// робить bindOutputToDisplay() у вкладці «Прив'язка екранів».
+// разом, а не по одному. ----
 function saveScenePreset() {
   state.scenePresets = state.scenePresets || [];
   pv2Prompt('Назва пресету сцени (напр. «Служба з графікою»):', '', function(name) {
@@ -1516,12 +927,21 @@ function saveScenePreset() {
         chroma: (state.outputChroma && state.outputChroma[n]) || 'none',
         bg: (state.outputBg && state.outputBg[n]) || null,
         opacity: (state.graphicsSettings && state.graphicsSettings.outputOpacity && state.graphicsSettings.outputOpacity[n]) || 62,
+        // Прив'язку монітора зберігаємо як fingerprint (state.outputBind), а
+        // не старий displayId-індекс — так само, як уже робить
+        // bindOutputToDisplay() у вкладці «Прив'язка екранів». displayId
+        // Windows перевидає заново після кожного перезавантаження, тож
+        // збережена сцена «забула» б, який монітор мала на увазі.
         fingerprint: (state.outputBind && state.outputBind[OUT_KIND[n]]) || null
       };
     }
-    state.scenePresets.push({ id: 'scene_' + Date.now(), name: name, outputs: outputs });
+    // Які виходи зараз відкриті — окремо від route/chroma/bg, щоб застосування
+    // сцени могло запропонувати закрити зайві (напр. «Репетиція» на 1-2 виходи
+    // після «Служби з графікою» на всі 4 лишала 3/4 мовчки висіти відкритими).
+    const openOutputs = [1, 2, 3, 4].filter(n => state.outputStates[n] && state.outputStates[n].open);
+    state.scenePresets.push({ id: 'scene_' + Date.now(), name: name, outputs: outputs, openOutputs: openOutputs });
     saveJSON(STORAGE_KEYS.scenePresets, state.scenePresets);
-    renderTabInto('router');
+    markDirty('router');
     notify('🎬 Сцену «' + name + '» збережено (усі 4 виходи)');
   });
 }
@@ -1552,16 +972,38 @@ function applyScenePreset(id) {
     }
   }
   saveJSON(STORAGE_KEYS.bg, state.outputBg);
-  renderTabInto('router');
+  markDirty('router');
   notify('🎬 Сцена «' + p.name + '» застосована на всі 4 виходи');
+
+  // Сцена явно пам'ятає, які виходи мали бути відкриті (старі сцени, збережені
+  // до цього фіксу, openOutputs не мають — undefined, нічого не чіпаємо, щоб
+  // не закривати виходи всупереч звичці оператора). Ті, що пресет очікує
+  // відкритими, — відкриваємо самі; ті, що зайві й зараз відкриті, — питаємо.
+  if (Array.isArray(p.openOutputs)) {
+    p.openOutputs.forEach(n => {
+      if (!state.outputStates[n] || !state.outputStates[n].open) pv2OpenOutput(n);
+    });
+    const extra = [1, 2, 3, 4].filter(n =>
+      p.openOutputs.indexOf(n) < 0 && state.outputStates[n] && state.outputStates[n].open);
+    if (extra.length) {
+      const names = extra.map(n => OUT_NAME[n]).join(', ');
+      if (confirm('Сцена «' + p.name + '» не використовує: ' + names + '. Закрити їх?')) {
+        extra.forEach(n => pv2CloseOutput(n));
+      }
+    }
+  }
 }
 function deleteScenePreset(id) {
   const p = (state.scenePresets || []).find(x => x.id === id);
   if (!p || !confirm('Видалити сцену «' + p.name + '»?')) return;
   state.scenePresets = state.scenePresets.filter(x => x.id !== id);
   saveJSON(STORAGE_KEYS.scenePresets, state.scenePresets);
-  renderTabInto('router');
+  markDirty('router');
   notify('🗑 Сцену видалено');
+}
+function loadRoomProfiles() {
+  const r = loadJSON(STORAGE_KEYS.live + '_rooms');
+  if (Array.isArray(r)) state.roomProfiles = r;
 }
 function loadScenePresets() {
   const r = loadJSON(STORAGE_KEYS.scenePresets);
@@ -1577,7 +1019,7 @@ function setStageOutputNum(n) {
   return window.electronAPI.setStageOutput(kind).then(() => {
     state.stageOutputNum = turningOff ? null : n;
     saveJSON(STORAGE_KEYS.live + '_stageout', state.stageOutputNum);
-    renderTabInto('router');
+    markDirty('router');
     notify(turningOff ? '🎤 Знято позначку сцени з ' + OUT_NAME[n] : '🎤 ' + OUT_NAME[n] + ' тепер екран сцени — таймер проповіді покажеться там');
   });
 }
@@ -1690,12 +1132,6 @@ function renderRemoteUsersList() {
 // (без завантаження index.html) не падали на списку ініціалізації нижче.
 // syncSendTargetBanner живе в index.html — викликаємо безпечно, як і скрізь
 // у цьому файлі, коли функція з іншого файлу могла ще не завантажитись.
-function setTrainingMode(on) {
-  state.trainingMode = !!on;
-  saveJSON(STORAGE_KEYS.live + '_training', state.trainingMode);
-  if (typeof syncSendTargetBanner === 'function') syncSendTargetBanner();
-  notify(on ? '🎓 Режим тренування увімкнено — нічого не піде на екран' : '✓ Режим тренування вимкнено — вивід знову справжній');
-}
 function loadTrainingMode() {
   // За замовчуванням ВИМКНЕНО, незалежно від того, що збережено — не хочемо,
   // щоб служба випадково стартувала в режимі тренування після перезапуску.
@@ -1719,7 +1155,7 @@ function saveServiceProfile() {
     };
     state.serviceProfiles.push(p);
     saveJSON(STORAGE_KEYS.live + '_serviceprofiles', state.serviceProfiles);
-    renderTabInto('live');
+    markDirty('live');
     if (typeof logChange === 'function') logChange('Профіль служіння', 'збережено «' + name + '»');
     notify('⚡ Профіль служіння «' + name + '» збережено');
   });
@@ -1739,7 +1175,7 @@ function deleteServiceProfile(id) {
   if (!p || !confirm('Видалити профіль «' + p.name + '»?')) return;
   state.serviceProfiles = state.serviceProfiles.filter(x => x.id !== id);
   saveJSON(STORAGE_KEYS.live + '_serviceprofiles', state.serviceProfiles);
-  renderTabInto('live');
+  markDirty('live');
   notify('🗑 Профіль видалено');
 }
 function loadServiceProfiles() {
@@ -1759,14 +1195,6 @@ function loadChangeLog() {
   const l = loadJSON(STORAGE_KEYS.live + '_changelog');
   if (Array.isArray(l)) state.changeLog = l;
 }
-function clearChangeLog() {
-  if (!confirm('Очистити весь журнал змін?')) return;
-  state.changeLog = [];
-  saveJSON(STORAGE_KEYS.live + '_changelog', []);
-  renderTabInto('settings');
-  notify('🗑 Журнал очищено');
-}
-
 // ============================================================
 // LOOKS — пресети конфігурації виходів
 // Зберігає маршрут + хромакей + фон + переклади на кожен вихід і перемикає
@@ -1797,7 +1225,7 @@ function saveLookAs() {
     state.looks.list.push({ name: name, date: new Date().toISOString().slice(0, 10), cfg: currentLookCfg() });
     state.looks.active = name;
     saveLooks();
-    renderTabInto('router');
+    markDirty('router');
     notify('🎬 Пресет «' + name + '» збережено');
   });
 }
@@ -1826,7 +1254,7 @@ function applyLook(i) {
   for (let n = 1; n <= 4; n++) { if (typeof pv2PushToOutput === 'function') { try { pv2PushToOutput(n, pv2LastContent); } catch (e) {} } }
   state.looks.active = lk.name;
   saveLooks();
-  renderTabInto('router');
+  markDirty('router');
   notify('🎬 Пресет «' + lk.name + '» застосовано');
 }
 
@@ -1835,7 +1263,7 @@ function deleteLook(i) {
   if (!lk || !confirm('Видалити пресет «' + lk.name + '»?')) return;
   state.looks.list.splice(i, 1);
   saveLooks();
-  renderTabInto('router');
+  markDirty('router');
 }
 
 function renderLooksCard() {
@@ -1858,130 +1286,29 @@ function renderLooksCard() {
   </div>`;
 }
 
-function renderRouterTab() {
-  let rows = '';
-  for (let i = 1; i <= 4; i++) {
-    const route = state.outputRoutes[i] || 'mirror';
-    const opts = Object.keys(ROUTE_LABELS).map(k =>
-      `<option value="${k}"${k === route ? ' selected' : ''}>${ROUTE_LABELS[k]}</option>`).join('');
-    const liveNow = (route === 'mirror')
-      ? (state.onAir ? (state.onAir.label || state.onAir.ref || 'Щось в ефірі') : '⬛ Порожньо')
-      : (state.outputLive && state.outputLive[i]) || ROUTE_LABELS[route] || '—';
-    rows += `<div class="card" style="margin-bottom:8px">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
-        <span id="pv2Dot${i}" style="color:var(--text2)">●</span>
-        <input id="pv2Name${i}" value="${esc(OUT_NAME[i])}" maxlength="24"
-               onkeydown="if(event.key==='Enter'){setOutputName(${i},this.value);this.blur();}"
-               onblur="setOutputName(${i},this.value)"
-               style="font-size:13px;font-weight:700;background:transparent;border:1px solid transparent;border-radius:4px;padding:2px 4px;color:var(--text);width:130px;outline:none"
-               onfocus="this.style.borderColor='var(--border)'" title="Клікни, щоб перейменувати">
-        <button class="btn btn-success btn-sm" onclick="pv2OpenOutput(${i})">Відкрити</button>
-        <button class="btn btn-ghost btn-sm" onclick="pv2CloseOutput(${i})">Закрити</button>
-        <button class="btn btn-ghost btn-sm" onclick="pv2ClearOutput(${i})">🚫 Очистити</button>
-        <button class="btn btn-primary btn-sm" onclick="pv2ForceRefresh(${i})">▶ Оновити зараз</button>
-      </div>
-      <div style="font-size:11px;color:var(--text2);margin:-4px 0 6px 2px">Зараз: <span id="pv2Live${i}">${esc(liveNow)}</span></div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        <span style="font-size:12px;color:var(--text2);min-width:56px">Показує:</span>
-        <select onchange="setOutputRoute(${i}, this.value)"
-                style="flex:1;min-width:200px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">${opts}</select>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
-        <span style="font-size:12px;color:var(--text2);min-width:56px">Хромакей:</span>
-        <span id="pv2ChromaSw${i}" style="width:16px;height:16px;border-radius:3px;border:1px solid var(--border);display:inline-block;background:${state.outputChroma[i] === 'none' ? 'transparent' : state.outputChroma[i]}"></span>
-        <input id="pv2Chroma${i}" type="text" placeholder="вимкнено" maxlength="7" value="${state.outputChroma[i] === 'none' ? '' : state.outputChroma[i]}"
-               style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:3px 6px;color:var(--text);font-size:11px;font-family:monospace;outline:none"
-               onkeydown="if(event.key==='Enter')pv2ApplyChromaInput(${i})">
-        <button class="btn btn-primary btn-sm" onclick="pv2ApplyChromaInput(${i})">Застосувати</button>
-        <button class="preset-btn" onclick="pv2SetChroma(${i},'#00ff00')">🟩 Зелений</button>
-        <button class="preset-btn" onclick="pv2SetChroma(${i},'#0000ff')">🟦 Синій</button>
-        <button class="preset-btn" onclick="pv2SetChroma(${i},'#ff00ff')">🟪 Мадж.</button>
-        <button class="preset-btn" style="color:var(--red)" onclick="pv2SetChroma(${i},'none')">Вимкнути</button>
-      </div>
-      ${state.outputChroma[i] && state.outputChroma[i] !== 'none' ? `
-      <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-        <span style="font-size:12px;color:var(--text2);min-width:56px">Прозорість:</span>
-        <span style="font-size:11px;color:var(--text2)" id="pv2OpacityLbl${i}">${(state.graphicsSettings && state.graphicsSettings.outputOpacity && state.graphicsSettings.outputOpacity[i]) || 62}%</span>
-        <input type="range" min="0" max="100" value="${(state.graphicsSettings && state.graphicsSettings.outputOpacity && state.graphicsSettings.outputOpacity[i]) || 62}"
-               oninput="document.getElementById('pv2OpacityLbl${i}').textContent=this.value+'%'"
-               onchange="setOutputOpacity(${i}, this.value)" style="flex:1;min-width:120px">
-      </div>` : ''}
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
-        <span style="font-size:12px;color:var(--text2);min-width:56px">🏠 Профіль:</span>
-        <select id="pv2RoomSel${i}" style="flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">
-          <option value="">— обрати —</option>
-          ${(state.roomProfiles || []).map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}
-        </select>
-        <button class="btn btn-primary btn-sm" onclick="var v=document.getElementById('pv2RoomSel${i}').value; if(v) applyRoomProfile(${i}, v)">Застосувати</button>
-        <button class="btn btn-ghost btn-sm" onclick="saveRoomProfile(${i})">💾 Зберегти поточний</button>
-        <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="var v=document.getElementById('pv2RoomSel${i}').value; if(v) deleteRoomProfile(v)">🗑</button>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
-        <button class="btn ${state.stageOutputNum === i ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setStageOutputNum(${i})">
-          🎤 ${state.stageOutputNum === i ? 'Це екран сцени — таймер тут' : 'Позначити екраном сцени'}
-        </button>
-        <span style="font-size:11px;color:var(--text2)">Таймер проповіді накладається поверх того, що вихід і так показує.</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px">
-        <span style="font-size:12px;color:var(--text2);min-width:56px">Фон (код):</span>
-        <span id="pv2BgSwatchR${i}" style="width:16px;height:16px;border-radius:3px;border:1px solid var(--border);display:inline-block;background:#000"></span>
-        <input id="pv2BgCode${i}" type="text" placeholder="#00ff00" maxlength="7"
-               style="width:80px;background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:3px 6px;color:var(--text);font-size:11px;font-family:monospace;outline:none"
-               onkeydown="if(event.key==='Enter')pv2ApplyOutputBg(${i})">
-        <button class="btn btn-primary btn-sm" onclick="pv2ApplyOutputBg(${i})">Застосувати</button>
-        <button class="preset-btn" onclick="pv2SetBgCode(${i},'#000000')">Чорний</button>
-        <button class="preset-btn" onclick="pv2SetBgCode(${i},'#00ff00')">Хромакей</button>
-        <button class="preset-btn" onclick="pv2SetBgCode(${i},'#0000ff')">Синій</button>
-        <button class="preset-btn" style="color:var(--red)" onclick="pv2SetBgCode(${i},'')">Скинути</button>
-      </div>
-    </div>`;
-  }
-  const targets = ['all', 1, 2, 3, 4].map(t => {
-    const active = state.sendTarget === t;
-    const label = t === 'all' ? 'Усі' : OUT_NAME[t];
-    return `
-<button id="pv2Target${t}" class="btn ${active ? 'btn-primary' : 'btn-ghost'} btn-sm" onclick="setSendTarget(${t === 'all' ? "'all'" : t})">${label}</button>`;
-  }).join(' ');
-
-  return `<div class="card-title">🔀 Чотири виходи — різний контент на кожен екран</div>
-    ${renderLooksCard()}
-    <div class="card" style="margin-bottom:10px">
-      <div class="card-title">🎬 Пресети сцени</div>
-      <div class="card-sub">Один клік — і режим показу, хромакей та фон застосовуються одразу на всі 4 виходи. Зручно перемикатись між типами зібрань (напр. «Служба з графікою» ↔ «Репетиція»).</div>
-      ${(state.scenePresets || []).length
-        ? '<div style="margin-top:6px">' + state.scenePresets.map(p =>
-            `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border)">
-              <span style="flex:1;font-size:13px">${esc(p.name)}</span>
-              <button class="btn btn-primary btn-sm" onclick="applyScenePreset('${p.id}')">▶ Застосувати</button>
-              <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteScenePreset('${p.id}')">✕</button>
-            </div>`).join('') + '</div>'
-        : '<div style="font-size:11px;color:var(--text2);margin-top:6px">Збережених сцен ще немає — нижче зафіксуй поточне налаштування всіх 4 виходів як сцену.</div>'}
-      <button class="btn btn-ghost btn-sm btn-block" style="margin-top:8px" onclick="saveScenePreset()">💾 Зберегти поточну сцену (усі 4 виходи)</button>
-    </div>
-    <div class="card" style="margin-bottom:10px;border-color:var(--accent)">
-      <div class="card-title">🎯 Куди надсилати: <span id="pv2TargetBadge" style="color:var(--accent)">${state.sendTarget === 'all' ? 'усі екрани' : OUT_NAME[state.sendTarget]}</span></div>
-      <div class="card-sub">Обери один екран — і кнопки «Надіслати» з вкладок Пісні / Біблія / Оголошення підуть <b>лише туди</b>. Інші екрани залишать те, що на них зараз. Повернись на «Усі», щоб знову вести всі разом.</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">${targets}</div>
-    </div>
-    <div class="card-sub" style="margin-bottom:10px">Приклад: <b>Проектор</b> — дзеркало для залу, <b>Трансляція</b> — графіка з хромакеєм <code>#00ff00</code>, <b>Вихід 3</b> — наступний куплет для співаків, <b>Вихід 4</b> — таймер для проповідника.</div>
-    ${rows}
-    <div class="card" style="${state.sendTarget === 'all' ? '' : 'border-color:var(--red)'}">
-      <div class="card-title">🔗 Синхронізація екранів</div>
-      ${state.sendTarget === 'all'
-        ? '<div style="font-size:12px;color:var(--green)">✓ Увімкнена — усе, що надсилаєш, іде на <b>всі відкриті екрани</b>, і гортання оновлює їх разом.</div>'
-        : '<div style="font-size:12px;color:var(--red)"><b>⚠️ Вимкнена!</b> Зараз надсилання йде лише на <b>' + esc(OUT_NAME[state.sendTarget] || '') + '</b> — інші екрани не оновлюються.</div>'}
-      <button class="btn ${state.sendTarget === 'all' ? 'btn-ghost' : 'btn-primary'} btn-sm btn-block" style="margin-top:6px"
-              onclick="syncAllOutputs()">🔗 Синхронізувати всі екрани</button>
-    </div>
-
-    <div class="card"><div class="card-title">Швидкі дії</div>
-      <button class="btn btn-primary btn-sm" onclick="pv2OpenOutput(1);pv2OpenOutput(2)">⚡ Відкрити проектор + трансляцію</button>
-      <button class="btn btn-ghost btn-sm" onclick="for(let i=1;i<=4;i++) setOutputRoute(i,'mirror')">Усі → дзеркало</button>
-      <button class="btn btn-ghost btn-sm" onclick="for(let i=1;i<=4;i++) pv2ClearOutput(i)">🚫 Очистити всі</button>
-      <button class="btn btn-ghost btn-sm" onclick="pv2SyncOutputStates()">↻ Оновити статуси</button>
-      <button class="btn btn-ghost btn-sm" onclick="for(let i=1;i<=4;i++) pv2SetChroma(i,'#00ff00')">🟩 Хромакей на всі</button>
-      <button class="btn btn-ghost btn-sm" onclick="for(let i=1;i<=4;i++) pv2SetChroma(i,'none')">Вимкнути хромакей скрізь</button>
-    </div>`;
+// Призначення фізичного монітора для будь-якого з 4 виходів. Раніше таке
+// було можливе тільки для Проектора й Трансляції (стара вкладка «Монітори»),
+// хоча сам механізм (setOutputDisplay) уже й так підтримував будь-який вихід —
+// просто для Виходу 3/4 не було випадаючого списку в інтерфейсі.
+function onOutputDisplayChange(n) {
+  if (!window.electronAPI || !window.electronAPI.setOutputDisplay) return;
+  const sel = document.getElementById('pv2DisplaySel' + n);
+  if (!sel) return;
+  const val = sel.value;
+  const id = val ? parseInt(val, 10) : null;
+  window.electronAPI.setOutputDisplay(OUT_KIND[n], id).then(function(cfg) {
+    if (cfg && cfg.error) { notify('⚠️ ' + (cfg.message || 'Не можна вивести на цей монітор')); return; }
+    if (cfg) outputConfig = cfg;
+    // Тримаємо «Прив'язку екранів» (state.outputBind, за відбитком, переживає
+    // перезапуск) у синхроні з вибором тут — інакше та вкладка й далі
+    // показувала б старе закріплення, а після перезапуску воно б тихо
+    // повернулось назад (див. коментар у main.js set-output-display).
+    state.outputBind = state.outputBind || {};
+    state.outputBind[OUT_KIND[n]] = (cfg && cfg[OUT_KIND[n] + 'Fingerprint']) || null;
+    if (typeof saveJSON === 'function') saveJSON(STORAGE_KEYS.live + '_bind', state.outputBind);
+    if (typeof isActive === 'function' && isActive('monitors2')) markDirty('monitors2');
+    notify('🖥 ' + OUT_NAME[n] + ' → ' + (id ? 'монітор призначено' : 'авто'));
+  });
 }
 
 // ---- Глобальні гарячі клавіші ----
@@ -2032,6 +1359,34 @@ document.addEventListener('keydown', function(e) {
     case 'lower': lowerToggle(); break;
     case 'freeze': if (typeof toggleFreeze === 'function') toggleFreeze(); break;
     case 'blackout': toggleBlackout(); break;
+    // QR/Медіа/Презентація — надсилають те, що вже підготовлено у своїй
+    // вкладці. QR має ВЛАСНИЙ запам'ятований вихід (кнопки в самій
+    // «QR-екран», qrState().target) — тут просто повторюємо той самий
+    // виклик, що й кнопка «📲 ПОКАЗАТИ НА ЕКРАНІ». Медіа й Презентація
+    // такого власного запам'ятовування не мають — для них клавіша бере
+    // ціль із «🎯 Куди надсилати» (state.sendTarget), тієї самої, що вже
+    // керує звичайним надсиланням пісень/віршів.
+    case 'qr-send': if (typeof sendQrScreen === 'function') sendQrScreen(); break;
+    case 'media-send': {
+      const mt = (state.sendTarget && state.sendTarget !== 'all') ? state.sendTarget : 0;
+      if (typeof sendMediaToProjector === 'function') sendMediaToProjector(mt || undefined);
+      break;
+    }
+    case 'present-send': {
+      const pt = (state.sendTarget && state.sendTarget !== 'all') ? state.sendTarget : null;
+      if (pt && typeof sendSlideToOutputs === 'function') sendSlideToOutputs([pt]);
+      else if (typeof sendSlideToProjector === 'function') sendSlideToProjector();
+      break;
+    }
+    // Відкрити/закрити конкретний вихід — раніше захардкоджено на F1-F5
+    // (index.html), не через це меню; перенесено сюди, бо на macOS ці
+    // клавіші за замовчуванням перехоплює сама система (яскравість/Mission
+    // Control/Launchpad), і оператору не було як призначити щось інше.
+    case 'toggle-projector': if (typeof toggleProjector === 'function') toggleProjector(); break;
+    case 'toggle-stream': if (typeof toggleStream === 'function') toggleStream(); break;
+    case 'toggle-out3': if (typeof toggleOutputN === 'function') toggleOutputN(3); break;
+    case 'toggle-out4': if (typeof toggleOutputN === 'function') toggleOutputN(4); break;
+    case 'toggle-both': if (typeof toggleBothOutputs === 'function') toggleBothOutputs(); break;
   }
 });
 
@@ -2039,7 +1394,7 @@ document.addEventListener('keydown', function(e) {
 
 function initOutputWarningListener() {
   if (window.electronAPI && window.electronAPI.onOutputWarning) {
-    window.electronAPI.onOutputWarning(d => notify('⚠️ ' + (d && d.message ? d.message : 'Проблема з виводом')));
+    window.electronAPI.onOutputWarning(d => notify((d && d.intentional ? 'ℹ️ ' : '⚠️ ') + (d && d.message ? d.message : 'Проблема з виводом')));
   }
 }
 
@@ -2051,13 +1406,15 @@ function initOutputWarningListener() {
 // ============================================================
 const TAB_GROUPS = [
   { id: 'g_service', label: '🔴 Служба', tabs: [
-    ['live', '🔴 Ефір'], ['control', '🎬 Керування'], ['service', '📅 План служби'],
-    ['layers', '🎬 Шари'], ['timer', '⏱ Таймер']
+    ['live', '🔴 Ефір'], ['control', '🎬 Керування'],
+    ['layers', '🎬 Шари'], ['captions', '🎤 Субтитри'], ['timer', '⏱ Таймер']
   ] },
   { id: 'g_content', label: '📖 Контент', tabs: [
     ['songs', '🎵 Пісні'], ['addsong', '➕ Додати пісню'], ['song', '🎵 Пісня'],
-    ['bible', '📖 Біблія'], ['announce', '📢 Оголошення'], ['present', '📽 PDF'],
-    ['slidebuilder', '🖼 Редактор слайдів'], ['powerpoint', '🖨 PowerPoint'],
+    ['bible', '📖 Біблія'], ['announce', '📢 Оголошення']
+  ] },
+  { id: 'g_media', label: '🖼 Медіа', tabs: [
+    ['present', '📽 PDF'], ['slidebuilder', '🖼 Редактор слайдів'], ['powerpoint', '🖨 PowerPoint'],
     ['playlist', '📋 Плейлист'], ['media', '🎬 Медіа'], ['qrscreen', '📲 QR-екран'],
     ['htmlgfx', '💻 HTML'], ['h2r', '🎞 H2R-титри']
   ] },
@@ -2068,12 +1425,13 @@ const TAB_GROUPS = [
   ] },
   { id: 'g_outputs', label: '🖥 Виходи', tabs: [
     ['router', '🔀 Виходи'], ['monitors', '🖥 Монітори'], ['monitors2', '🔗 Прив\'язка екранів'],
-    ['stream', '📡 Трансляція'], ['stagedisplay', '🖥 Stage'], ['ptz', '🎥 Камери']
+    ['stream', '📡 Трансляція'], ['stagedisplay', '🖥 Stage'],
+    ['ptz', '🎥 Камери'], ['atem', '🎬 ATEM']
   ] },
   { id: 'g_settings', label: '⚙️ Налаштування', tabs: [
     ['settings', '⚙️ Загальні'], ['automation', '🔌 Автоматизація'], ['stations', '👥 Станції'],
     ['hotkeys', '⌨️ Клавіші'], ['statistics', '📊 Статистика'], ['extras', '🌐 Мова/OBS'],
-    ['atem', '🎬 ATEM'], ['importdata', '📥 Імпорт даних']
+    ['importdata', '📥 Імпорт даних']
   ] }
 ];
 let pv2ActiveGroup = null;
@@ -2114,7 +1472,7 @@ function buildGroupedNav(content) {
     const b = document.createElement('button');
     b.className = 'grp-btn';
     b.id = 'grp-' + g.id;
-    b.textContent = g.label;
+    b.textContent = (typeof navLabel === 'function') ? navLabel(g.id, g.label) : g.label;
     b.onclick = () => showGroup(g.id);
     groupbar.appendChild(b);
   });
@@ -2136,10 +1494,23 @@ function renderSubbar(groupId) {
     const b = document.createElement('button');
     b.className = 'sub-btn';
     b.id = 'sub-' + id;
-    b.textContent = label;
+    b.textContent = (typeof navLabel === 'function') ? navLabel(id, label) : label;
     b.onclick = () => showTab(id);
     subbar.appendChild(b);
   });
+}
+
+// Перемальовує підписи вже побудованого меню (групи + підвкладки поточного
+// розділу) на мову з state.lang — викликається з setLang(), щоб перемикач
+// діяв одразу, без перезапуску програми.
+function refreshNavLabels() {
+  TAB_GROUPS.forEach(g => {
+    const b = document.getElementById('grp-' + g.id);
+    if (b) b.textContent = navLabel(g.id, g.label);
+  });
+  if (pv2ActiveGroup) renderSubbar(pv2ActiveGroup);
+  const cur = (typeof currentTabName !== 'undefined' && currentTabName) ? currentTabName : null;
+  if (cur) syncGroupedNav(cur);
 }
 
 function showGroup(groupId) {
@@ -2187,6 +1558,7 @@ function pv2Init() {
     ['settings',    '⚙️ Налаштування', renderSettingsTab],
     ['automation',  '🔌 Автоматизація', renderAutomationTab],
     ['layers',      '🎬 Шари',       renderLayersTab],
+    ['captions',    '🎤 Субтитри',   renderCaptionsTab],
     ['typo',        '🔠 Текст',      renderTypoTab],
     ['extras',      '🌐 Мова/OBS',   renderExtrasTab],
     ['playlist',    '📋 Плейлист',   renderPlaylistTab],
@@ -2234,12 +1606,24 @@ function pv2Init() {
   }
   const steps = [loadUiPrefs, loadProfiles, loadMasterVolume, loadBookmarks,
                  loadScheduler, loadAutoBackup, loadSongTrash, loadLang, loadPultCfg, loadMultiTrans, loadMultiTransStyle, loadOutputNames, startAutomationWatcher, loadLower, loadOutputBindings, loadOutputFailover, loadRoomProfiles, loadScenePresets, loadServiceProfiles, loadChangeLog, loadTrainingMode, loadRemoteUsers, loadStageOutputNum, refreshMonitors, loadStationCfg, loadLiveConfig, loadNamedThemes, loadSecondLang, loadAutoTimer, loadAutoFit,
-                 loadSplitCfg, loadOrders, loadArrangeGlobal, loadSongSize, loadSongTags, loadService, loadLayers, applyTypo, initObsListener, loadRoutes, loadOutputBg, loadOutputChroma, loadLooks, loadProps, loadMacros, loadPartLabels, loadArrangeSets, loadMsgTemplates, loadSoundBin, loadGraphicsSettings, loadAnnounceSettings, renderServicePlanEmbed, pv2SyncOutputStates, pv2RenderOutputsCard, loadPlaylistData, loadHotkeys, loadMidiMap, initMidi, loadOscMap, getCloudSyncFolder, loadStatistics, restoreFontChoice, loadStageNotes,
+                 loadSplitCfg, loadOrders, loadArrangeGlobal, loadSongSize, syncSongFontSizeDisplay, loadSongTags, loadService, loadLayers, applyTypo, initObsListener, loadRoutes, loadOutputBg, loadOutputChroma, loadLooks, loadProps, loadMacros, loadPartLabels, loadArrangeSets, loadMsgTemplates, loadSoundBin, loadGraphicsSettings, pv2SyncOutputStates, pv2RenderOutputsCard, loadPlaylistData, loadHotkeys, loadMidiMap, initMidi, loadOscMap, getCloudSyncFolder, loadStatistics, restoreFontChoice, loadStageNotes, loadStageMonitorBinding, initWatchFolder, loadAnnounceSettings, renderServicePlanEmbed,
                  renderPlaylist, renderHotkeys, renderFontsList,
                  renderMediaList, updateH2RPreview, updateGraphicsPreview, updateTextPreview,
+                 renderMediaOutBtns, renderGraphicsOutBtns, renderH2RLowerOutBtns,
+                 renderCreditsOutBtns, renderConfettiOutBtns, renderTickerOutBtns, renderQrOutputRow,
+                 loadOverlayChannel, renderGddTemplatePicker,
                  () => setPPTtemplate('classic'), updateStatistics,
-                 updateLivePanels, applyDisplayCfg, initDisplayControlListener, initRemoteListener, initLogoListener, initDisplaysListener, initUpdateListener];
+                 updateLivePanels, applyDisplayCfg, initDisplayControlListener, initRemoteListener, initLogoListener, initDisplaysListener, initStageWindowListener, initUpdateListener];
   steps.forEach(fn => { try { fn(); } catch(e) { console.error('extras init', e); } });
+
+  // buildGroupedNav() вище будує групову панель ДО того, як loadLang() (у
+  // steps) встигає прочитати збережену мову з диска — тож при холодному
+  // старті з мовою, відмінною від української, шапка меню спершу малювалась
+  // українською. Перемальовуємо мітки ще раз тепер, коли мова вже завантажена.
+  if (typeof refreshNavLabels === 'function') refreshNavLabels();
+  // Той самий порядок-баг стосується й вмісту вкладок, відмальованого вище
+  // (TABS.forEach) ДО того, як мова завантажилась — перекладаємо все одразу.
+  if (typeof uiTranslateAll === 'function') uiTranslateAll();
 
   // Автозбереження кожні 30 с
   setInterval(() => {

@@ -412,6 +412,53 @@ function fmtParseBibleCSV(text) {
 }
 
 // JSON: підтримуємо кілька поширених схем
+// Формат «локалізовані назви книг» — той, у якому поширюються готові
+// переклади (UA_Ogienko.json, Czech_CEP.json, Russian_Synodal.json тощо):
+//   { translation, abbreviation, language, books: { "Вiд Iвана": { "3": { "16": "текст" } } } }
+// На відміну від внутрішнього формату застосунку, книги тут названі
+// МОВОЮ ПЕРЕКЛАДУ («Буття», «Jan», «Бытие»), а не кодами (gen, jhn).
+// Якщо покласти їх як є, мульти-переклади зламаються: програма шукає
+// ту саму книгу в різних перекладах за КОДОМ, і «Jan» проти «Вiд Iвана»
+// не зіставились би. Тому кожну назву проганяємо через fmtBookId() —
+// той самий словник, яким уже користується решта імпорту (перевірено на
+// 5 реальних файлах: uk/ru/cs, 66 і 76 книг — розпізналось усе, без колізій).
+function fmtParseBibleNamedBooks(text) {
+  let d;
+  try { d = JSON.parse(text); } catch (e) { return null; }
+  if (!d || typeof d !== 'object' || !d.books || typeof d.books !== 'object') return null;
+  const bookNames = Object.keys(d.books);
+  if (!bookNames.length) return null;
+
+  const books = {};
+  const unknown = [];
+  bookNames.forEach(name => {
+    const id = fmtBookId(name);
+    if (!id) { unknown.push(name); return; }   // невідому книгу пропускаємо, але запамʼятовуємо
+    const chapters = d.books[name] || {};
+    const outCh = {};
+    Object.keys(chapters).forEach(cn => {
+      const verses = chapters[cn] || {};
+      const outV = {};
+      Object.keys(verses).forEach(vn => {
+        const t = verses[vn];
+        if (t != null && String(t).trim()) outV[String(parseInt(vn, 10) || vn)] = String(t).trim();
+      });
+      if (Object.keys(outV).length) outCh[String(parseInt(cn, 10) || cn)] = outV;
+    });
+    if (Object.keys(outCh).length) books[id] = outCh;
+  });
+  if (!Object.keys(books).length) return null;
+
+  return {
+    name: d.translation || d.name || d.abbreviation || 'Імпортований переклад',
+    lang: d.language || '',
+    books: books,
+    // Не мовчимо про пропущені книги: краще показати оператору, що саме
+    // не зайшло, ніж тихо імпортувати неповний переклад.
+    _unknownBooks: unknown
+  };
+}
+
 function fmtParseBibleJSON(text) {
   let data;
   try { data = JSON.parse(text); } catch (e) { return null; }
@@ -555,7 +602,10 @@ function fmtParseBible(text, filename) {
   const ext = String(filename || '').toLowerCase().split('.').pop();
 
   const byExt = {
-    json: [fmtParseBibleJSON],
+    // fmtParseBibleJSON іде ПЕРШИМ: він читає внутрішній формат (книги за
+    // кодами). Якщо файл у форматі з локалізованими назвами книг —
+    // він поверне null, і підхопить fmtParseBibleNamedBooks.
+    json: [fmtParseBibleJSON, fmtParseBibleNamedBooks],
     xml:  [fmtParseZefania, fmtParseOSIS],
     xmm:  [fmtParseZefania],
     osis: [fmtParseOSIS],
@@ -566,7 +616,7 @@ function fmtParseBible(text, filename) {
     tsv:  [fmtParseBibleCSV]
   }[ext] || [];
 
-  const all = [fmtParseBibleJSON, fmtParseZefania, fmtParseOSIS, fmtParseUSFM, fmtParseBibleCSV, fmtParseBibleTXT];
+  const all = [fmtParseBibleJSON, fmtParseBibleNamedBooks, fmtParseZefania, fmtParseOSIS, fmtParseUSFM, fmtParseBibleCSV, fmtParseBibleTXT];
   for (const parser of byExt.concat(all)) {
     let res = null;
     try { res = parser(text); } catch (e) { res = null; }
@@ -718,6 +768,89 @@ function fmtParseSongsCSV(text) {
   return songs.length ? songs : null;
 }
 
+// SPS (SongPresenter, збірники «Песнь Возрождения» тощо).
+// Текстовий формат, розібраний на реальному збірнику pv3055.sps (3066 пісень):
+//   ##12                      — версія формату
+//   ##<назва збірника>        — напр. «Песнь Возрождения 3055»
+//   ##<копірайт/примітки>
+//   далі по одному рядку на пісню, РІВНО 10 полів через «#$#»:
+//     [1] номер  [2] назва  [3] 0 (константа)  [4] тональність
+//     [5] переклад  [6] автор  [7] текст  [8] —  [9] вирівнювання  [10] —
+// Усередині тексту: «@%» — перенос рядка, «@$» — межа куплета/приспіву.
+// Поля 3, 8, 10 у реальному файлі завжди порожні/нульові, тож не читаємо їх
+// (але й не падаємо, якщо там щось зʼявиться).
+function fmtParseSPS(text) {
+  const lines = String(text).split(/\r?\n/);
+  // Службовий заголовок ## — беремо з нього назву збірника (2-й рядок),
+  // щоб підписати нею пісні: у збірниках номер сам по собі неоднозначний.
+  let songbook = '';
+  const meta = lines.filter(l => l.startsWith('##'));
+  if (meta.length >= 2) songbook = meta[1].replace(/^##/, '').trim();
+
+  const songs = [];
+  for (const line of lines) {
+    if (!line || line.startsWith('##')) continue;
+    const f = line.split('#$#');
+    if (f.length < 7) continue;               // не запис цього формату
+    const num = String(f[0] || '').trim();
+    const title = String(f[1] || '').trim();
+    const key = String(f[3] || '').trim();
+    const translator = String(f[4] || '').trim();
+    const author = String(f[5] || '').trim();
+    const rawLyrics = String(f[6] || '');
+    if (!title || !rawLyrics) continue;
+
+    const verses = rawLyrics
+      .split('@$')                             // межа куплета
+      .map(v => v.replace(/@%/g, '\n').trim()) // перенос рядка
+      .filter(Boolean);
+    if (!verses.length) continue;
+
+    // Автор + перекладач в одне поле — так само, як у решті парсерів
+    // (модель пісні тут має рівно title/author/verses).
+    const who = [author, translator].filter(Boolean).join(' • ');
+    const song = { title, author: who, verses };
+    if (num) song.number = num;
+    if (key) song.key = key;
+    if (songbook) song.songbook = songbook;
+    songs.push(song);
+  }
+  return songs.length ? songs : null;
+}
+// Експорт у SPS (той самий формат, що читає fmtParseSPS вище) — щоб
+// збірник, зібраний тут, можна було віддати назад у SongPresenter або
+// в іншу програму, яка читає SPS.
+// Пишемо рівно 10 полів, як в оригінальних файлах: сторонні читачі
+// розраховують на фіксовану кількість, а не на «скільки є».
+function fmtBuildSPS(songs, songbookTitle) {
+  const esc = s => String(s == null ? '' : s)
+    .replace(/#\$#/g, ' ')   // роздільник полів не має трапитись у даних
+    .replace(/@\$/g, ' ')    // як і межа куплета
+    .replace(/@%/g, ' ');    // як і перенос рядка
+  const out = [];
+  out.push('##12');
+  out.push('##' + esc(songbookTitle || 'Церква Проектор'));
+  out.push('##');
+  (songs || []).forEach((s, i) => {
+    const verses = (s.verses || []).map(v =>
+      esc(v).split(/\r?\n/).map(x => x.trim()).filter(Boolean).join('@%')
+    ).filter(Boolean);
+    if (!s.title || !verses.length) return;
+    const f = [
+      esc(s.number || (i + 1)),   // [1] номер
+      esc(s.title),               // [2] назва
+      '0',                        // [3] константа, як в оригіналі
+      esc(s.key || ''),           // [4] тональність
+      '',                         // [5] переклад (окремо не зберігаємо)
+      esc(s.author || ''),        // [6] автор
+      verses.join('@$'),          // [7] текст
+      '', '', ''                  // [8..10] порожні, як в оригіналі
+    ];
+    out.push(f.join('#$#'));
+  });
+  return out.join('\n');
+}
+
 // TXT: перший непорожній рядок — назва, далі куплети через порожній рядок.
 // Кілька пісень в одному файлі можна розділити рядком з "---".
 function fmtParseSongsTXT(text) {
@@ -778,13 +911,18 @@ function fmtParseSongs(text, filename) {
     json: [fmtParseSongsJSON],
     xml:  [fmtParseSongsXML],
     sng:  [fmtParseSongsXML],
+    sps:  [fmtParseSPS],
     cho:  [fmtParseChordPro], chordpro: [fmtParseChordPro], crd: [fmtParseChordPro], pro: [fmtParseProPresenter],
     pro4: [fmtParseProPresenter], pro5: [fmtParseProPresenter], pro6: [fmtParseProPresenter],
     csv:  [fmtParseSongsCSV], tsv: [fmtParseSongsCSV],
     txt:  [fmtParseSongsTXT]
   }[ext] || [];
 
-  const all = [fmtParseSongsJSON, fmtParseSongsXML, fmtParseProPresenter, fmtParseChordPro, fmtParseSongsCSV, fmtParseSongsTXT];
+  // SPS ставимо ПЕРЕД CSV/TXT у загальному переборі: його роздільник «#$#»
+  // дуже характерний, тож хибного спрацювання не буде, а от CSV/TXT-парсери
+  // могли б «проковтнути» SPS-файл і повернути сміття (один рядок = одна
+  // пісня з усім текстом у назві), якби дійшли до нього першими.
+  const all = [fmtParseSongsJSON, fmtParseSongsXML, fmtParseProPresenter, fmtParseSPS, fmtParseChordPro, fmtParseSongsCSV, fmtParseSongsTXT];
   for (const parser of byExt.concat(all)) {
     let res = null;
     try { res = parser(text); } catch (e) { res = null; }
@@ -808,13 +946,18 @@ function gddDetect(html) {
          (/function\s+update\s*\(/.test(html) && /function\s+play\s*\(/.test(html));
 }
 
-// Схема полів: [{key, label, default, type}]
+// Схема полів: [{key, label, default, type, options, min, max, step}]
 function gddSchema(html) {
   const m = html.match(/<script[^>]*application\/json\+gdd[^>]*>([\s\S]*?)<\/script>/i);
   if (!m) return [];
   let schema;
   try { schema = JSON.parse(m[1]); } catch (e) { return []; }
   const props = (schema && schema.properties) || {};
+  // Обов'язкові поля можуть бути позначені двома способами: власним
+  // p.required=true на кожному полі, АБО стандартним для JSON-Schema
+  // масивом на рівні всієї схеми (schema.required: ["key1","key2"]).
+  // Підтримуємо обидва — автори GDD-шаблонів можуть використати будь-який.
+  const requiredList = Array.isArray(schema && schema.required) ? schema.required : [];
   return Object.keys(props).map(key => {
     const p = props[key] || {};
     return {
@@ -822,7 +965,17 @@ function gddSchema(html) {
       label: p.label || key.replace(/^_/, ''),
       def: p.default !== undefined ? String(p.default) : '',
       type: p.gddType || p.type || 'single-line',
-      options: Array.isArray(p.enum) ? p.enum : null
+      options: Array.isArray(p.enum) ? p.enum : null,
+      // Числові межі — приймаємо і власну GDD-назву (min/max/step), і
+      // стандартну JSON-Schema (minimum/maximum), бо різні автори шаблонів
+      // GDD-графіки могли позначати їх по-різному.
+      min: p.min !== undefined ? p.min : (p.minimum !== undefined ? p.minimum : null),
+      max: p.max !== undefined ? p.max : (p.maximum !== undefined ? p.maximum : null),
+      step: p.step !== undefined ? p.step : null,
+      // Обов'язкове поле — САМЕ ОПЕРАТОР вирішує, чи надсилати з порожнім
+      // (не блокуємо), лише попереджаємо: підсвічуємо в панелі й показуємо
+      // застереження при показі/оновленні наживо.
+      required: !!p.required || requiredList.indexOf(key) > -1
     };
   });
 }

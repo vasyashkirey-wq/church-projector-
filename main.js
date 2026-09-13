@@ -1,4 +1,12 @@
-const { app, BrowserWindow, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, Menu, protocol } = require('electron');
+
+// Кастомна привілейована схема app:// для контенту output-вікон —
+// фундамент для вмикання contextIsolation/webSecurity на них (аудит 4.1).
+// registerSchemesAsPrivileged МУСИТЬ виконатись до app.whenReady(), тому
+// саме тут, на самому верху файлу. Сам обробник схеми реєструється
+// пізніше, вже всередині whenReady (див. contentProtocol.registerHandler).
+const contentProtocol = require('./src/main/content-protocol');
+contentProtocol.registerScheme(protocol);
 const crypto = require('crypto');
 const path = require('path');
 const http = require('http');
@@ -16,11 +24,49 @@ const OUTPUT_TITLES = { projector: 'Проектор (Вихід 1)', stream: '�
 let pendingDisplay = null;
 let wsServer = null;
 let httpServer = null;
+// Справжнє завершення застосунку (Cmd+Q/Alt+F4 на всій програмі, а не на
+// одному вихідному вікні) — 'close' на output-вікнах у цей момент теж
+// спрацював би (Electron закриває решту вікон при виході), і без цього
+// прапорця діалог «закрити вихід з ефіром?» блокував би завершення роботи.
+let appIsQuitting = false;
+
+// Останній 'display'-контент, реально надісланий на кожен вихід (адресно чи
+// через дзеркало) — потрібно для двох речей: (1) при перевідкритті виходу
+// (закрився й відкрився знову) одразу повернути те, що там було, а не чорний
+// екран; (2) при закритті вікна вирішити, чи це «щось в ефірі» (варто
+// перепитати оператора) чи порожньо/blackout (закриваємо мовчки). Не
+// персистентне — скидається з перезапуском програми, як і сам ефір.
+const lastContentByKind = { projector: null, stream: null, out3: null, out4: null };
+
+// ============================================================
+// БЕЗПЕКА ВІКОН, ЩО ПОКАЗУЮТЬ КОНТЕНТ (output/Stage/identify)
+// Аудит (розділ 4.1): output-вікно показує імпортований/згенерований
+// HTML (H2R, GDD-графіка, слайди, медіа) і НІКОЛИ не повинно саме
+// переходити на стороннє посилання чи відкривати нове вікно — усе
+// оновлення контенту йде через IPC ('display'/showHTML тощо), а не
+// через navigation. Раніше цих обробників не було взагалі — будь-який
+// імпортований HTML (напр. злочинний <a href> чи window.open усередині
+// GDD-графіки чи HTML-оверлею) міг би перевести output-екран на
+// довільний сайт просто посеред служби, і ніхто б цього не помітив,
+// доки не глянув на сам проектор.
+// ОНОВЛЕННЯ (аудит 4.1, крок 2 — ЗАКРИТО): contextIsolation:true /
+// webSecurity:true / allowRunningInsecureContent:false тепер увімкнено
+// на output-вікнах (див. createOutputWindow нижче й детальний коментар
+// там). Причина, через яку вони колись стояли false (opaque origin
+// file://-документів), закрита кастомною схемою app:// (див.
+// src/main/content-protocol.js); живе тестування (H2R, GDD, фони,
+// слайди) підтвердило канал без жодної console-помилки.
+function hardenContentWindow(win) {
+  win.webContents.on('will-navigate', (e) => { e.preventDefault(); });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+}
+
 let currentTheme = {
   bgColor: '#000000',
   bgType: 'color',
   bgGradient: 'linear-gradient(135deg, #0d0d2b, #2d1b69)',
   bgImage: null,
+  bgAnimated: false,   // «дихання» фону (H2R-стиль animated background)
   textColor: '#ffffff',
   refColor: '#c8a84b',
   fontSize: 58,
@@ -57,8 +103,9 @@ function createMainWindow() {
     // лишались відкритими без панелі керування, і другий запуск програми
     // («вже запущено — фокусуємо») не міг створити нове головне вікно.
     OUTPUT_KINDS.forEach(k => {
-      if (outputWins[k] && !outputWins[k].isDestroyed()) outputWins[k].close();
+      if (outputWins[k] && !outputWins[k].isDestroyed()) { outputWins[k].__intentionalClose = true; outputWins[k].close(); }
     });
+    if (stageWin && !stageWin.isDestroyed()) stageWin.close();
     stopRemoteServer();
     mainWin = null;
   });
@@ -82,19 +129,22 @@ let outputConfig = {
   // Виходи з власним маршрутом сюди не входять — їм контент шлеться адресно.
   mirrorKinds: ['projector', 'stream', 'out3', 'out4'],
   // Фон кожного виходу за кодом кольору (hex). null = фон теми
-  bg: { projector: null, stream: null, out3: null, out4: null }
+  bg: { projector: null, stream: null, out3: null, out4: null },
+  // Плавний рух фону — окремий прапорець на вихід, НЕ змінює формат bg
+  // (лишається простим рядком кольору/градієнта) — щоб нічого іншого, що
+  // читає outputConfig.bg, не довелось переробляти.
+  bgAnimated: { projector: false, stream: false, out3: false, out4: false }
 };
 
 function pickDisplay(excludeIds, preferredId) {
   const displays = screen.getAllDisplays();
   const primary = screen.getPrimaryDisplay();
-  // Явно обраний дисплей повертаємо одразу, АЛЕ тільки якщо він ще не
-  // зайнятий іншим відкритим виходом — інакше два різні виходи (напр.
-  // проектор і трансляція), явно прив'язані до того самого фізичного
-  // екрана, обидва йшли б повноекранно на нього й накладались один на
-  // одного, а count-based перевірка "crowded" нижче цього не ловить,
-  // бо вважає лише кількість відкритих виходів і моніторів.
-  if (preferredId && !excludeIds.includes(preferredId)) {
+  // Явно обраний дисплей — це свідомий вибір оператора (напр. навмисно
+  // посадити 2 виходи на один монітор в парі), тож завжди повертаємо його,
+  // НАВІТЬ якщо інший вихід уже там є. Розкладку (fullscreen чи спільна
+  // сітка) вирішує createOutputWindow нижче — рахуючи, скільки виходів
+  // реально розділяють цей САМЕ дисплей, а не глобальну кількість.
+  if (preferredId) {
     const exact = displays.find(d => d.id === preferredId);
     if (exact) return exact;
   }
@@ -122,28 +172,71 @@ function createOutputWindow(kind, callback) {
 
   // Дисплеї, вже зайняті іншими відкритими виходами
   const usedDisplayIds = [];
+  const displayIdByKind = {};   // для розрахунку "хто ще на цьому ж дисплеї" нижче
   OUTPUT_KINDS.forEach(k => {
     if (k === kind) return;
     const w = outputWins[k];
     if (w && !w.isDestroyed()) {
       const d = screen.getDisplayMatching(w.getBounds());
       usedDisplayIds.push(d.id);
+      displayIdByKind[k] = d.id;
     }
   });
 
   const preferredId = outputConfig[kind + 'DisplayId'];
   const target = pickDisplay(usedDisplayIds, preferredId);
 
-  // Скільки виходів уже відкрито і скільки взагалі є моніторів.
-  // Якщо вільних екранів немає, другий вивід НЕ робимо повноекранним —
-  // інакше два fullscreen-вікна накладаються на одному моніторі й перехоплюють фокус.
-  const openCount = OUTPUT_KINDS.filter(k => outputWins[k] && !outputWins[k].isDestroyed()).length;
-  const totalDisplays = screen.getAllDisplays().length;
-  const crowded = openCount >= 1 && totalDisplays <= openCount;
+  // Скільки виходів РЕАЛЬНО ділять САМЕ цей дисплей — навмисно (оператор сам
+  // прив'язав 2+ виходи до одного монітора в «Прив'язці екранів», щоб вони
+  // працювали в парі) або випадково (вільних моніторів забракло).
+  //
+  // Якщо ЦЕЙ вихід має явну прив'язку (preferredId) — рахуємо пару за
+  // НАЛАШТУВАННЯМ (хто ЩЕ явно прив'язаний до того самого дисплея), а не
+  // лише за тим, що вже відкрито. Інакше перший з пари, відкритий раніше
+  // другого, іще «не знав» би про партнера й хибно йшов повноекранно, а
+  // при відкритті другого перевідкривати перший (і зривати з нього фокус)
+  // ми не хочемо. Якщо прив'язки нема (авто) — це випадкова тіснота, і тут
+  // рахуємо за тим, що РЕАЛЬНО відкрито зараз (динамічно, бо заздалегідь
+  // невідомо, скільки виходів у підсумку осядуть на цьому дисплеї).
+  const sharingKinds = !target
+    ? [kind]
+    : preferredId
+      ? OUTPUT_KINDS.filter(k => k === kind || outputConfig[k + 'DisplayId'] === preferredId)
+      : OUTPUT_KINDS.filter(k => k === kind || displayIdByKind[k] === target.id);
+  const shareCount = sharingKinds.length;
 
-  const bounds = (target && !crowded)
-    ? target.bounds
-    : { x: 80 + openCount * 340, y: 80, width: 960, height: 540 };
+  // РАНІШЕ (баг): тісні вікна каскадом зсувались лише на 340px при ширині
+  // 960px — перекривали одне одного майже на 2/3, текст на задньому вікні
+  // ховався за переднім. Тепер — сітка без перекриття: 2 виходи на одному
+  // моніторі → половинки поряд, 3-4 → сітка 2×2. Слот у сітці — за позицією
+  // в OUTPUT_KINDS СЕРЕД ТИХ, ХТО ДІЛИТЬ ЦЕЙ ДИСПЛЕЙ (не глобально), тож
+  // розташування стабільне між перезапусками незалежно від порядку відкриття.
+  const sharedArea = (target ? target.bounds : screen.getPrimaryDisplay().bounds);
+  const gridGap = 12;
+  const slot = sharingKinds.indexOf(kind);
+  let bounds;
+  if (!target || shareCount <= 1) {
+    bounds = target ? target.bounds : { x: 80, y: 80, width: 960, height: 540 };
+  } else if (shareCount === 2) {
+    const cellW = Math.floor((sharedArea.width - gridGap * 3) / 2);
+    bounds = {
+      x: sharedArea.x + gridGap + slot * (cellW + gridGap),
+      y: sharedArea.y + gridGap,
+      width: cellW,
+      height: sharedArea.height - gridGap * 2
+    };
+  } else {
+    const col = slot % 2, row = Math.floor(slot / 2);
+    const cellW = Math.floor((sharedArea.width - gridGap * 3) / 2);
+    const cellH = Math.floor((sharedArea.height - gridGap * 3) / 2);
+    bounds = {
+      x: sharedArea.x + gridGap + col * (cellW + gridGap),
+      y: sharedArea.y + gridGap + row * (cellH + gridGap),
+      width: cellW,
+      height: cellH
+    };
+  }
+  const crowded = shareCount > 1;   // нижче вирішує fullscreen чи ні (той самий прапорець, що й раніше)
 
   const win = new BrowserWindow({
     x: bounds.x,
@@ -155,14 +248,35 @@ function createOutputWindow(kind, callback) {
     title: OUTPUT_TITLES[kind],
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: false,
-      webviewTag: true,
-      webSecurity: false,
-      allowRunningInsecureContent: true,
+      // АУДИТ 4.1, КРОК 2 — ЗАХИСТ УВІМКНЕНО.
+      // Раніше тут стояло contextIsolation:false + webSecurity:false +
+      // allowRunningInsecureContent:true. Причина була в file://: Chromium
+      // вважає кожен file://-документ окремим «непрозорим» походженням.
+      // Кастомна схема app:// (src/main/content-protocol.js) прибрала цю
+      // причину, після чого захист перевірено наживо (реальний Electron +
+      // Playwright, окреме вікно проектора) на всіх 4 типах контенту:
+      // H2R-титри, GDD-графіка, фони, слайди — 9/9 кроків, 0 помилок,
+      // підтверджено через webContents.getLastWebPreferences().
+      //
+      // Чому contextIsolation:true тут безпечний: projector.html не має
+      // ЖОДНОГО власного <script> — уся логіка живе в
+      // projector-preload.js, який працює з DOM напряму (ізольований світ
+      // ділить DOM зі сторінкою) і читає власну ж window.__isStageDisplay
+      // у тому самому світі. Тобто нічого не залежить від спільного
+      // window між сторінкою й preload.
+      contextIsolation: true,
+      // webviewTag прибрано: у projector.html/projector-preload.js немає
+      // жодного <webview> — весь HTML-контент (GDD/оверлеї/слайди) іде
+      // через звичайний <iframe id="frame">, тож цей прапорець лише
+      // вмикав НЕВИКОРИСТОВУВАНУ й ризиковану можливість без користі.
+      webSecurity: true,
+      allowRunningInsecureContent: false,
       autoplayPolicy: 'no-user-gesture-required',
       preload: path.join(__dirname, 'src/projector-preload.js')
     }
   });
+
+  hardenContentWindow(win);
 
   // Реєструємо вікно ОДРАЗУ, а не лише після завантаження сторінки — інакше
   // швидкий повторний виклик для того самого виходу (напр. подвійний клік
@@ -177,9 +291,16 @@ function createOutputWindow(kind, callback) {
   win.webContents.once('did-finish-load', () => {
     if (target && !crowded) win.setFullScreen(true);
     else if (crowded && mainWin && !mainWin.isDestroyed()) {
+      // Навмисна пара (оператор сам прив'язав обидва виходи до цього дисплея
+      // в «Прив'язці екранів») — не попередження, а нейтральне повідомлення.
+      // Випадкова тіснота (просто забракло вільних моніторів) — попередження.
+      const intentional = !!preferredId && target && preferredId === target.id;
       mainWin.webContents.send('output-warning', {
         kind: kind,
-        message: 'Кілька виводів на одному моніторі — другий лишається вікном. Для проектора + трансляції потрібні два екрани.'
+        intentional: intentional,
+        message: intentional
+          ? `${shareCount} виходи навмисно ділять один монітор — розкладені без перекриття.`
+          : 'Кілька виводів на одному моніторі — не вистачає вільних екранів, розкладені без перекриття, але не на весь екран.'
       });
     }
     // Режим одного монітора: показуємо екранні кнопки керування прямо на виводі
@@ -192,7 +313,7 @@ function createOutputWindow(kind, callback) {
     if (ck && ck !== 'none') win.webContents.send('set-chroma', ck);
     // Відновлюємо збережений колір фону цього виходу
     if (outputConfig.bg[kind]) {
-      win.webContents.send('set-bg', outputConfig.bg[kind]);
+      win.webContents.send('set-bg', outputConfig.bg[kind], outputConfig.bgAnimated[kind]);
     }
     // Таймер проповіді показується накладкою лише на вихід, позначений сценою —
     // прапорець живе в самому вікні (window.__isStageDisplay) і скидається щоразу,
@@ -212,6 +333,48 @@ function createOutputWindow(kind, callback) {
         broadcastDisplay(pendingDisplay);
         pendingDisplay = null;
       }, 200);
+    } else if (lastContentByKind[kind]) {
+      // ВІДНОВЛЕННЯ ПРИ ПЕРЕВІДКРИТТІ: вихід закрився (монітор відвалився,
+      // випадковий Cmd+W/Alt+F4, чи оператор сам закрив і передумав) і
+      // відкрився знову — раніше показував чорний екран, доки не надішлеш
+      // щось нове. lastContentByKind живе, поки живий процес (не per-вікно),
+      // тож тут завжди останнє, що реально бачив ЦЕЙ вихід — і 'clear'/
+      // blackout сюди теж потрапляють, тож порожній вихід так порожнім і
+      // лишиться. pendingDisplay (гілка вище) — свіжіший за визначенням,
+      // тож коли обидва є, він у пріоритеті.
+      setTimeout(() => { if (!win.isDestroyed()) win.webContents.send('display', lastContentByKind[kind]); }, 250);
+    }
+  });
+
+  // ПОПЕРЕДЖЕННЯ ПРИ НЕОЧІКУВАНОМУ ЗАКРИТТІ (Cmd+W/Alt+F4 з фокусом саме на
+  // цьому вікні — вихідні вікна безрамкові, тож звичайного хрестика на них
+  // нема, але клавіатурне закриття лишається можливим). Явне закриття з
+  // самої програми ставить win.__intentionalClose = true заздалегідь (див.
+  // обробник IPC «close-output» нижче) і питання пропускає. Питаємо лише якщо
+  // на виході зараз реально щось в ефірі (не 'clear'/blackout) — порожній
+  // вихід можна закривати мовчки.
+  win.on('close', (e) => {
+    if (win.__intentionalClose || appIsQuitting) return;
+    const last = lastContentByKind[kind];
+    const isLive = !!(last && last.type && last.type !== 'clear');
+    if (!isLive) return;
+    e.preventDefault();
+    try {
+      const { dialog } = require('electron');
+      const choice = dialog.showMessageBoxSync(win, {
+        type: 'warning',
+        buttons: ['Закрити вихід', 'Скасувати'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Закрити вихід?',
+        message: `На «${OUTPUT_TITLES[kind]}» зараз щось в ефірі. Закрити вікно?`
+      });
+      if (choice === 0) { win.__intentionalClose = true; win.close(); }
+    } catch (err) {
+      // Діалог не вдалось показати — не блокуємо оператора назавжди,
+      // закриваємо як звичайно.
+      win.__intentionalClose = true;
+      win.close();
     }
   });
 
@@ -268,6 +431,7 @@ function findDisplayByFingerprint(fp) {
 // Шле на ВСІ відкриті виходи, ігноруючи маршрути (для очищення екранів)
 function broadcastAllOutputs(data) {
   OUTPUT_KINDS.forEach(k => {
+    lastContentByKind[k] = data;
     const w = outputWins[k];
     if (w && !w.isDestroyed() && !w.webContents.isLoading()) w.webContents.send('display', data);
   });
@@ -276,6 +440,7 @@ function broadcastAllOutputs(data) {
 function broadcastDisplay(data) {
   OUTPUT_KINDS.forEach(k => {
     if (!outputConfig.mirrorKinds.includes(k)) return; // має власний маршрут
+    lastContentByKind[k] = data;
     const w = outputWins[k];
     if (w && !w.isDestroyed() && !w.webContents.isLoading()) w.webContents.send('display', data);
   });
@@ -286,6 +451,68 @@ function broadcastTheme(theme) {
     const w = outputWins[k];
     if (w && !w.isDestroyed()) w.webContents.send('set-theme', theme);
   });
+}
+
+// ============================================================
+// STAGE MONITOR — окреме вікно для сцени (поточний/наступний слайд,
+// таймер проповіді, нотатки). Раніше це був window.open()-попап (жив лише
+// в рендерері, без гарантії «поверх усіх вікон», зникав за блокуванням
+// спливаючих вікон). Тепер — звичайне BrowserWindow, як і інші виходи,
+// але НЕ частина OUTPUT_KINDS/OUTPUT_TITLES: сцені не потрібні хромакей,
+// прозорість, водяний знак чи маршрутизація — лише простий вибір монітора.
+// Не плутати з set-stage-output/stageOutputKind вище — та функція лише
+// накладає таймер поверх ОДНОГО з 4 звичайних виходів.
+// ============================================================
+let stageWin = null;
+let stageDisplayId = null;
+let stageFingerprint = null;
+
+function createStageWindow(callback) {
+  if (stageWin && !stageWin.isDestroyed()) { if (callback) callback(); return; }
+
+  // Не сідати на той самий монітор, що вже зайнятий проектором/трансляцією/іншими виходами
+  const usedDisplayIds = [];
+  OUTPUT_KINDS.forEach(k => {
+    const w = outputWins[k];
+    if (w && !w.isDestroyed()) usedDisplayIds.push(screen.getDisplayMatching(w.getBounds()).id);
+  });
+  const target = pickDisplay(usedDisplayIds, stageDisplayId);
+  const bounds = target ? target.bounds : { x: 120, y: 120, width: 960, height: 540 };
+
+  const win = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    backgroundColor: '#0a0a1a',
+    title: 'Stage Display',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'src/stage-preload.js')
+    }
+  });
+  hardenContentWindow(win);
+  stageWin = win;
+  win.loadFile(path.join(__dirname, 'src/stage.html'));
+  win.setAlwaysOnTop(true, 'screen-saver');
+
+  win.webContents.once('did-finish-load', () => {
+    if (target) win.setFullScreen(true);
+    stageWin = win;
+    if (callback) callback();
+  });
+
+  win.on('closed', () => {
+    stageWin = null;
+    if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('stage-window-closed');
+  });
+}
+
+function closeStageWindow() {
+  if (stageWin && !stageWin.isDestroyed()) stageWin.close();
+  stageWin = null;
 }
 
 
@@ -590,6 +817,33 @@ ipcMain.handle('set-stage-output', (event, kind) => {
   return { ok: true, stageOutputKind };
 });
 
+// ---- Stage Monitor (окреме вікно, не плутати з set-stage-output вище) ----
+ipcMain.handle('open-stage-window', () => { createStageWindow(); return { ok: true }; });
+ipcMain.handle('close-stage-window', () => { closeStageWindow(); return { ok: true }; });
+ipcMain.handle('stage-window-status', () => ({ open: !!(stageWin && !stageWin.isDestroyed()) }));
+ipcMain.handle('stage-content-update', (event, data) => {
+  if (stageWin && !stageWin.isDestroyed()) stageWin.webContents.send('stage-content', data);
+  return 'ok';
+});
+ipcMain.handle('set-stage-monitor', (event, displayId) => {
+  stageDisplayId = displayId || null;
+  if (stageWin && !stageWin.isDestroyed() && stageDisplayId) {
+    const d = screen.getAllDisplays().find(x => x.id === stageDisplayId);
+    if (d) {
+      stageWin.setFullScreen(false);
+      stageWin.setBounds(d.bounds);
+      stageWin.setFullScreen(true);
+    }
+  }
+  return { ok: true };
+});
+ipcMain.handle('bind-stage-monitor-fingerprint', (event, fingerprint) => {
+  stageFingerprint = fingerprint || null;
+  const d = fingerprint ? findDisplayByFingerprint(fingerprint) : null;
+  if (d) stageDisplayId = d.id;
+  return { id: d ? d.id : null };
+});
+
 ipcMain.handle('set-auto-launch', (event, on) => {
   try {
     app.setLoginItemSettings({ openAtLogin: !!on });
@@ -627,6 +881,7 @@ ipcMain.handle('identify-displays', (event, seconds) => {
       <div class="b">${d.scaleFactor !== 1 ? 'масштаб ' + Math.round(d.scaleFactor * 100) + '%' : 'масштаб 100%'}</div>
     </body></html>`;
     w.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    hardenContentWindow(w);
     w.setAlwaysOnTop(true, 'screen-saver');
     identifyWins.push(w);
   });
@@ -852,13 +1107,106 @@ ipcMain.handle('sync-from-cloud', () => {
 });
 
 // ============================================================
+// СПОСТЕРЕЖЕННЯ ЗА ТЕКОЮ (chokidar) — автоматично помічає нові файли
+// пісень/медіа, скинуті туди (напр. з флешки чи спільної теки), і
+// повідомляє оператора, щоб він переглянув і імпортував — БЕЗ сліпого
+// автододавання (щоб не зловити недописаний файл і не створити дублікат
+// в обхід діалогу підтвердження). Лінива залежність: без `npm install`
+// спостереження просто не стартує, решта застосунку працює як завжди.
+// ============================================================
+const watchCfgFile = path.join(app.getPath('userData'), 'watch-folder.json');
+let watchFolderPath = '';
+let watchFolderInstance = null;
+const WATCH_SONG_EXTS = ['json', 'xml', 'sng', 'cho', 'chordpro', 'crd', 'pro', 'pro4', 'pro5', 'pro6', 'csv', 'tsv', 'txt'];
+
+function loadWatchFolder() {
+  try {
+    if (fs.existsSync(watchCfgFile)) {
+      const cfg = JSON.parse(fs.readFileSync(watchCfgFile, 'utf8'));
+      watchFolderPath = cfg.folder || '';
+    }
+  } catch (e) {}
+}
+function saveWatchFolderPath(folder) {
+  watchFolderPath = folder;
+  try { fs.writeFileSync(watchCfgFile, JSON.stringify({ folder: folder }), 'utf8'); } catch (e) {}
+}
+function readTextWithFallback(filePath) {
+  const buf = fs.readFileSync(filePath);
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+  catch (e) { try { return new TextDecoder('windows-1251').decode(buf); } catch (e2) { return buf.toString('utf8'); } }
+}
+function stopWatchingFolder() {
+  if (watchFolderInstance) { try { watchFolderInstance.close(); } catch (e) {} watchFolderInstance = null; }
+}
+function startWatchingFolder(folder) {
+  stopWatchingFolder();
+  if (!folder) return;
+  let chokidar;
+  try { chokidar = require('chokidar'); }
+  catch (e) { logError('watchFolder', new Error('Немає chokidar — виконай `npm install`')); return; }
+  try {
+    watchFolderInstance = chokidar.watch(folder, {
+      ignoreInitial: true,   // не сповіщати про файли, що вже лежали в теці на момент старту
+      depth: 0,               // лише файли верхнього рівня теки, без підтек
+      awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 200 }   // чекаємо, поки файл ДОПИШЕТЬСЯ (флешка/копіювання)
+    });
+    let batch = [];
+    let batchTimer = null;
+    function flushBatch() {
+      if (!batch.length || !mainWin || mainWin.isDestroyed()) { batch = []; return; }
+      mainWin.webContents.send('watch-folder-new-files', batch);
+      batch = [];
+    }
+    watchFolderInstance.on('add', (filePath) => {
+      const ext = path.extname(filePath).slice(1).toLowerCase();
+      const name = path.basename(filePath);
+      if (WATCH_SONG_EXTS.includes(ext)) {
+        let text = '';
+        try { text = readTextWithFallback(filePath); } catch (e) { return; }
+        batch.push({ name: name, path: filePath, text: text, kind: 'song' });
+      } else {
+        batch.push({ name: name, path: filePath, kind: 'other' });
+      }
+      clearTimeout(batchTimer);
+      batchTimer = setTimeout(flushBatch, 800);   // групуємо, якщо кілька файлів скинули одночасно
+    });
+    watchFolderInstance.on('error', (err) => {
+      logError('watchFolder', err);
+      if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('watch-folder-error', { message: err.message });
+    });
+  } catch (e) { logError('watchFolder-start', e); }
+}
+
+ipcMain.handle('pick-watch-folder', async () => {
+  try {
+    const { dialog } = require('electron');
+    const result = await dialog.showOpenDialog(mainWin, {
+      properties: ['openDirectory'],
+      title: 'Обрати теку для автоматичного виявлення нових пісень/медіа'
+    });
+    if (result.canceled || !result.filePaths.length) return null;
+    const folder = result.filePaths[0];
+    saveWatchFolderPath(folder);
+    startWatchingFolder(folder);
+    return folder;
+  } catch (e) { return null; }
+});
+ipcMain.handle('get-watch-folder', () => watchFolderPath);
+ipcMain.handle('stop-watch-folder', () => {
+  stopWatchingFolder();
+  saveWatchFolderPath('');
+  return 'ok';
+});
+
+// ============================================================
 // IPC HANDLERS
 // ============================================================
 ipcMain.handle('open-projector', () => {
   return new Promise((resolve) => createOutputWindow('projector', () => resolve('opened')));
 });
 ipcMain.handle('close-projector', () => {
-  if (outputWins.projector && !outputWins.projector.isDestroyed()) outputWins.projector.close();
+  if (outputWins.projector && !outputWins.projector.isDestroyed()) { outputWins.projector.__intentionalClose = true; outputWins.projector.close(); }
   return 'closed';
 });
 ipcMain.handle('projector-status', () => {
@@ -869,7 +1217,7 @@ ipcMain.handle('open-stream', () => {
   return new Promise((resolve) => createOutputWindow('stream', () => resolve('opened')));
 });
 ipcMain.handle('close-stream', () => {
-  if (outputWins.stream && !outputWins.stream.isDestroyed()) outputWins.stream.close();
+  if (outputWins.stream && !outputWins.stream.isDestroyed()) { outputWins.stream.__intentionalClose = true; outputWins.stream.close(); }
   return 'closed';
 });
 ipcMain.handle('stream-status', () => {
@@ -918,8 +1266,13 @@ ipcMain.handle('set-output-display', (event, { kind, displayId }) => {
   // displayId === null означає «None» — вихід вимкнено, вікно закриваємо
   if (displayId === null || displayId === undefined) {
     outputConfig[kind + 'DisplayId'] = null;
+    // Скидаємо й «відбиток» — інакше після перезапуску restoreOutputBindings
+    // (див. IPC bind-output-fingerprint/restore-output-bindings) тихо поверне
+    // стару прив'язку з вкладки «Прив'язка екранів», і вибір «Авто»/None
+    // зроблений тут не переживе перезапуск.
+    outputConfig[kind + 'Fingerprint'] = null;
     const w = outputWins[kind];
-    if (w && !w.isDestroyed()) w.close();
+    if (w && !w.isDestroyed()) { w.__intentionalClose = true; w.close(); }
     return outputConfig;
   }
 
@@ -934,6 +1287,14 @@ ipcMain.handle('set-output-display', (event, { kind, displayId }) => {
   }
 
   outputConfig[kind + 'DisplayId'] = displayId;
+  // Дві вкладки керують одним і тим самим outputConfig[kind+'DisplayId']:
+  // цей обробник (випадаючий список монітора у «Виходи») і bind-output-fingerprint
+  // (кнопки-«галочки» у «Прив'язка екранів»). Без синхронізації нижче вибір
+  // тут пережив би тільки поточний сеанс — при наступному запуску
+  // restoreOutputBindings підняв би СТАРИЙ відбиток із «Прив'язки екранів»
+  // і тихо повернув би вихід не туди, куди його щойно поставили тут.
+  const targetDisplay = all.find(d => d.id === displayId);
+  outputConfig[kind + 'Fingerprint'] = targetDisplay ? displayFingerprint(targetDisplay) : null;
 
   // Якщо вікно вже відкрите — одразу переносимо його на новий монітор
   const w = outputWins[kind];
@@ -970,8 +1331,12 @@ ipcMain.handle('set-single-screen', (event, { on, controls }) => {
 });
 
 // Кнопки на екрані виводу шлють команди назад у панель керування
-ipcMain.on('logo-auto-hidden', () => {
-  if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('logo-auto-hidden');
+ipcMain.on('logo-auto-hidden', (event) => {
+  // Визначаємо, З ЯКОГО САМЕ виходу прийшла подія — порівнюємо webContents
+  // відправника з мапою відкритих вікон (кожен вихід автоматично ховає
+  // логотип НЕЗАЛЕЖНО, тож рендереру треба знати саме котрий).
+  const kind = OUTPUT_KINDS.find(k => outputWins[k] && !outputWins[k].isDestroyed() && outputWins[k].webContents === event.sender) || null;
+  if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('logo-auto-hidden', kind);
 });
 
 ipcMain.on('display-control', (event, action) => {
@@ -1035,6 +1400,11 @@ ipcMain.handle('open-output', (event, kind) => {
 
 ipcMain.handle('close-output', (event, kind) => {
   const w = outputWins[kind];
+  // Явне закриття з самої програми (кнопка «Закрити»/«Закрити всі виходи») —
+  // не питаємо підтвердження, навіть якщо там зараз щось в ефірі. Питання
+  // «закрити вихід з ефіром?» (див. createOutputWindow) — лише для
+  // НЕОЧІКУВАНОГО закриття вікна напряму (Cmd+W/Alt+F4), не для цього шляху.
+  if (w) w.__intentionalClose = true;
   if (w && !w.isDestroyed()) w.close();
   return 'closed';
 });
@@ -1057,6 +1427,7 @@ ipcMain.handle('outputs-status', () => {
 ipcMain.handle('send-to-output', (event, { kind, type, payload }) => {
   const w = outputWins[kind];
   const data = { type, payload };
+  lastContentByKind[kind] = data;
   if (w && !w.isDestroyed() && !w.webContents.isLoading()) {
     w.webContents.send('display', data);
     return 'sent';
@@ -1072,11 +1443,12 @@ ipcMain.handle('send-to-output', (event, { kind, type, payload }) => {
 });
 
 // Фон виходу за кодом кольору: '#00ff00', '#1a1a2e' тощо; null/'' = фон теми
-ipcMain.handle('set-output-bg', (event, { kind, color }) => {
+ipcMain.handle('set-output-bg', (event, { kind, color, animated }) => {
   if (!OUTPUT_KINDS.includes(kind)) return outputConfig.bg;
   outputConfig.bg[kind] = color || null;
+  outputConfig.bgAnimated[kind] = !!animated;
   const w = outputWins[kind];
-  if (w && !w.isDestroyed()) w.webContents.send('set-bg', outputConfig.bg[kind]);
+  if (w && !w.isDestroyed()) w.webContents.send('set-bg', outputConfig.bg[kind], outputConfig.bgAnimated[kind]);
   return outputConfig.bg;
 });
 
@@ -1122,70 +1494,9 @@ const syncPort = 4242;
 let stationPin = '';          // порожньо = без пароля
 let stationClients = [];      // [{ws, name, role, id}]
 
-// ---- OSC-тригери (UDP на 9000, прості дії як у MIDI) ----
-let oscServer = null;
-const oscPort = 9000;
-let oscMap = {}; // { 'action': '/osc/address' }
-let oscLearn = null;
-
-function padOscString(s) {
-  const len = Math.ceil((s.length + 1) / 4) * 4;
-  const buf = Buffer.alloc(len);
-  buf.write(s, 'utf8');
-  return buf;
-}
-// Простий парсер OSC-пакетів: витягує адресу
-// OSC формат: нульо-терміноване рядок адреси, вирівняне до 4 байт, потім теги & дані (ми їх ігноруємо)
-function parseOscAddress(data) {
-  if (data.length < 4) return null;
-  let nullIdx = data.indexOf(0);
-  if (nullIdx < 1 || nullIdx > data.length - 5) return null;
-  const addr = data.slice(0, nullIdx).toString('utf8');
-  if (addr[0] !== '/') return null;
-  return addr;
-}
-
-function startOscServer(mainWin) {
-  if (oscServer) return;
-  const dgram = require('dgram');
-  oscServer = dgram.createSocket('udp4');
-  oscServer.on('message', (msg) => {
-    const addr = parseOscAddress(msg);
-    if (!addr) return;
-    // Якщо учимо адресу
-    if (oscLearn) {
-      oscMap[oscLearn] = addr;
-      // Записуємо на диск одразу — інакше вивчена прив'язка жила лише в пам'яті,
-      // а 'start-osc-server' (напр. при наступному запуску сервера чи програми)
-      // безумовно перечитує osc-map.json і тихо стирала б щойно вивчене.
-      try {
-        const fs = require('fs');
-        const cfgPath = path.join(app.getPath('userData'), 'osc-map.json');
-        fs.writeFileSync(cfgPath, JSON.stringify(oscMap), 'utf8');
-      } catch (e) {}
-      if (mainWin && !mainWin.isDestroyed()) {
-        mainWin.webContents.send('osc-learned', { action: oscLearn, address: addr });
-      }
-      oscLearn = null;
-      return;
-    }
-    // Шукаємо дію по адресі і виконуємо
-    const action = Object.keys(oscMap).find(a => oscMap[a] === addr);
-    if (action && mainWin && !mainWin.isDestroyed()) {
-      mainWin.webContents.send('osc-action', { action: action, from: 'OSC' });
-    }
-  });
-  oscServer.on('error', (err) => {
-    console.log('OSC error:', err);
-  });
-  oscServer.bind(oscPort, '0.0.0.0');
-}
-function stopOscServer() {
-  if (oscServer) {
-    oscServer.close();
-    oscServer = null;
-  }
-}
+// ---- OSC-тригери (винесено в src/main/osc.js) ----
+const oscModule = require('./src/main/osc');
+oscModule.register(ipcMain, () => mainWin);
 let stationSeq = 0;
 
 function stationList() {
@@ -1213,8 +1524,10 @@ ipcMain.handle('start-sync-server', (event, opts) => {
   }
   stationPin = (opts && opts.pin) || '';
   // Без явно заданого PIN не лишаємо сервер відкритим для будь-кого в мережі —
-  // генеруємо власний PIN і показуємо його оператору.
-  if (!stationPin) stationPin = String(Math.floor(1000 + Math.random() * 9000));
+  // генеруємо власний PIN і показуємо його оператору. crypto.randomInt() —
+  // криптографічно стійке джерело випадковості (на відміну від Math.random(),
+  // який не призначений для нічого, де передбачуваність має значення).
+  if (!stationPin) stationPin = String(crypto.randomInt(1000, 10000));
 
   const http = require('http');
   syncServer = http.createServer((req, res) => {
@@ -1305,38 +1618,7 @@ ipcMain.handle('stop-sync-server', () => {
 
 ipcMain.handle('station-clients', () => stationList());
 
-// ---- OSC-тригери (IPC хендлери) ----
-ipcMain.handle('start-osc-server', (event, opts) => {
-  if (mainWin && !mainWin.isDestroyed()) {
-    try {
-      const fs = require('fs');
-      const cfgPath = path.join(app.getPath('userData'), 'osc-map.json');
-      if (fs.existsSync(cfgPath)) {
-        oscMap = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-      }
-    } catch (e) {}
-    startOscServer(mainWin);
-    return { port: oscPort, status: 'listening' };
-  }
-});
-ipcMain.handle('stop-osc-server', () => {
-  stopOscServer();
-  return 'stopped';
-});
-ipcMain.handle('osc-learn', (event, action) => {
-  oscLearn = action;
-  return 'learning ' + action;
-});
-ipcMain.handle('osc-clear', (event, action) => {
-  delete oscMap[action];
-  try {
-    const fs = require('fs');
-    const cfgPath = path.join(app.getPath('userData'), 'osc-map.json');
-    fs.writeFileSync(cfgPath, JSON.stringify(oscMap), 'utf8');
-  } catch (e) {}
-  return 'cleared';
-});
-ipcMain.handle('osc-get-map', () => oscMap);
+// ---- OSC-тригери (IPC хендлери вже зареєстровані через oscModule.register() вище) ----
 
 // Хост розсилає свій стан усім станціям і пультам
 ipcMain.handle('station-broadcast', (event, msg) => {
@@ -1404,6 +1686,33 @@ let remoteUsers = [];   // [{id, name, pin, actions:[...]}] — іменован
 const HTTP_API_ACTIONS = ['next', 'prev', 'next-verse', 'prev-verse', 'go-live',
   'clear', 'blackout', 'undo', 'lower', 'freeze', 'bookmark', 'plan-item', 'announce'];
 
+// ── Захист від перебору PIN (аудит: rate-limit) ─────────────────────
+// Лічильник невдалих спроб по IP. Свідомо в памʼяті, без бази: сервер
+// живе рівно стільки, скільки відкрита програма, а перезапуск програми
+// під час служби — і так подія, після якої лічильник не шкода втратити.
+const API_FAILS = new Map();          // ip -> { n, until }
+const API_MAX_FAILS = 10;             // стільки поспіль дозволено
+const API_BLOCK_MS = 5 * 60 * 1000;   // потім пауза 5 хв
+
+function apiClientIp(req) {
+  return (req && req.socket && req.socket.remoteAddress) || 'unknown';
+}
+// true = зараз заблоковано
+function apiIsBlocked(req) {
+  const r = API_FAILS.get(apiClientIp(req));
+  if (!r || !r.until) return false;
+  if (Date.now() > r.until) { API_FAILS.delete(apiClientIp(req)); return false; }
+  return true;
+}
+function apiNoteFail(req) {
+  const ip = apiClientIp(req);
+  const r = API_FAILS.get(ip) || { n: 0, until: 0 };
+  r.n++;
+  if (r.n >= API_MAX_FAILS) { r.until = Date.now() + API_BLOCK_MS; r.n = 0; }
+  API_FAILS.set(ip, r);
+}
+function apiClearFails(req) { API_FAILS.delete(apiClientIp(req)); }
+
 // За яким паролем визначаємо, хто саме звертається, і що йому дозволено.
 // Повертає null (немає доступу), {role:'admin'} (усе дозволено), або
 // {role:'user', name, actions} (лише те, що для НЬОГО обрано в списку користувачів).
@@ -1435,6 +1744,24 @@ function startRemoteServer(pin, users) {
   if (Array.isArray(users)) remoteUsers = users;
 
   httpServer = http.createServer((req, res) => {
+    // ---- Цифровий бюлетень служби — БЕЗ PIN, тільки перегляд ----
+    // На відміну від пульта (керування) і /api/ (теж керування) — цей
+    // маршрут навмисно без пароля: план служби показуємо будь-кому в
+    // церковному Wi-Fi, хто відкрив посилання чи відсканував QR. Керувати
+    // звідси нічим не можна — жодних дій, лише GET читання поточного плану.
+    if (req.url === '/bulletin' || req.url === '/bulletin/') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(getBulletinHTML());
+      return;
+    }
+    if (req.url === '/bulletin-data') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      const plan = (lastRemoteState && lastRemoteState.plan) || { name: '', items: [], idx: -1 };
+      res.end(JSON.stringify(plan));
+      return;
+    }
     // ---- HTTP API для Stream Deck / Bitfocus Companion ----
     // GET /api/<action>?pin=XXXX  → виконує ту саму команду, що й пульт.
     // Приклади: /api/next  /api/prev  /api/blackout  /api/clear  /api/go-live
@@ -1443,16 +1770,62 @@ function startRemoteServer(pin, users) {
       const action = u.pathname.replace('/api/', '').trim();
       const pin = u.searchParams.get('pin') || '';
       res.setHeader('Access-Control-Allow-Origin', '*');
+      // Заблокований за перебір PIN — не витрачаємо час на перевірку й
+      // не даємо підказок; 429 з Retry-After, як прийнято.
+      if (apiIsBlocked(req)) {
+        res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '300' });
+        res.end(JSON.stringify({ ok: false, error: 'too many attempts, try later' }));
+        return;
+      }
       const access = findRemoteAccess(pin);
       if (!access) {
+        // RATE-LIMIT (аудит: підбір PIN). PIN короткий, тож без обмеження
+        // його перебирають за хвилини. Рахуємо невдалі спроби по IP:
+        // після 10 поспіль — блок на 5 хвилин. Успішний вхід лічильник
+        // скидає, тож оператор, що просто помилився, не постраждає.
+        apiNoteFail(req);
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'wrong pin' }));
         return;
       }
+      apiClearFails(req);
       if (!action) {
         // список дій — щоб у Companion було видно, що доступно
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, actions: access.role === 'admin' ? HTTP_API_ACTIONS : access.actions, role: access.role, user: access.name }));
+        return;
+      }
+      // GET /api/state — ЧИТАННЯ стану (що зараз в ефірі, слайд, таймер,
+      // план служби, blackout, стан кожного виходу).
+      // Раніше API вмів лише командувати: зовнішня система (Stream Deck,
+      // Companion, автоматизація) не могла дізнатись, що відбувається, —
+      // тож не могла ані підсвітити активну кнопку, ані ухвалити рішення.
+      // Дані беремо з того самого lastRemoteState, який уже наповнює
+      // рендерер для веб-пульта, тож нової труби не потрібно.
+      if (action === 'state') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: true, state: lastRemoteState || {}, ts: Date.now() }));
+        return;
+      }
+      // GET /api/docs — самоопис: перелік дій і полів стану. Щоб не
+      // тримати документацію окремо від коду (вона там завжди застаріває).
+      if (action === 'docs') {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: true,
+          auth: 'GET ?pin=XXXX (усі запити)',
+          endpoints: {
+            'GET /api/': 'список доступних дій для цього PIN',
+            'GET /api/state': 'поточний стан: onAir, song, bibleRef, timer, plan, blackout, outputs[]',
+            'GET /api/docs': 'цей опис',
+            'GET /api/<action>': 'виконати дію; додаткові параметри — у query'
+          },
+          actions: HTTP_API_ACTIONS,
+          stateFields: ['onAir', 'song', 'bibleVerse', 'bibleRef', 'nextBibleVerse',
+                        'timer{remaining,running,paused,fmt}', 'plan{name,date,items,idx}',
+                        'blackout', 'outputs[{n,name,route,frozen,live}]'],
+          websocket: 'ws://<host>:<port> — шле {action:"state",data:{...}} при кожній зміні'
+        }));
         return;
       }
       if (HTTP_API_ACTIONS.indexOf(action) < 0) {
@@ -1539,6 +1912,56 @@ function stopRemoteServer() {
   if (wsServer) { wsServer.close(); wsServer = null; }
   if (httpServer) { httpServer.close(); httpServer = null; }
   return 'stopped';
+}
+
+// Цифровий бюлетень служби — просто читає ту саму розмітку плану, що вже
+// бачить оператор, і показує гостю без жодних кнопок керування. Оновлюється
+// поллінгом /bulletin-data кожні кілька секунд — без WebSocket/PIN, щоб
+// лишалось справді «лише перегляд» (не можна випадково щось натиснути).
+function getBulletinHTML() {
+  return `<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>План служби</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:#0d0d1a; color:#eee; font-family:-apple-system,Segoe UI,Arial,sans-serif; min-height:100vh; }
+  h1 { font-size:20px; margin:0 0 4px; color:#f0c040; }
+  .date { font-size:13px; color:#999; margin-bottom:18px; }
+  .item { padding:12px 14px; margin-bottom:6px; border-radius:8px; background:#1a1a2e; font-size:16px; border-left:3px solid transparent; }
+  .item.active { background:#2a2a4e; border-left-color:#7c6af7; font-weight:700; color:#fff; }
+  .item .n { color:#666; margin-right:8px; font-size:13px; }
+  .empty { color:#888; text-align:center; padding:40px 0; }
+</style>
+</head>
+<body>
+  <h1 id="planName">План служби</h1>
+  <div class="date" id="planDate"></div>
+  <div id="items"><div class="empty">Завантаження…</div></div>
+<script>
+function render(plan) {
+  document.getElementById('planName').textContent = plan.name || 'План служби';
+  // plan.date у застосунку поки нема звідки взяти — нема поля вводу дати
+  // для плану служби, тож завжди приходить порожнім. Показуємо сьогоднішню
+  // дату (на боці телефону) замість вічно порожнього рядка. Знайдено рев'ю коду.
+  document.getElementById('planDate').textContent = plan.date || new Date().toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', year: 'numeric' });
+  var el = document.getElementById('items');
+  if (!plan.items || !plan.items.length) { el.innerHTML = '<div class="empty">План ще не складено</div>'; return; }
+  el.innerHTML = plan.items.map(function(title, i) {
+    var active = i === plan.idx;
+    return '<div class="item' + (active ? ' active' : '') + '"><span class="n">' + (i + 1) + '.</span>' + (active ? '▶ ' : '') + title.replace(/</g,'&lt;') + '</div>';
+  }).join('');
+}
+function poll() {
+  fetch('/bulletin-data').then(function(r) { return r.json(); }).then(render).catch(function() {});
+}
+poll();
+setInterval(poll, 4000);
+</script>
+</body>
+</html>`;
 }
 
 function getRemoteHTML(needPin) {
@@ -1783,6 +2206,88 @@ ipcMain.handle('write-html-overlay', (event, htmlContent) => {
   return pathToFileURL(tmpPath).href;
 });
 
+// ============================================================
+// 📽 POWERPOINT (.pptx/.ppt) → PDF, через локально встановлену LibreOffice.
+// Результат (PDF) далі йде через уже готовий, перевірений PDF-переглядач
+// (той самий, що й для звичайних PDF-файлів) — не будуємо окремий показ
+// слайдів PowerPoint з нуля.
+//
+// НЕ вбудовуємо LibreOffice в застосунок (є варіант через WASM-бібліотеку,
+// але це +250МБ до інсталятора) — натомість викликаємо вже встановлену на
+// машині користувача LibreOffice як зовнішню програму. Якщо її немає —
+// повертаємо зрозумілу помилку з поясненням, що встановити.
+// ============================================================
+function findLibreOffice() {
+  const candidates = process.platform === 'win32' ? [
+    'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+    'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe'
+  ] : process.platform === 'darwin' ? [
+    '/Applications/LibreOffice.app/Contents/MacOS/soffice'
+  ] : [
+    '/usr/bin/soffice', '/usr/bin/libreoffice', '/snap/bin/libreoffice'
+  ];
+  for (const p of candidates) { if (fs.existsSync(p)) return p; }
+  return null;   // не знайдено за типовими шляхами — спробуємо PATH нижче
+}
+
+ipcMain.handle('convert-pptx-to-pdf', async (event, buffer) => {
+  const { spawn } = require('child_process');
+  const soffice = findLibreOffice() || (process.platform === 'win32' ? 'soffice.exe' : 'soffice');
+  const tmpDir = path.join(os.tmpdir(), 'church_pptx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7));
+  try {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const pptxPath = path.join(tmpDir, 'input.pptx');
+    fs.writeFileSync(pptxPath, Buffer.from(buffer));
+
+    await new Promise((resolve, reject) => {
+      const proc = spawn(soffice, ['--headless', '--convert-to', 'pdf', '--outdir', tmpDir, pptxPath]);
+      let err = '';
+      proc.stderr.on('data', d => { err += d.toString(); });
+      proc.on('error', e => reject(new Error('LibreOffice не знайдено. Встанови безкоштовну LibreOffice (libreoffice.org) — без неї показ PowerPoint-файлів недоступний. ' + e.message)));
+      const timeout = setTimeout(() => { proc.kill(); reject(new Error('Конвертація триває занадто довго (можливо, файл пошкоджений)')); }, 60000);
+      proc.on('close', code => {
+        clearTimeout(timeout);
+        code === 0 ? resolve() : reject(new Error('LibreOffice завершилась з помилкою: ' + err.slice(-300)));
+      });
+    });
+
+    const pdfPath = path.join(tmpDir, 'input.pdf');
+    if (!fs.existsSync(pdfPath)) throw new Error('Конвертація не створила PDF-файл');
+    const pdfBuffer = fs.readFileSync(pdfPath);
+    return { ok: true, data: pdfBuffer };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
+});
+
+// Нотатки доповідача з PowerPoint (.pptx — це ZIP-архів з XML усередині).
+// adm-zip — чистий JS, без нативної компіляції (перевірено окремо, на
+// відміну від колишньої спроби з grandiose). Зіставляємо нотатки зі
+// слайдами за НОМЕРОМ У НАЗВІ ФАЙЛУ (slideN.xml ↔ notesSlideN.xml) —
+// це покриває типовий випадок; якщо слайди сильно перевпорядковані вручну,
+// зіставлення може «поплисти», але для звичайної презентації працює вірно.
+ipcMain.handle('extract-pptx-notes', async (event, buffer) => {
+  try {
+    const AdmZip = require('adm-zip');
+    const zip = new AdmZip(Buffer.from(buffer));
+    const notes = {};
+    zip.getEntries().forEach(entry => {
+      const m = /^ppt\/notesSlides\/notesSlide(\d+)\.xml$/.exec(entry.entryName);
+      if (!m) return;
+      const slideNum = parseInt(m[1], 10);
+      const xml = zip.readAsText(entry);
+      // Прибираємо XML-теги, лишаємо лише текст усередині <a:t>...</a:t>
+      const texts = [...xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map(x => x[1]);
+      const text = texts.join('\n').trim();
+      if (text) notes[slideNum] = text;
+    });
+    return { ok: true, notes: notes };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 
 // ============================================================
 // 🎬 ATEM INTEGRATION
@@ -2052,6 +2557,7 @@ function summarizeAtemState() {
     };
   } catch(e) { return {}; }
 }
+
 
 // ============================================================
 // 🎥 PTZ — КЕРУВАННЯ КАМЕРАМИ (універсально: VISCA-over-IP / VISCA-TCP / HTTP-CGI / ONVIF)
@@ -2342,6 +2848,7 @@ function maybeFinishQuit() {
 }
 
 app.on('before-quit', (event) => {
+  appIsQuitting = true;
   if (pendingDataWrites > 0 && !quitPending) {
     // Даємо записам шанс дописатись — але не тримаємо застосунок відкритим
     // вічно, якщо диск раптом "завис" (запобіжний тайм-аут).
@@ -2395,6 +2902,7 @@ function initAutoUpdate() {
   } catch (e) { logError('initAutoUpdate', e); }
 }
 ipcMain.handle('check-updates', () => { try { if (autoUpdater) autoUpdater.checkForUpdates(); } catch (e) {} return 'ok'; });
+ipcMain.handle('get-app-version', () => app.getVersion());
 ipcMain.handle('install-update', () => { try { if (autoUpdater) autoUpdater.quitAndInstall(); } catch (e) {} return 'ok'; });
 
 // ---- Меню застосунку (винесено в src/main/app-menu.js) ------------------
@@ -2427,6 +2935,24 @@ if (!gotSingleInstanceLock) {
 }
 
 app.whenReady().then(() => {
+  // Обробник схеми app:// — тепер, коли app готовий. Разом із
+  // registerScheme() на початку файлу це дає безпечний канал доставки
+  // HTML в output-вікна (паралельно до наявного file://, нічого не
+  // ламаючи). CHURCH_USERDATA — щоб модуль знав дозволену теку даних,
+  // не тягнучи electron-залежність усередину себе.
+  process.env.CHURCH_USERDATA = app.getPath('userData');
+  contentProtocol.registerHandler(protocol);
+  contentProtocol.register(ipcMain);
+
+  // ФІКС (Windows 11: курсор «вилітає» з полів вводу під час набору, напр.
+  // у вкладці «Оголошення»). Причина — autoHideMenuBar:true ХОВАЄ системне
+  // меню, але Alt і далі його РОЗКРИВАЄ (стандартна Electron-поведінка на
+  // Windows; macOS такої концепції не має, тому там цього не видно). Якщо
+  // під час набору випадково зачепити Alt (є в деяких розкладках клавіатури
+  // для окремих символів) — меню зринає й краде фокус із поля. У застосунку
+  // немає жодних власних пунктів меню — тож просто прибираємо його зовсім:
+  // без меню Alt більше нічого не «розкриває» і фокус не втрачається.
+  Menu.setApplicationMenu(null);
   try {
     app.setAboutPanelOptions({
       applicationName: 'Церква Проектор',
@@ -2446,6 +2972,8 @@ app.whenReady().then(() => {
   initAutoUpdate();
   createMainWindow();
   loadCloudSyncFolder();  // завантажуємо налаштування папки синхронізації
+  loadWatchFolder();
+  if (watchFolderPath) startWatchingFolder(watchFolderPath);   // відновлюємо спостереження після перезапуску
   // screen можна використовувати тільки після ready
   // Проектор змінив роздільність (типово: прокинувся і перемкнувся 1024x768 → 1920x1080),
   // повернувся або змінив масштаб — вікно виводу треба підігнати заново.
@@ -2494,6 +3022,6 @@ app.on('window-all-closed', () => {
   // повертає застосунок), вони лишались слухати мовчки й далі.
   if (syncWss) { try { syncWss.close(); } catch (e) {} syncWss = null; }
   if (syncServer) { try { syncServer.close(); } catch (e) {} syncServer = null; }
-  if (typeof stopOscServer === 'function') stopOscServer();
+  if (typeof oscModule !== 'undefined' && oscModule && typeof oscModule.stopOscServer === 'function') oscModule.stopOscServer();
   if (process.platform !== 'darwin') app.quit();
 });

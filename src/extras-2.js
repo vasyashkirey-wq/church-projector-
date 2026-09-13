@@ -11,7 +11,10 @@ const ROUTE_LABELS = {
   lang2:    'Друга мова (напр. чеська)',
   chords:   'Акорди для музикантів',
   blank:    'Порожньо (чорний екран)',
-  freeze:   'Заморозити (не оновлювати)'
+  freeze:   'Заморозити (не оновлювати)',
+  qr:       'QR-екран',
+  media:    'Медіа (відео/аудіо)',
+  present:  'Презентація (PDF/слайди)'
 };
 
 function saveRoutes() {
@@ -43,7 +46,7 @@ function syncAllOutputs() {
   for (let i = 1; i <= 4; i++) {
     if (state.outputStates[i] && state.outputStates[i].open) pv2ForceRefresh(i);
   }
-  renderTabInto('router');
+  markDirty('router');
   notify('🔗 Усі екрани синхронізовано');
 }
 
@@ -56,7 +59,7 @@ function setSendTarget(t) {
   const badge = $('#pv2TargetBadge');
   if (badge) badge.textContent = t === 'all' ? 'усі екрани' : OUT_NAME[t];
   notify(t === 'all' ? '🎯 Відправка → усі екрани' : '🎯 Відправка → лише ' + OUT_NAME[t]);
-  if (typeof renderTabInto === 'function' && $('#tab-content-router')) renderTabInto('router');
+  if (typeof renderTabInto === 'function' && $('#tab-content-router')) markDirty('router');
   if (typeof syncSendTargetBanner === 'function') syncSendTargetBanner();   // банер видно з будь-якої вкладки
 }
 // Чи отримує вихід n поточну відправку
@@ -107,14 +110,75 @@ function pv2SendTextToOutputN(n, html, ref) {
   if (!window.electronAPI || !window.electronAPI.sendToOutput) return;
   window.electronAPI.sendToOutput(OUT_KIND[n], 'text', { html: html, ref: ref || '' });
 }
+// Скидає індикатори «в ефірі» ВСІХ фіч для виходу n (або для всіх, якщо
+// n не вказано) і перемальовує їхні рядки кнопок.
+//
+// НАВІЩО: кожна фіча веде власну мапу (qrLiveMap, graphicsLiveMap,
+// h2rLowerLiveMap, timerLiveMap, mediaLiveMap, tickerLiveMap,
+// creditsLiveMap, confettiLiveMap, htmlLiveMap), але очищення виходу їх
+// НЕ чіпало. Через це екран був порожній, а кнопка фічі й далі світилась
+// 🔴 «в ефірі» — і прибрати це можна було лише кнопкою тієї самої фічі.
+// Саме звідси «постійно висить в ефірі, виключаю — а воно вмикається».
+//
+// Мапи читаємо через window і захищено: якщо модуль не завантажений або
+// фічу прибрали, очищення все одно має спрацювати, а не впасти.
+function resetOutputIndicators(n) {
+  var maps = ['qrLiveMap', 'graphicsLiveMap', 'h2rLowerLiveMap', 'timerLiveMap',
+              'mediaLiveMap', 'tickerLiveMap', 'creditsLiveMap', 'confettiLiveMap',
+              'songLiveMap'];
+  maps.forEach(function (name) {
+    try {
+      var m = window[name];
+      if (!m) return;
+      if (n) m[n] = false;
+      else [1, 2, 3, 4].forEach(function (k) { m[k] = false; });
+    } catch (e) {}
+  });
+  // htmlLiveMap зберігає ІНДЕКС графіки, а не true/false — тож порожнє
+  // значення для неї це null, а не false.
+  try {
+    var h = window.htmlLiveMap;
+    if (h) {
+      if (n) h[n] = null;
+      else [1, 2, 3, 4].forEach(function (k) { h[k] = null; });
+    }
+  } catch (e) {}
+  // Перемальовуємо рядки кнопок, щоб 🔴 зникли одразу
+  ['renderQrOutputRow', 'renderSongOutputRow', 'renderGraphicsOutBtns', 'renderH2RLowerOutBtns', 'renderTimerOutBtns',
+   'renderMediaOutBtns', 'renderTickerOutBtns', 'renderCreditsOutBtns', 'renderConfettiOutBtns',
+   'renderHTMLOverlayList', 'renderBibleOutputRow'].forEach(function (fn) {
+    try { if (typeof window[fn] === 'function') window[fn](); } catch (e) {}
+  });
+}
+
 function pv2ClearOutput(n) {
   if (!window.electronAPI || !window.electronAPI.sendToOutput) return;
+  // ПЕРШИМ ділом скасовуємо все, що зараз готується до відправки на цей
+  // вихід. sendHTMLToOutputN асинхронна (спершу готує HTML, потім шле),
+  // і без цього підготовлений контент долетів би ВЖЕ ПІСЛЯ очищення —
+  // екран знову показував би прибране.
+  try {
+    if (typeof _outSendGen !== 'undefined' && _outSendGen) _outSendGen[n] = (_outSendGen[n] || 0) + 1;
+  } catch (e) {}
   window.electronAPI.sendToOutput(OUT_KIND[n], 'clear', {});
+  resetOutputIndicators(n);
   notify('🚫 ' + OUT_NAME[n] + ' очищено');
 }
 
 // Останній надісланий контент — щоб знати, що показувати при зміні маршруту
 let pv2LastContent = null; // {kind:'text'|'html', html, ref, label}
+// БАГ (виявлено живим тестуванням, скрін з трансляції — видно буквальний
+// текст "<br>" замість переносу рядка): doSend() переозначується ДВОМА
+// вкладеними обгортками (hookOutputs нижче, потім ще раз у hookLive). Друга
+// (зовнішня) обгортка викликає внутрішню з УЖЕ hallText()-екранованим
+// текстом — і саме цей екранований рядок внутрішня обгортка перетворювала на
+// pv2LastContent.html (з реальними <br>). pv2PushToOutput() для маршруту
+// «graphics» потім жене content.html (де вже сирі <br>) ЩЕ РАЗ крізь esc() —
+// <br> стає буквальним &lt;br&gt; на екрані. Зовнішня обгортка знає СПРАВЖНІЙ
+// сирий текст (до hallText), але встановлює правильний pv2LastContent.rawText
+// ПІСЛЯ виклику внутрішньої — запізно для цього ж надсилання. Ця змінна —
+// міст: зовнішня обгортка кладе сюди сирий текст ПЕРЕД викликом внутрішньої.
+let _pv2SendRawText = null;
 
 // Текст наступного куплета (для екрана співаків)
 function pv2NextVerseText() {
@@ -136,18 +200,33 @@ function buildTextHTML(s, c, hasChroma) {
   // На виході з увімкненим хромакеєм застосовуємо той самий автоматичний
   // мінімум контрасту, що вже є в головній Темі — інакше текст був би
   // «голим» білим на живій камері, поки не налаштуєш вручну.
-  const sw = hasChroma ? Math.max(s.strokeWidth || 0, 2) : (s.strokeWidth || 0);
-  const scrimV = hasChroma ? Math.max(s.scrim || 0, 0.25) : (s.scrim || 0);
+  // hasChroma тепер САМЕ ЧИСЛО — альфа з outputBgAlpha(n) конкретного виходу
+  // (рахує викликач, тут немає n) — а не просто true/false; typeof-перевірка,
+  // а не truthiness, бо 0% (alpha=0) теж валідне, хоч і falsy, значення.
+  const chromaOn = typeof hasChroma === 'number';
+  const sw = chromaOn ? Math.max(s.strokeWidth || 0, 2) : (s.strokeWidth || 0);
+  const scrimV = chromaOn ? Math.max(s.scrim || 0, 0.25) : (s.scrim || 0);
   const outlineShadow = sw
     ? [1, -1].flatMap(x => [1, -1].map(y => `${x * sw}px ${y * sw}px 0 ${s.strokeColor || '#000'}`)).join(',') +
       (s.styles.shadow ? ', 0 2px 12px rgba(0,0,0,.6)' : '')
     : shadow;
   const bgType = s.bgType || 'color';
-  const bgVideoLayer = (bgType === 'video' && s.bgVideo && s.bgVideo.src)
+  // РЕАЛЬНИЙ БАГ (живе повідомлення): ця сторінка — окремий HTML-документ
+  // в iframe #frame, який лежить ПОВЕРХ шару хромакею (#proj-chroma) в
+  // projector.html. Суцільний непрозорий фон (як було: bgCss завжди solid)
+  // просто ПЕРЕКРИВАВ хромакей — пісня йшла в трансляцію на чорному/темному
+  // тлі замість зеленого/синього, і OBS не міг нічого вирізати. getGraphicsHTML()
+  // вже вміє цей трюк (outputBgAlpha) — тут його просто забули застосувати.
+  // На хромакеї відео/фото-фон теж ховаємо: він перекрив би колір хромакею
+  // так само, як суцільний bgCss (той самий принцип, що вже є в
+  // projector-preload.js для set-bg-video/set-chroma).
+  const bgVideoLayer = (!chromaOn && bgType === 'video' && s.bgVideo && s.bgVideo.src)
     ? `<video class="bgvid" autoplay loop muted playsinline src="${esc(s.bgVideo.src)}"></video>` : '';
-  const bgImageLayer = (bgType === 'image' && s.bgImage)
+  const bgImageLayer = (!chromaOn && bgType === 'image' && s.bgImage)
     ? `<div class="bgimg" style="background-image:url('${s.bgImage}')"></div>` : '';
-  const bgCss = bgType === 'color' ? s.bgColor : '#000';
+  const bgCss = chromaOn
+    ? 'rgba(0,0,0,' + hasChroma + ')'
+    : (bgType === 'color' ? s.bgColor : '#000');
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
     body{margin:0;background:${bgCss};min-height:100vh;display:flex;align-items:${align};
          justify-content:center;font-family:${s.fontFamily || 'Georgia, serif'};position:relative;overflow:hidden}
@@ -168,72 +247,10 @@ function buildTextHTML(s, c, hasChroma) {
 }
 
 // Шрифт для конкретного виходу
-function setTextFont(f) {
-  const t = state.currentTextOutput;
-  if (t === 'all') { for (let i = 1; i <= 4; i++) state.textSettings[i].fontFamily = f; }
-  else state.textSettings[t].fontFamily = f;
-  updateTextPreview();
-}
-
 // «Додатково»: обведення/підкладка/безпечна зона/інтервали/швидкість переходу —
 // ті самі поля, що вже є в головній Темі, тепер і тут, окремо на кожен вихід.
-function _applyToTextOutputs(field, val) {
-  const t = state.currentTextOutput;
-  if (t === 'all') { for (let i = 1; i <= 4; i++) state.textSettings[i][field] = val; }
-  else state.textSettings[t][field] = val;
-  updateTextPreview();
-}
-function setTextStroke(v) { _applyToTextOutputs('strokeWidth', parseInt(v, 10) || 0); }
-function setTextStrokeColor(v) { _applyToTextOutputs('strokeColor', v); }
-function setTextScrim(v) { _applyToTextOutputs('scrim', (parseInt(v, 10) || 0) / 100); }
-function setTextSafeArea(v) { _applyToTextOutputs('safeArea', parseInt(v, 10) || 0); }
-function setTextLetterSpacing(v) { _applyToTextOutputs('letterSpacing', parseInt(v, 10) || 0); }
-function setTextLineHeight(v) { _applyToTextOutputs('lineHeight', (parseInt(v, 10) || 140) / 100); }
-function setTextFadeMs(v) { _applyToTextOutputs('fadeMs', parseInt(v, 10) || 600); }
-function setTextBgType(type) { _applyToTextOutputs('bgType', type); renderTabInto('textcontrol'); }
-
 // Фон-відео/фото для конкретного виходу — той самий підхід, що в Графіці:
 // шлях до файлу для відео (завелике для сховища як base64), стиснене base64 для фото.
-function loadTextBgVideo(input) {
-  const f = input.files[0];
-  if (!f) return;
-  if (f.path && typeof pathToFileUrl === 'function') {
-    // непідтримувані формати (MOV/MKV…) спершу в MP4
-    ensureSupportedMedia(f.path, function(cpath) {
-      _applyToTextOutputs('bgVideo', { src: pathToFileUrl(cpath), name: f.name });
-      renderTabInto('textcontrol');
-    });
-  } else {
-    _applyToTextOutputs('bgVideo', { src: URL.createObjectURL(f), name: f.name });
-    renderTabInto('textcontrol');
-  }
-}
-function clearTextBgVideo() { _applyToTextOutputs('bgVideo', null); renderTabInto('textcontrol'); }
-function loadTextBgImage(input) {
-  const f = input.files[0];
-  if (!f) return;
-  const r = new FileReader();
-  r.onload = e => {
-    const img = new Image();
-    img.onload = () => {
-      let w = img.width, h = img.height; const max = 1920;
-      if (w > max) { h = Math.round(h * max / w); w = max; }
-      let dataUrl;
-      try {
-        const cv = document.createElement('canvas');
-        cv.width = w; cv.height = h;
-        cv.getContext('2d').drawImage(img, 0, 0, w, h);
-        dataUrl = cv.toDataURL('image/jpeg', 0.85);
-      } catch (err) { dataUrl = e.target.result; }
-      _applyToTextOutputs('bgImage', dataUrl);
-      renderTabInto('textcontrol');
-    };
-    img.src = e.target.result;
-  };
-  r.readAsDataURL(f);
-}
-function clearTextBgImage() { _applyToTextOutputs('bgImage', null); renderTabInto('textcontrol'); }
-
 // Подати контент на ОДИН вихід згідно з його маршрутом
 // Що зараз показує конкретний вихід — окремо від глобального «На екрані».
 // Для маршрутів, відмінних від «дзеркало», рахуємо тут-таки в момент відправки.
@@ -251,6 +268,12 @@ function pv2PushToOutput(n, content) {
   if (route !== 'mirror') pv2SetOutputStatus(n, ROUTE_LABELS[route] || route);   // базове — уточнимо нижче, де є деталі
   if (route === 'freeze') { pv2SetOutputStatus(n, '❄️ Заморожено'); return; }
   if (route === 'blank')  { pv2SetOutputStatus(n, '⬛ Порожньо'); pv2ClearOutput(n); return; }
+  // QR/Медіа/Презентація — не «дзеркало» (щоб загальне мовлення пісень/віршів
+  // сюди не лізло), але й не оновлюються самі щоразу, як текстові маршрути
+  // вище: контент на них кладуть окремими кнопками «на вихід N» у своїх
+  // вкладках (QR-екран/Медіа/PDF-презентація) — тут лише позначаємо статус,
+  // щоб було видно, під що вихід призначено.
+  if (route === 'qr' || route === 'media' || route === 'present') return;
 
   if (route === 'next') {
     const nv = pv2NextVerseText();
@@ -270,7 +293,7 @@ function pv2PushToOutput(n, content) {
       c = pv2GraphicsContent();
     }
     const alpha = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')
-      ? streamBgAlpha() : undefined;
+      ? outputBgAlpha(n) : undefined;
     sendHTMLToOutputN(n, getGraphicsHTML(c.text, c.ref, alpha), null);
     pv2SetOutputStatus(n, '🎨 ' + (c.ref || 'Графіка'));
     return;
@@ -279,7 +302,8 @@ function pv2PushToOutput(n, content) {
   if (route === 'lang2') {
     const t2 = secondLangText();
     const s2 = state.textSettings[n] || state.textSettings[1];
-    const hasChroma2 = !!(state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none');
+    const hasChroma2 = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')
+      ? outputBgAlpha(n) : undefined;
     sendHTMLToOutputN(n, buildTextHTML(s2, { text: t2 || '—', ref: pv2LastContent ? pv2LastContent.ref : '' }, hasChroma2), null);
     return;
   }
@@ -289,7 +313,8 @@ function pv2PushToOutput(n, content) {
     const idx = (state.preview && typeof state.preview.verseIdx === 'number') ? state.preview.verseIdx : state.selectedVerseIdx;
     const raw = chordsForStage(s, idx);
     const st = state.textSettings[n] || state.textSettings[1];
-    const hasChromaChords = !!(state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none');
+    const hasChromaChords = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')
+      ? outputBgAlpha(n) : undefined;
     sendHTMLToOutputN(n, buildTextHTML(st, {
       text: String(raw).replace(/\[([^\]]+)\]/g, '<b style="color:#f0c040">[$1]</b>'),
       ref: (s ? s.title : '') + (state.transpose ? '  (' + (state.transpose > 0 ? '+' : '') + state.transpose + ')' : '')
@@ -309,7 +334,8 @@ function pv2PushToOutput(n, content) {
     } else {
       c = pv2GraphicsContent();
     }
-    const hasChromaText = !!(state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none');
+    const hasChromaText = (state.outputChroma && state.outputChroma[n] && state.outputChroma[n] !== 'none')
+      ? outputBgAlpha(n) : undefined;
     sendHTMLToOutputN(n, buildTextHTML(s, c, hasChromaText), null);
     pv2SetOutputStatus(n, '📝 ' + (c.ref || 'Текст'));
     return;
@@ -348,15 +374,27 @@ function pv2AllMirror() {
     const orig = doSend;
     window.doSend = function(text, ref) {
       const isBible = ref && /\d+:\d+/.test(ref);
+      // Звичайний текст іде на ВСІ виходи й заміщає те, що там було
+      // (вірш із графікою чи кілька перекладів). Тож відстеження треба
+      // скинути — інакше індикатор далі показував би «кілька
+      // перекладів» на екрані, де вже пісня, а стрілки ◀▶ могли
+      // повернути туди вірш. Скидаємо лише для ПІСЕНЬ: у біблійних
+      // шляхах списки виставляються навмисно й тут їх стирати не можна.
+      if (!isBible && typeof resetOutputTracking === 'function') resetOutputTracking('song');
       // Для Біблії пишемо посилання на вірш; для пісні — ЧИСТУ назву пісні
       // (а не ref, який містить суфікс слайда «(2/2)» і ламав «недавні пісні»).
       recordStat(isBible ? 'bible' : 'song',
         isBible ? ref
-                : ((typeof selectedSong !== 'undefined' && selectedSong) ? selectedSong.title : (ref || '')));
+                : ((typeof selectedSong !== 'undefined' && selectedSong) ? selectedSong.title : (ref || '')),
+        'all');
       if (pv2AllMirror()) { orig(text, ref); return; }   // всі однакові — стара швидка гілка
       orig(text, ref);            // оновлює прев'ю + шле лише на «дзеркальні» виходи
-      // виходи з власним маршрутом отримують свій контент
-      pv2LastContent = { kind: 'text', html: String(text).replace(/\n/g, '<br>'), ref: ref || '' };
+      // виходи з власним маршрутом отримують свій контент. rawText — справжній
+      // сирий (ще не hallText-екранований) текст, якщо зовнішня обгортка (hookLive)
+      // його передала через _pv2SendRawText; інакше (виклик doSend напряму, без
+      // зовнішньої обгортки) лишається null — pv2PushToOutput сам впаде на .html.
+      pv2LastContent = { kind: 'text', rawText: _pv2SendRawText, html: String(text).replace(/\n/g, '<br>'), ref: ref || '' };
+      _pv2SendRawText = null;
       for (let i = 1; i <= 4; i++) {
         if ((state.outputRoutes[i] || 'mirror') !== 'mirror') pv2PushToOutput(i, pv2LastContent);
       }
@@ -366,7 +404,7 @@ function pv2AllMirror() {
   if (typeof doSendHTML === 'function' && !doSendHTML._pv2) {
     const origH = doSendHTML;
     window.doSendHTML = function(html, label) {
-      recordStat('html', label);
+      recordStat('html', label, 'all');
       origH(html, label);
       if (pv2AllMirror()) return;
       pv2LastContent = { kind: 'htmlraw', html: html, label: label };
@@ -398,7 +436,7 @@ function loadLiveConfig() {
 function setLiveMode(mode) {
   state.liveMode = mode;
   saveLiveConfig();
-  renderTabInto('live');
+  markDirty('live');
   notify(mode === 'staged' ? '🎬 Режим ефіру: спершу прев\'ю' : '⚡ Режим ефіру: одразу на екран');
 }
 
@@ -420,6 +458,35 @@ function setGoingLive(on) {
 
 // Покласти контент у прев'ю (не в ефір)
 function stageContent(content) {
+  // ЗЛИТТЯ ЗМІШАНИХ РЕЖИМІВ.
+  // «2 виводи» (чи «Усі 4»), коли частина екранів показує кілька
+  // перекладів, а частина — один вірш, викликає stageContent ДВІЧІ за
+  // одну дію оператора: раз із multiOutputTarget, раз із gfxTargets.
+  // Проста заміна лишала в прев'ю тільки останній виклик, тож в ефір
+  // ішов один екран, а другий лишався порожнім — «через прев'ю на
+  // проектор не йде, а напряму працює».
+  //
+  // Зливаємо лише в межах ОДНІЄЇ дії оператора (0.5 с) і лише для
+  // htmlraw: інакше два незалежні покази поспіль злиплися б в один.
+  try {
+    var prev = state.preview;
+    var fresh = prev && prev._stagedAt && (Date.now() - prev._stagedAt < 500);
+    if (fresh && content && content.kind === 'htmlraw' && prev.kind === 'htmlraw') {
+      var mergedMulti = content.multiOutputTarget || prev.multiOutputTarget;
+      var mergedGfx = (content.gfxTargets && content.gfxTargets.length) ? content.gfxTargets : prev.gfxTargets;
+      if (mergedMulti && mergedGfx && mergedGfx.length) {
+        content = Object.assign({}, prev, content, {
+          multiOutputTarget: mergedMulti,
+          gfxTargets: mergedGfx,
+          // Підпис має відображати обидва, інакше оператор бачить у
+          // прев'ю лише половину того, що піде в ефір.
+          label: (prev.label || '') && (content.label || '')
+            ? (prev.label + ' + ' + content.label) : (content.label || prev.label)
+        });
+      }
+    }
+  } catch (e) {}
+  content._stagedAt = Date.now();
   state.preview = content;
   updateLivePanels();
 }
@@ -475,24 +542,49 @@ function goLive() {
   }
   setGoingLive(true);
   try {
+    // ВАЖЛИВО: це НЕ ланцюг else-if. «2 виводи» зі змішаними режимами
+    // (на одному екрані кілька перекладів, на іншому — один вірш)
+    // породжує ДВА різні вмісти, і прев'ю має віддати обидва. Раніше
+    // тут стояв else-if: спрацьовувала лише перша гілка, тож в ефір
+    // ішов один екран, а другий лишався порожнім — саме це й було
+    // «через прев'ю на проектор не йде, а напряму працює».
+    var handled = false;
     if (c.kind === 'htmlraw' && c.multiOutputTarget && typeof sendMultiToOutput === 'function') {
       // Кілька перекладів на конкретний вихід: перебудовуємо для АКТУАЛЬНОГО
       // стану вибору перекладів (могли змінитись, поки слайд лежав у прев'ю).
       // multiOutputTarget може бути числом (один вихід) або масивом [1,2] (обидва).
       const targets = Array.isArray(c.multiOutputTarget) ? c.multiOutputTarget : [c.multiOutputTarget];
       targets.forEach(n => sendMultiToOutput(n, true));
+      handled = true;
     }
-    else if (c.kind === 'htmlraw' && c.gfxTargets && c.gfxTargets.length && typeof bibleGraphicsTo === 'function') {
+    if (c.kind === 'htmlraw' && c.gfxTargets && c.gfxTargets.length && typeof bibleGraphicsTo === 'function') {
       // Графіка вірша: віддаємо на ТІ САМІ екрани, які були обрані у прев'ю
       bibleGraphicsTo(c.gfxTargets, true);
+      handled = true;
     }
-    else if (c.kind === 'htmlraw') doSendHTML(c.html, c.label);
-    else doSend(c.rawText != null ? c.rawText : c.html, c.ref);
+    if (!handled) {
+      if (c.kind === 'htmlraw') doSendHTML(c.html, c.label);
+      else doSend(c.rawText != null ? c.rawText : c.html, c.ref);
+    }
   } finally {
     setGoingLive(false);
   }
+  // Сторож узгодженості: саме тут найбільший ризик розходження —
+  // за одну дію могли спрацювати ОБИДВА режими (мульти-переклади на
+  // один екран, графіка вірша на інший), кожен зі своїм списком.
+  // mode визначаємо за тим, що переважало: якщо були мульти-цілі —
+  // на їх користь, бо вони специфічніші за загальну графіку.
+  try {
+    if (typeof assertOutputConsistency === 'function') {
+      assertOutputConsistency(null, c.multiOutputTarget ? 'multi' : 'single');
+    }
+  } catch (e) {}
   pushUndo(state.onAir || { empty: true });   // щоб можна було повернутись
   state.onAir = c;
+  // state.preview ніколи не скидався тут — "У прев'ю"-індикатор (постійна
+  // нижня панель, кнопка "В ЕФІР") лишався б підсвіченим/показаним
+  // НАЗАВЖДИ навіть ПІСЛЯ того, як контент уже показано в залі.
+  state.preview = null;
   updateLivePanels();
   hostBroadcastState();
   notify('🔴 В ЕФІРІ: ' + (c.label || c.ref || 'слайд'));
@@ -503,7 +595,7 @@ function clearLive() {
   if (state.ui && state.ui.confirmDanger !== false && state.onAir && !_undoing) {
     if (!confirm('Очистити екран у залі?')) return;
   }
-  if (isClientStation()) { stationSend('clear', {}); state.onAir = null; updateLivePanels(); return; }
+  if (isClientStation()) { stationSend('clear', {}); state.onAir = null; if (typeof clearOnAirRecovery === 'function') clearOnAirRecovery(); updateLivePanels(); return; }
   if (state.onAir && !_undoing) pushUndo(state.onAir);  // очищення теж можна скасувати
   if (window.electronAPI && window.electronAPI.clearProjector) window.electronAPI.clearProjector();
   // Повний бланк — прибираємо й ПОСТІЙНІ накладки (оголошення/Prop + логотип),
@@ -521,8 +613,13 @@ function clearLive() {
   lastLivePlain = false;
   lastLiveMulti = false;
   try { state.multiLive = []; } catch (e) {}
-  try { if (typeof renderTabInto === 'function') renderTabInto('layers'); } catch (e) {}
+  // Індикатори «в ефірі» всіх фіч (QR, графіка, титри, таймер, медіа,
+  // тікер, подяки, конфеті, HTML) — інакше екран порожній, а кнопки
+  // далі світяться 🔴 і фіча «висить в ефірі» назавжди.
+  try { if (typeof resetOutputIndicators === 'function') resetOutputIndicators(); } catch (e) {}
+  try { if (typeof renderTabInto === 'function') markDirty('layers'); } catch (e) {}
   state.onAir = null;
+  if (typeof clearOnAirRecovery === 'function') clearOnAirRecovery();
   updateLivePanels();
   hostBroadcastState();
   notify('🚫 Екран очищено (все)');
@@ -530,10 +627,11 @@ function clearLive() {
 
 // ---- Окремі кнопки очищення (як «Clear» у ProPresenter) -------------------
 function clearSlideOnly() {
-  if (isClientStation()) { stationSend('clear', {}); state.onAir = null; updateLivePanels(); return; }
+  if (isClientStation()) { stationSend('clear', {}); state.onAir = null; if (typeof clearOnAirRecovery === 'function') clearOnAirRecovery(); updateLivePanels(); return; }
   if (state.onAir && !_undoing) pushUndo(state.onAir);
   if (window.electronAPI && window.electronAPI.clearProjector) window.electronAPI.clearProjector();
   state.onAir = null;
+  if (typeof clearOnAirRecovery === 'function') clearOnAirRecovery();
   updateLivePanels();
   hostBroadcastState();
   notify('🚫 Слайд прибрано (накладки лишились)');
@@ -542,13 +640,13 @@ function clearPropsLayer() {
   if (window.electronAPI && window.electronAPI.sendAlert) window.electronAPI.sendAlert(null, null);
   else if (isClientStation()) stationSend('alert', { cfg: null });
   state.activePropName = null;
-  try { if (typeof renderTabInto === 'function') renderTabInto('layers'); } catch (e) {}
+  try { if (typeof renderTabInto === 'function') markDirty('layers'); } catch (e) {}
   notify('🚫 Оголошення / Prop прибрано');
 }
 function clearLogoLayer() {
   if (window.electronAPI && window.electronAPI.showLogo) window.electronAPI.showLogo(null);
   state.logoOn = false;
-  try { if (typeof renderTabInto === 'function') renderTabInto('layers'); } catch (e) {}
+  try { if (typeof renderTabInto === 'function') markDirty('layers'); } catch (e) {}
   notify('🚫 Логотип прибрано');
 }
 
@@ -564,7 +662,7 @@ function previewStep(delta) {
     kind: 'text',
     rawText: s.verses[i],
     html: hallText(s.verses[i]).replace(/\n/g, '<br>'),   // те саме, що піде в зал
-    ref: s.title || '',
+    ref: songRefForDisplay(s.title),
     label: (s.title || '') + ' — куплет ' + (i + 1),
     verseIdx: i
   });
@@ -680,6 +778,23 @@ function _updateLivePanels() {
 
   const dot = $('#liveDot');
   if (dot) dot.style.color = state.onAir ? 'var(--red)' : 'var(--text2)';
+
+  // Постійна нижня панель (#sendPreview, видима з будь-якої вкладки) має
+  // явно показувати "чекає в прев'ю" — інакше при staged-режимі оператор
+  // бачить там СТАРИЙ напис від попереднього показу (doSend перезаписує
+  // sendPreview лише коли контент дійсно ЙДЕ в ефір) і не розуміє, чому
+  // на екрані нічого не змінилось. Кнопку "🔴 В ЕФІР" підсвічуємо, доки
+  // є що показати — щоб було видно, що дія ще не завершена.
+  const sendPrev = $('#sendPreview');
+  const goLiveBtn = $('#sendBarGoLive');
+  if (state.preview && sendPrev) {
+    const esc2 = (typeof escHtml === 'function') ? escHtml : function(s) { return s; };
+    sendPrev.innerHTML = '<b style="color:var(--gold)">📋 У прев\'ю:</b> ' + esc2(state.preview.label || state.preview.ref || 'слайд') + ' — натисни «В ЕФІР»';
+  }
+  if (goLiveBtn) {
+    goLiveBtn.classList.toggle('pulse-attention', !!state.preview);
+    goLiveBtn.style.opacity = state.preview ? '1' : '.55';
+  }
 }
 
 // ---- Перехоплення відправки: у режимі staged все спершу йде в прев'ю ----
@@ -691,6 +806,7 @@ function _updateLivePanels() {
     window.clearProjector = function() {
       origClear();
       state.onAir = null;
+      if (typeof clearOnAirRecovery === 'function') clearOnAirRecovery();
       updateLivePanels();
     };
     window.clearProjector._pv2 = true;
@@ -716,18 +832,25 @@ function _updateLivePanels() {
         notify('📋 У прев\'ю — натисни «В ЕФІР»');
         return;
       }
-      if (!state.trainingMode) inner(hallText(text), ref);   // зал бачить без акордів, із другою мовою
-      else notify('🎓 Тренування — нічого не пішло на екран');
+      if (!state.trainingMode) {
+        _pv2SendRawText = text;   // для pv2LastContent.rawText усередині inner() — див. коментар біля _pv2SendRawText
+        inner(hallText(text), ref);   // зал бачить без акордів, із другою мовою
+      } else {
+        notify('🎓 Тренування — нічого не пішло на екран');
+      }
+      if (state.onAir && !_undoing && typeof pushUndo === 'function') pushUndo(state.onAir);
       state.onAir = { kind: 'text', rawText: text, html: hallText(text).replace(/\n/g, '<br>'), ref: ref || '', label: ref || 'Текст' };
+      if (typeof saveOnAirRecovery === 'function') saveOnAirRecovery();
       // Запам'ятовуємо ЗАВЖДИ — інакше графіка й маршрути показували б куплет пісні,
       // хоча в залі вже вірш із Біблії чи оголошення.
-      // ФІКС (живе тестування): тут раніше було String(text) — СИРИЙ, НЕ
-      // екранований текст. pv2LastContent.html іде напряму в pv2PushToOutput()
-      // на будь-який вихід із власним (не «дзеркало») маршрутом — вікна виводу
-      // мають contextIsolation:false (потрібен для webview-графіки), тож
-      // "<img src=x onerror=...>" у назві/тексті імпортованої пісні виконався
-      // б там як реальний HTML/скрипт. hallText() (як і в state.onAir поруч)
-      // екранує так само, як для «дзеркальних» виходів.
+      // ФІКС (живе тестування, перенесено з паралельної гілки): тут раніше
+      // було String(text) — СИРИЙ, НЕ екранований текст. pv2LastContent.html
+      // іде напряму в pv2PushToOutput() на будь-який вихід із власним (не
+      // «дзеркало») маршрутом — вікна виводу мають contextIsolation:false
+      // (потрібен для webview-графіки), тож "<img src=x onerror=...>" у
+      // назві/тексті імпортованої пісні виконався б там як реальний
+      // HTML/скрипт. hallText() (як і в state.onAir поруч) екранує так само,
+      // як для «дзеркальних» виходів.
       pv2LastContent = { kind: 'text', rawText: text, html: hallText(text).replace(/\n/g, '<br>'), ref: ref || '' };
       updateLivePanels();
       hostBroadcastState();   // інакше друга панель і пульти не бачать, що в залі
@@ -750,7 +873,9 @@ function _updateLivePanels() {
       }
       if (!state.trainingMode) innerH(html, label);
       else notify('🎓 Тренування — нічого не пішло на екран');
+      if (state.onAir && !_undoing && typeof pushUndo === 'function') pushUndo(state.onAir);
       state.onAir = { kind: 'htmlraw', html: html, label: label || 'HTML' };
+      if (typeof saveOnAirRecovery === 'function') saveOnAirRecovery();
       pv2LastContent = { kind: 'htmlraw', html: html, label: label || 'HTML' };
       updateLivePanels();
       hostBroadcastState();
@@ -759,6 +884,10 @@ function _updateLivePanels() {
     window.doSendHTML._pv2live = true;
   }
 })();
+// Перевіряємо один раз при старті — після hookLive() вище, щоб doSend/
+// doSendHTML уже були обгорнуті (інакше відновлений вміст не зберігався б
+// повторно й не з'являвся б у панелях стану).
+safeInit(checkCrashRecovery, 'checkCrashRecovery');
 
 
 // ============================================================
@@ -773,13 +902,6 @@ function loadAutoTimer() {
   if (c) Object.assign(state.autoTimer, c);
   startAutoTimerWatcher();
 }
-function setAutoTimer(key, val) {
-  state.autoTimer[key] = val;
-  saveAutoTimer();
-  startAutoTimerWatcher();
-  renderTabInto('live');
-}
-
 function startAutoTimerWatcher() {
   clearInterval(_autoTimerTick);
   if (!state.autoTimer.on) return;
@@ -859,7 +981,7 @@ function setSplit(key, val) {
   svcInvalidate();
   state.splitCfg[key] = val;
   saveJSON(STORAGE_KEYS.live + '_split', state.splitCfg);
-  renderTabInto('song');
+  markDirty('song');
   notify(key === 'on' ? (val ? '✓ Розбиття увімкнено' : 'Розбиття вимкнено') : '✓ Збережено');
 }
 function loadSplitCfg() {
@@ -874,11 +996,20 @@ function songKey(song) { return 'ord_' + (song && song.id != null ? song.id : (s
 
 // Порядок = масив індексів куплетів. Без налаштування — просто підряд.
 function songOrder(song) {
-  const saved = state.orders[songKey(song)];
-  if (Array.isArray(saved) && saved.length) return saved.filter(i => song.verses[i] != null);
+  const key = songKey(song);
+  const saved = state.orders[key];
+  if (Array.isArray(saved) && saved.length) {
+    const filtered = saved.filter(i => song.verses[i] != null);
+    if (filtered.length) return filtered;
+    // Збережений порядок застарів (пісню відредагували — куплетів стало
+    // менше/інші індекси). Не показуємо порожній екран: прибираємо застарілий
+    // запис і будуємо порядок наново нижче (аранжування або звичайний).
+    delete state.orders[key];
+    if (typeof saveJSON === 'function') saveJSON(STORAGE_KEYS.live + '_orders', state.orders);
+  }
   // Приспів після кожного куплета — якщо ввімкнено для ЦІЄЇ пісні АБО глобально
   // (для всіх пісень). Будуємо порядок на льоту, щоб працювало скрізь.
-  if (((state.chorusEach && state.chorusEach[songKey(song)]) || state.arrangeGlobal) && typeof autoChorusIdx === 'function') {
+  if (((state.chorusEach && state.chorusEach[key]) || state.arrangeGlobal) && typeof autoChorusIdx === 'function') {
     const c = autoChorusIdx(song);
     if (c !== -1) {
       const order = [];
@@ -896,7 +1027,7 @@ function setSongOrder(song, arr) {
   svcInvalidate();
   state.orders[songKey(song)] = arr;
   saveJSON(STORAGE_KEYS.live + '_orders', state.orders);
-  renderTabInto('song');
+  markDirty('song');
   notify('✓ Порядок збережено: ' + arr.map(i => i + 1).join(' → '));
 }
 function orderAdd(i) {
@@ -935,7 +1066,7 @@ function orderReset() {
   if (!s) return;
   delete state.orders[songKey(s)];
   saveJSON(STORAGE_KEYS.live + '_orders', state.orders);
-  renderTabInto('song');
+  markDirty('song');
   notify('↺ Порядок скинуто');
 }
 // Автоматично: приспів після КОЖНОГО куплета (Куплет→Приспів→Куплет→Приспів…).
@@ -978,7 +1109,7 @@ function toggleArrangeGlobal(on) {
   state.arrangeGlobal = !!on;
   try { localStorage.setItem('church_arrange_global', on ? '1' : '0'); } catch (e) {}
   if (typeof svcInvalidate === 'function') svcInvalidate();   // план служби перебудує слайди
-  if (typeof renderTabInto === 'function' && typeof isActive === 'function' && isActive('song')) renderTabInto('song');
+  if (typeof renderTabInto === 'function' && typeof isActive === 'function' && isActive('song')) markDirty('song');
   if (typeof renderSongOrderMini === 'function') renderSongOrderMini();
   if (typeof notify === 'function') notify(on ? '🔁 Приспів після кожного — для ВСІХ пісень' : 'Глобальне аранжування вимкнено');
 }
@@ -990,7 +1121,7 @@ function toggleChorusEach(on) {
   state.chorusEach[key] = !!on;
   saveChorusEach();
   if (on) {
-    if (!applyChorusEach(s)) { state.chorusEach[key] = false; saveChorusEach(); renderTabInto('song'); }
+    if (!applyChorusEach(s)) { state.chorusEach[key] = false; saveChorusEach(); markDirty('song'); }
   } else {
     orderReset();
   }
@@ -1002,6 +1133,10 @@ function saveChorusEach() { saveJSON(STORAGE_KEYS.live + '_chorusEach', state.ch
 // працювало одразу, без повторного вмикання галочки.
 function ensureChorusEach(song) {
   if (!song || !song.verses || !state.chorusEach || !state.chorusEach[songKey(song)]) return;
+  // НЕ перезаписуємо, якщо для цієї пісні порядок уже збережений (напр.
+  // користувач вручну перетягнув чипи) — інакше ручні правки мовчки губилися б
+  // щоразу під час повторного вибору пісні.
+  if (Array.isArray(state.orders[songKey(song)]) && state.orders[songKey(song)].length) return;
   const c = autoChorusIdx(song);
   if (c === -1) return;
   const vs = arrangeVerseIdxs(song, c);
@@ -1081,9 +1216,13 @@ function songStep(delta) {
   state.slideIdx = i;
   const sl = slides[i];
   const label = s.title + ' — куплет ' + (sl.verseIdx + 1) + (sl.parts > 1 ? ' (' + sl.part + '/' + sl.parts + ')' : '');
+  // Кінець пісні: останній слайд у порядку/розбитті — додаємо *** як сигнал
+  // команді/оператору, що це останній слайд (той самий маркер, що й для
+  // пісень без аранжування в sendToProjector()).
+  const slideText = (i === slides.length - 1) ? (sl.text + '\n\n***') : sl.text;
   stageContent({
-    kind: 'text', rawText: sl.text, html: hallText(sl.text).replace(/\n/g, '<br>'),
-    ref: s.title || '', label: label, verseIdx: sl.verseIdx
+    kind: 'text', rawText: slideText, html: hallText(slideText).replace(/\n/g, '<br>'),
+    ref: songRefForDisplay(s.title), label: label, verseIdx: sl.verseIdx
   });
   if (state.liveMode !== 'staged') goLive();
   if (typeof renderSongOrderMini === 'function') renderSongOrderMini();   // оновити підсвітку поточної позиції
@@ -1134,24 +1273,6 @@ function extraLangTexts() {
   return out;
 }
 
-function setSecondLang(id) {
-  state.secondLang = id || null;
-  saveJSON(STORAGE_KEYS.station + '_lang', { id: state.secondLang, mode: state.secondLangMode });
-  notify(id ? '🌐 Друга мова увімкнена' : 'Другу мову вимкнено');
-  updateLivePanels();
-}
-function setThirdLang(id) {
-  state.thirdLang = id || null;
-  saveJSON(STORAGE_KEYS.station + '_lang3', { id: state.thirdLang });
-  notify(id ? '🌐 Третя мова увімкнена' : 'Третю мову вимкнено');
-  updateLivePanels();
-  renderTabInto('extras');
-}
-function setSecondLangMode(mode) {
-  state.secondLangMode = mode; // 'under' = під основним текстом | 'output' = на окремий вихід
-  saveJSON(STORAGE_KEYS.station + '_lang', { id: state.secondLang, mode: mode });
-  renderTabInto('extras');   // вкладка з цим перемикачем називається 'extras' (як і в setThirdLang нижче)
-}
 function loadSecondLang() {
   const c = loadJSON(STORAGE_KEYS.station + '_lang');
   if (c) {
@@ -1199,13 +1320,6 @@ function transposeChord(chord, semitones) {
 function transposeText(text, semitones) {
   if (!semitones) return text;
   return String(text).replace(/\[([^\]]+)\]/g, (full, ch) => '[' + transposeChord(ch, semitones) + ']');
-}
-function setTranspose(n) {
-  state.transpose = Math.max(-11, Math.min(11, n));
-  const lbl = $('#transposeLabel');
-  if (lbl) lbl.textContent = (state.transpose > 0 ? '+' : '') + state.transpose;
-  updateStageDisplay();
-  notify('🎸 Транспонування: ' + (state.transpose > 0 ? '+' : '') + state.transpose);
 }
 // Чи має пісня акорди
 function songHasChords(song) {
@@ -1264,6 +1378,36 @@ function hallText(text) {
 // СКАСУВАННЯ ОСТАННЬОЇ ДІЇ
 // Випадково очистив екран посеред пісні — повертаєш одним кліком.
 // ============================================================
+// ============================================================
+// 💾 CRASH RECOVERY — зберігаємо, що зараз в ефірі, щоб після
+// несподіваного закриття/збою застосунку можна було повернути те саме на
+// екран, а не починати з чистого аркуша. Save/clear викликаються з тих
+// самих місць, де й так змінюється state.onAir (вище) — жодної нової
+// логіки показу, лише персистентність уже наявного стану.
+// ============================================================
+function saveOnAirRecovery() {
+  saveJSON(STORAGE_KEYS.live + '_crashrecover', { data: state.onAir, savedAt: Date.now() });
+}
+function clearOnAirRecovery() {
+  saveJSON(STORAGE_KEYS.live + '_crashrecover', null);
+}
+// Викликається один раз при старті застосунку. Пропонуємо відновити лише
+// якщо збережений стан ДІЙСНО НЕЩОДАВНІЙ (до 3 годин) — інакше це майже
+// напевно залишок із минулої служби тижневої давнини, не «щойно впало».
+function checkCrashRecovery() {
+  const saved = loadJSON(STORAGE_KEYS.live + '_crashrecover');
+  if (!saved || !saved.data) return;
+  const ageMin = (Date.now() - (saved.savedAt || 0)) / 60000;
+  if (ageMin > 180) { clearOnAirRecovery(); return; }
+  const label = saved.data.label || saved.data.ref || 'контент';
+  if (confirm('Знайдено стан з попереднього запуску (' + Math.round(ageMin) + ' хв тому): «' + label + '».\n\nВідновити на екран?')) {
+    if (saved.data.kind === 'text' && typeof doSend === 'function') doSend(saved.data.rawText, saved.data.ref);
+    else if (saved.data.kind === 'htmlraw' && typeof doSendHTML === 'function') doSendHTML(saved.data.html, saved.data.label);
+  } else {
+    clearOnAirRecovery();
+  }
+}
+
 const _undoStack = [];
 function pushUndo(snapshot) {
   _undoStack.push(snapshot);
@@ -1320,7 +1464,7 @@ function saveThemeAs() {
   state.themes.push(t);
   state.activeThemeId = t.id;
   saveJSON(STORAGE_KEYS.themes, state.themes);
-  renderTabInto('live');
+  markDirty('live');
   notify('✓ Тему «' + name + '» збережено');
   });
 }
@@ -1354,7 +1498,7 @@ function deleteNamedTheme() {
   state.themes = state.themes.filter(x => x.id !== t.id);
   state.activeThemeId = state.themes.length ? state.themes[0].id : null;
   saveJSON(STORAGE_KEYS.themes, state.themes);
-  renderTabInto('live');
+  markDirty('live');
   notify('🗑 Тему видалено');
 }
 function loadNamedThemes() {
@@ -1384,7 +1528,8 @@ function setDisplayCfg(key, val) {
   if (olbl) olbl.textContent = Math.round(state.displayCfg.ctrlOpacity * 100) + '%';
 }
 
-// Кнопки на самому екрані виводу (режим одного монітора) керують ефіром
+// Слухач статусу автооновлення (electron-updater) — показує тост, коли нова
+// версія завантажується, і питає підтвердження перед встановленням.
 function initUpdateListener() {
   if (window.electronAPI && window.electronAPI.onUpdateStatus) {
     window.electronAPI.onUpdateStatus(d => {
@@ -1397,24 +1542,71 @@ function initUpdateListener() {
     });
   }
 }
+// Показує поточну версію в «Налаштуваннях» — викликається щоразу при
+// відкритті вкладки (не одноразово при старті, бо тоді картки ще нема в DOM).
+function refreshAppVersion() {
+  if (!window.electronAPI || !window.electronAPI.getAppVersion) return;
+  window.electronAPI.getAppVersion().then(v => {
+    const el = document.getElementById('appVersionLabel');
+    if (el) el.textContent = 'Версія: ' + v;
+  }).catch(() => {});
+}
+// Кнопка «🔄 Перевірити зараз» у «Налаштуваннях» — та сама перевірка, що й
+// автоматична при старті, просто за запитом оператора, не чекаючи 5 секунд
+// після запуску чи наступного перезапуску.
+// ============================================================
+// 🚀 PREFLIGHT CHECK — один погляд на все перед службою. Свідомо НЕ вмикає
+// й НЕ підключає нічого само — лише ЗЧИТУЄ вже наявний стан (той самий,
+// яким керують інші, окремо перевірені частини застосунку). Три рівні:
+// 🔴 майже напевно проблема (немає жодного відкритого виходу — служба без
+// екрана неможлива), 🟡 варто перевірити (залежить від того, чи взагалі
+// використовуєш цю систему), 🟢 усе гаразд.
+// ============================================================
+function renderPreflightResults(rows) {
+  const box = document.getElementById('preflightResults');
+  if (!box) return;
+  const icons = { ok: '🟢', warn: '🟡', bad: '🔴', info: '⚪' };
+  box.innerHTML = rows.map(r =>
+    '<div style="display:flex;gap:6px;padding:3px 0;font-size:12px;border-bottom:1px solid var(--border)">' +
+    '<span>' + icons[r.level] + '</span><b style="min-width:90px">' + esc(r.label) + '</b><span style="color:var(--text2)">' + esc(r.detail) + '</span>' +
+    '</div>'
+  ).join('');
+}
 
 function initDisplaysListener() {
   if (window.electronAPI && window.electronAPI.onDisplaysChanged) {
     window.electronAPI.onDisplaysChanged(list => {
       state.displays = list || [];
-      if (isActive('monitors2')) renderTabInto('monitors2');
+      if (isActive('monitors2')) markDirty('monitors2');
       if (typeof syncMonitorMissingBanner === 'function') syncMonitorMissingBanner();
+      if (typeof renderStageMonitorOptions === 'function') renderStageMonitorOptions();
       notify('🖥 Склад моніторів змінився');
+    });
+  }
+}
+
+// Stage Monitor — окреме вікно живе в головному процесі; якщо користувач
+// закриє його самостійно (системним хрестиком), рендерер про це не знав би
+// сам собою — слухаємо подію, щоб #stageStatus і стан не розходились.
+// Перенесено з паралельної гілки (church-projector.zip) — раніше тут цього
+// слухача не було, хоча main.js/preload.js вже й так надсилали цю подію.
+function initStageWindowListener() {
+  if (window.electronAPI && window.electronAPI.onStageWindowClosed) {
+    window.electronAPI.onStageWindowClosed(() => {
+      state.stageDisplayOpen = false;
+      const status = $('#stageStatus');
+      if (status) status.textContent = '✕ Stage Display закрито';
     });
   }
 }
 
 function initLogoListener() {
   if (window.electronAPI && window.electronAPI.onLogoAutoHidden) {
-    window.electronAPI.onLogoAutoHidden(() => {
-      state.logoOn = false;
-      if (isActive('layers')) renderTabInto('layers');
-      notify('🖼 Логотип прибрано — пішов новий слайд');
+    window.electronAPI.onLogoAutoHidden((kind) => {
+      const n = [1, 2, 3, 4].find(i => OUT_KIND[i] === kind);
+      if (n) state.logoSettings[n].on = false;
+      if (isActive('layers')) markDirty('layers');
+      notify(n ? '🖼 ' + OUT_NAME[n] + ': логотип прибрано — пішов новий слайд' : '🖼 Логотип прибрано — пішов новий слайд');
     });
   }
 }
@@ -1431,122 +1623,6 @@ function initDisplayControlListener() {
 
 
 // ---- Вкладка «Ефір» — головний екран оператора ----
-function renderLiveTab() {
-  const staged = state.liveMode === 'staged';
-  const d = state.displayCfg;
-  const themeOpts = state.themes.length
-    ? state.themes.map(t => `<option value="${t.id}"${t.id === state.activeThemeId ? ' selected' : ''}>${esc(t.name)}</option>`).join('')
-    : '<option value="">— тем ще немає —</option>';
-  const alignOpts = [['bottom-right','Внизу справа'],['bottom-left','Внизу зліва'],['bottom-center','Внизу по центру'],['top-right','Вгорі справа'],['top-left','Вгорі зліва']]
-    .map(([v,l]) => `<option value="${v}"${d.ctrlAlign===v?' selected':''}>${l}</option>`).join('');
-
-  return `
-  <div class="card" style="border-color:${staged ? 'var(--accent)' : 'var(--border)'}">
-    <b style="font-size:12px">Режим ефіру:</b>
-    <div style="display:flex;gap:8px;margin-top:6px">
-      <button class="btn ${staged ? 'btn-primary' : 'btn-ghost'}" style="flex:1;padding:12px;font-size:14px;font-weight:600" onclick="setLiveMode('staged')">🎬 Спершу прев'ю</button>
-      <button class="btn ${!staged ? 'btn-primary' : 'btn-ghost'}" style="flex:1;padding:12px;font-size:14px;font-weight:600" onclick="setLiveMode('direct')">⚡ Одразу на екран</button>
-    </div>
-    <div class="card-sub" style="margin-top:4px">
-      ${staged
-        ? 'Кнопки «Надіслати» з вкладок Пісні / Біблія / Оголошення кладуть слайд у <b>прев\'ю</b>. У зал він піде лише після «В ЕФІР».'
-        : 'Кожна відправка одразу йде в зал (стара поведінка).'}
-    </div>
-  </div>
-
-  <div class="grid2">
-    <div>
-      <div class="card" style="border-color:var(--red)">
-        <div class="card-title"><span id="liveDot" style="color:var(--text2)">●</span> В ЕФІРІ — це бачить зал</div>
-        <div style="position:relative;width:100%;aspect-ratio:16/9;border:2px solid var(--red);border-radius:6px;overflow:hidden;background:#000">
-          <iframe id="liveOnAirFrame" style="position:absolute;top:0;left:0;width:1920px;height:1080px;border:0;transform:scale(0.26);transform-origin:top left;pointer-events:none"></iframe>
-        </div>
-        <div id="liveOnAirLabel" style="font-size:11px;color:var(--text2);margin-top:4px">— порожньо —</div>
-        <div style="display:flex;gap:4px;margin-top:6px">
-          <button class="btn btn-ghost btn-sm" style="flex:1" onclick="clearLive()" title="Очистити геть усе — слайд, оголошення/Prop і логотип">🚫 Все</button>
-          <button class="btn btn-ghost btn-sm" id="undoBtn" style="flex:1" onclick="undoLast()">↶ Скасувати</button>
-        </div>
-        <div class="flex" style="gap:6px;margin-top:6px">
-          <button class="btn btn-ghost btn-sm" style="flex:1" onclick="clearSlideOnly()" title="Прибрати лише слайд/графіку, накладки лишити">Слайд</button>
-          <button class="btn btn-ghost btn-sm" style="flex:1" onclick="clearPropsLayer()" title="Прибрати оголошення / Prop">Оголош.</button>
-          <button class="btn btn-ghost btn-sm" style="flex:1" onclick="clearLogoLayer()" title="Прибрати логотип">Логотип</button>
-        </div>
-      </div>
-    </div>
-
-    <div>
-      <div class="card" style="border-color:var(--accent)">
-        <div class="card-title">📋 ПРЕВ'Ю — готується</div>
-        <div style="position:relative;width:100%;aspect-ratio:16/9;border:2px dashed var(--accent);border-radius:6px;overflow:hidden;background:#000">
-          <iframe id="livePreviewFrame" style="position:absolute;top:0;left:0;width:1920px;height:1080px;border:0;transform:scale(0.26);transform-origin:top left;pointer-events:none"></iframe>
-        </div>
-        <div id="livePreviewLabel" style="font-size:11px;color:var(--text2);margin-top:4px">— порожньо —</div>
-        <div style="display:flex;gap:4px;margin-top:6px">
-          <button class="btn btn-ghost btn-sm" onclick="previewStep(-1)">◀ Куплет</button>
-          <button class="btn btn-ghost btn-sm" onclick="previewStep(1)">Куплет ▶</button>
-        </div>
-        <button class="btn btn-success btn-block" style="margin-top:6px;font-weight:700;font-size:14px;padding:10px" onclick="goLive()">🔴 В ЕФІР →</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" style="border-color:var(--accent)">
-    <div class="card-title">🔳 Виходи — що на кожному екрані</div>
-    <div id="liveMultiview" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px">— завантаження —</div>
-    <div class="card-sub" style="margin-top:5px">Кожна плитка = один вихід: тип (Текст / Графіка / Біблія / Таймер / Наступний / Порожньо) і маршрут. «Дзеркало» = те саме, що в ефірі.</div>
-  </div>
-
-  <div class="grid2">
-    <div>
-      <div class="card">
-        <div class="card-title">🎨 Теми служіння</div>
-        <select id="themeSelect" onchange="applyNamedTheme(this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">${themeOpts}</select>
-        <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">
-          <button class="btn btn-primary btn-sm" onclick="saveThemeAs()">➕ Нова тема</button>
-          <button class="btn btn-ghost btn-sm" onclick="updateNamedTheme()">💾 Оновити</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteNamedTheme()">🗑 Видалити</button>
-        </div>
-        <div class="card-sub" style="margin-top:4px">Тема запам'ятовує стиль проектора, графіки й тексту всіх 4 виходів — перемикається одним кліком перед служінням.</div>
-      </div>
-      <div class="card">
-        <div class="card-title">⚡ Профілі служіння</div>
-        <select id="serviceProfileSelect" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:5px;color:var(--text);font-size:11px;outline:none">
-          ${(state.serviceProfiles || []).length
-            ? state.serviceProfiles.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')
-            : '<option value="">— профілів ще немає —</option>'}
-        </select>
-        <div style="display:flex;gap:4px;margin-top:6px;flex-wrap:wrap">
-          <button class="btn btn-success btn-sm" style="flex:1" onclick="var v=document.getElementById('serviceProfileSelect').value; if(v) applyServiceProfile(v)">⚡ Застосувати</button>
-          <button class="btn btn-primary btn-sm" onclick="saveServiceProfile()">➕ Зберегти поточне</button>
-          <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="var v=document.getElementById('serviceProfileSelect').value; if(v) deleteServiceProfile(v)">🗑</button>
-        </div>
-        <div class="card-sub" style="margin-top:4px">Маршрути всіх 4 виходів + прив'язана тема — на відміну від «Теми служіння» (лише вигляд), тут ще й що куди виводиться.</div>
-      </div>
-    </div>
-
-    <div>
-      <div class="card">
-        <div class="card-title">🖥 Вивід</div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
-          <input type="checkbox" ${d.alwaysOnTop ? 'checked' : ''} onchange="setDisplayCfg('alwaysOnTop', this.checked)">
-          Поверх усіх вікон
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer;margin-top:4px">
-          <input type="checkbox" ${d.singleScreen ? 'checked' : ''} onchange="setDisplayCfg('singleScreen', this.checked)">
-          Режим одного монітора (кнопки просто на екрані виводу)
-        </label>
-        <div style="font-size:12px;color:var(--text2);margin-top:6px">Розмір кнопок: <b id="ctrlSizeLabel">${d.ctrlSize}px</b></div>
-        <input type="range" min="24" max="90" value="${d.ctrlSize}" oninput="setDisplayCfg('ctrlSize', parseInt(this.value,10))" style="width:100%">
-        <div style="font-size:12px;color:var(--text2)">Прозорість: <b id="ctrlOpacityLabel">${Math.round(d.ctrlOpacity*100)}%</b></div>
-        <input type="range" min="10" max="100" value="${Math.round(d.ctrlOpacity*100)}" oninput="setDisplayCfg('ctrlOpacity', parseInt(this.value,10)/100)" style="width:100%">
-        <div style="font-size:12px;color:var(--text2);margin-top:4px">Розташування кнопок</div>
-        <select onchange="setDisplayCfg('ctrlAlign', this.value)" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px;color:var(--text);font-size:11px">${alignOpts}</select>
-      </div>
-    </div>
-  </div>`;
-}
-
-
 // ---- Хромакей для будь-якого з 4 виходів ----
 function saveChroma() { saveJSON(STORAGE_KEYS.chroma, state.outputChroma); }
 function loadOutputChroma() {
@@ -1632,11 +1708,38 @@ function gddOpenPanel(i) {
       // Вшите фото не показуємо повним текстом — інакше поле забите base64
       const shown = embedded ? '' : val;
       const ph = embedded ? '📷 фото вшито — обери інший файл, щоб замінити' : (isImage ? 'посилання на зображення або файл нижче' : '');
-      const ctl = isLong
-        ? `<textarea data-gdd="${f.key}" rows="2" oninput="gddFieldChange(${i}, this)"
-             style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">${esc(shown)}</textarea>`
-        : `<input type="text" data-gdd="${f.key}" value="${esc(shown)}" placeholder="${esc(ph)}" oninput="gddFieldChange(${i}, this)"
+      // Пріоритет типу контролу: список варіантів → колір → число → багато-
+      // рядковий текст → звичайний рядок. Раніше схема ЗБИРАЛА options/type,
+      // але панель завжди малювала лише звичайний текстовий рядок — тепер
+      // справді використовує їх для зручнішого, безпечнішого редагування.
+      let ctl;
+      if (f.options && f.options.length) {
+        ctl = `<select data-gdd="${f.key}" onchange="gddFieldChange(${i}, this)"
+             style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">` +
+          f.options.map(o => `<option value="${esc(o)}"${String(o) === String(shown) ? ' selected' : ''}>${esc(o)}</option>`).join('') +
+          `</select>`;
+      } else if (f.type === 'color') {
+        const colorVal = /^#[0-9a-fA-F]{3,8}$/.test(shown) ? shown : '#ffffff';
+        ctl = `<div style="display:flex;gap:6px;align-items:center">
+             <input type="color" data-gdd="${f.key}" value="${esc(colorVal)}" onchange="gddFieldChange(${i}, this); this.nextElementSibling.value = this.value;"
+                    style="width:36px;height:30px;border:1px solid var(--border);border-radius:4px;background:var(--bg);cursor:pointer;padding:1px">
+             <input type="text" data-gdd="${f.key}" value="${esc(shown)}" placeholder="${esc(ph)}"
+                    oninput="gddFieldChange(${i}, this); if (/^#[0-9a-fA-F]{3,8}$/.test(this.value)) this.previousElementSibling.value = this.value;"
+                    style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">
+           </div>`;
+      } else if (f.type === 'number') {
+        const minAttr = f.min !== null ? ` min="${esc(f.min)}"` : '';
+        const maxAttr = f.max !== null ? ` max="${esc(f.max)}"` : '';
+        const stepAttr = f.step !== null ? ` step="${esc(f.step)}"` : '';
+        ctl = `<input type="number" data-gdd="${f.key}" value="${esc(shown)}"${minAttr}${maxAttr}${stepAttr} oninput="gddFieldChange(${i}, this)"
              style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">`;
+      } else if (isLong) {
+        ctl = `<textarea data-gdd="${f.key}" rows="2" oninput="gddFieldChange(${i}, this)"
+             style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">${esc(shown)}</textarea>`;
+      } else {
+        ctl = `<input type="text" data-gdd="${f.key}" value="${esc(shown)}" placeholder="${esc(ph)}" oninput="gddFieldChange(${i}, this)"
+             style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text);font-size:11px;outline:none">`;
+      }
       const fileBtn = isImage
         ? `<div style="display:flex;gap:5px;align-items:center;margin-top:4px">
              <button class="btn btn-ghost btn-sm" style="font-size:11px;padding:4px 9px" onclick="gddPickImage(${i}, '${esc(f.key)}')">📁 Файл з комп'ютера</button>
@@ -1644,7 +1747,10 @@ function gddOpenPanel(i) {
                <button class="btn btn-ghost btn-sm" style="font-size:11px;padding:4px 8px;color:var(--red)" onclick="gddClearImage(${i}, '${esc(f.key)}')">✕</button>` : ''}
            </div>`
         : '';
-      return `<div style="margin-bottom:6px"><div style="font-size:12px;color:var(--text2)">${esc(f.label)}</div>${ctl}${fileBtn}</div>`;
+      const isEmptyRequired = f.required && !String(val || '').trim();
+      const labelHtml = esc(f.label) + (f.required ? ' <span style="color:var(--red)" title="Обов\'язкове поле">*</span>' : '');
+      const wrapStyle = isEmptyRequired ? 'margin-bottom:6px;border:1px solid var(--red);border-radius:4px;padding:4px' : 'margin-bottom:6px';
+      return `<div style="${wrapStyle}"><div style="font-size:12px;color:var(--text2)">${labelHtml}</div>${ctl}${fileBtn}</div>`;
     }).join('');
     return `<details style="margin-bottom:4px;border:1px solid var(--border);border-radius:5px;padding:6px">
       <summary style="cursor:pointer;font-size:11px;color:var(--text)"><b>${esc(g)}</b> <span style="color:var(--text2)">(${groups[g].length})</span></summary>
@@ -1672,14 +1778,32 @@ function gddOpenPanel(i) {
        </div>` : '';
 
   panel.innerHTML = `<div class="card" style="border-color:var(--accent);margin-top:10px">
-    <div class="card-title">🎛 Поля графіки «${esc(overlay.name)}»</div>
+    <div class="card-title">🎛 Поля графіки «${esc(overlay.displayName || overlay.name)}»</div>
+    <div style="display:flex;align-items:center;gap:6px;margin:4px 0 8px">
+      <span style="font-size:11px;color:var(--text2)">🏷 Категорія:</span>
+      <input type="text" value="${esc(overlay.category || '')}" placeholder="напр. Довіра Богу (серія проповідей)"
+             onchange="setHtmlOverlayCategoryInline(${i}, this.value)"
+             style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;color:var(--text);font-size:11px;outline:none">
+    </div>
     ${offlineWarn}
     <div class="card-sub">Зміни застосовуються <b>наживо</b> — графіка не перезавантажується, таймер не збивається.</div>
     <div style="display:flex;gap:4px;flex-wrap:wrap;margin:8px 0">
       <button class="btn btn-success btn-sm" onclick="gddPlay(${i})">▶ Показати</button>
       <button class="btn btn-primary btn-sm" onclick="gddLiveUpdate(${i})">🔄 Оновити наживо</button>
-      <button class="btn btn-ghost btn-sm" onclick="gddStop()">⏹ Прибрати</button>
+      <button class="btn btn-ghost btn-sm" onclick="gddStop(${i})">⏹ Прибрати</button>
       <button class="btn btn-ghost btn-sm" onclick="gddResetFields(${i})">↺ Скинути поля</button>
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:8px;margin-bottom:8px">
+      <div style="font-size:11px;color:var(--text2);margin-bottom:5px">📁 Пресети — кілька заповнень для цього ж файлу (напр. «Ранок»/«Вечір»):</div>
+      ${(gddPresets[i] || []).length > 5 ? `<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 7px;margin-bottom:4px" onclick="gddFilterPresets(${i})">🔍 Знайти пресет</button>` : ''}
+      <div id="gddPresetChips${i}" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+        ${(gddPresets[i] || []).map((p, pi) => `
+          <span data-preset-name="${esc(p.name.toLowerCase())}" style="display:inline-flex;align-items:center;gap:2px;background:var(--panel2);border-radius:5px;padding:2px 2px 2px 8px">
+            <button class="btn btn-ghost btn-sm" style="font-size:11px;padding:3px 6px" onclick="gddLoadPreset(${i},${pi})">📂 ${esc(p.name)}</button>
+            <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:3px 5px;color:var(--red)" onclick="gddDeletePreset(${i},${pi})" title="Видалити пресет">✕</button>
+          </span>`).join('')}
+        <button class="btn btn-ghost btn-sm" style="font-size:11px;padding:4px 8px" onclick="gddSavePreset(${i})">💾 Зберегти як пресет</button>
+      </div>
     </div>
     <div style="max-height:340px;overflow-y:auto">${rows}</div>
   </div>`;
@@ -1755,6 +1879,31 @@ function loadGddParams() {
     });
   } catch (e) {}
 }
+// Пресети — той самий підхід збереження за overlay.name (не за індексом
+// масиву), щоб пережити перезавантаження файлів у іншому порядку.
+function saveGddPresets() {
+  try {
+    const out = {};
+    Object.keys(gddPresets || {}).forEach(idx => {
+      const ov = (typeof htmlOverlays !== 'undefined') ? htmlOverlays[idx] : null;
+      if (ov && ov.name && gddPresets[idx] && gddPresets[idx].length) out[ov.name] = gddPresets[idx];
+    });
+    if (typeof bigStoreSet === 'function') bigStoreSet('church_gdd_presets', JSON.stringify(out));
+    else localStorage.setItem('church_gdd_presets', JSON.stringify(out));
+  } catch (e) {
+    notify('⚠️ Пресети не збереглись між запусками (замало місця)');
+  }
+}
+function loadGddPresets() {
+  try {
+    const raw = (typeof bigStoreGet === 'function') ? bigStoreGet('church_gdd_presets') : localStorage.getItem('church_gdd_presets');
+    if (!raw) return;
+    const byName = JSON.parse(raw);
+    (typeof htmlOverlays !== 'undefined' ? htmlOverlays : []).forEach((ov, idx) => {
+      if (ov && ov.name && byName[ov.name]) gddPresets[idx] = byName[ov.name];
+    });
+  } catch (e) {}
+}
 function gddClearImage(i, key) {
   if (typeof gddParams === 'undefined' || !gddParams[i]) return;
   gddParams[i][key] = '';
@@ -1777,6 +1926,20 @@ function gddFieldChange(i, el) {
 function gddLiveUpdate(i) {
   if (!window.electronAPI || !window.electronAPI.gddCommand) return;
   const data = (typeof gddParams !== 'undefined' && gddParams[i]) ? gddParams[i] : {};
+  // Оновлюємо ЛИШЕ ті виходи, де САМЕ ЦЯ графіка зараз в ефірі (htmlLiveMap) —
+  // а не всі 4 підряд. Інакше, коли на різних виходах одночасно показані
+  // РІЗНІ GDD-графіки (тепер можливо — «показати на конкретний вихід»),
+  // редагування полів однієї могло тихо змінити текст на іншій, якщо в них
+  // випадково збігається назва поля (напр. обидві мають "title").
+  if (typeof htmlLiveMap !== 'undefined' && typeof OUT_KIND !== 'undefined') {
+    var sentAny = false;
+    [1, 2, 3, 4].forEach(function(n) {
+      if (htmlLiveMap[n] === i) { window.electronAPI.gddCommand(OUT_KIND[n], 'update', data); sentAny = true; }
+    });
+    if (sentAny) notify('🔄 Графіку оновлено');
+    return;
+  }
+  // Фолбек (якщо htmlLiveMap/OUT_KIND недоступні з якоїсь причини) — стара поведінка.
   window.electronAPI.gddCommand(null, 'update', data);
   notify('🔄 Графіку оновлено');
 }
@@ -1785,10 +1948,30 @@ const gddLiveUpdateDebounced = (function() {
   return function(i) { clearTimeout(t); t = setTimeout(() => gddLiveUpdate(i), 250); };
 })();
 
+// Перелік обов'язкових полів, які досі порожні — попереджаємо, але НЕ
+// блокуємо показ (оператор може мати термінову причину показати як є).
+function gddCheckRequired(i) {
+  const overlay = (typeof htmlOverlays !== 'undefined') ? htmlOverlays[i] : null;
+  if (!overlay || typeof gddSchema !== 'function') return [];
+  const fields = gddSchema(overlay.content);
+  const saved = (typeof gddParams !== 'undefined' && gddParams[i]) ? gddParams[i] : {};
+  return fields.filter(f => f.required && !String((saved[f.key] !== undefined ? saved[f.key] : f.def) || '').trim()).map(f => f.label);
+}
 function gddPlay(i) {
+  const missing = gddCheckRequired(i);
+  if (missing.length) notify('⚠️ Порожні обов\'язкові поля: ' + missing.join(', '));
   if (typeof sendHTMLOverlay === 'function') sendHTMLOverlay(i); // вшиває бутстрап і шле на вихід
 }
-function gddStop() {
+function gddStop(i) {
+  // Прибираємо ЛИШЕ з тих виходів, де САМЕ ЦЯ графіка зараз показана — а не
+  // з усіх 4 підряд (це стерло б і щось ІНШЕ, легітимно показане деінде).
+  if (typeof htmlLiveMap !== 'undefined' && typeof clearHTMLOverlayOutput === 'function' && i != null) {
+    var cleared = false;
+    [1, 2, 3, 4].forEach(function(n) { if (htmlLiveMap[n] === i) { clearHTMLOverlayOutput(n); cleared = true; } });
+    if (cleared) return;
+  }
+  // Фолбек: індекс невідомий, або графіка ніде не позначена активною —
+  // стара поведінка (глобальний стоп), про всяк випадок.
   if (window.electronAPI && window.electronAPI.gddCommand) window.electronAPI.gddCommand(null, 'stop', {});
   notify('⏹ Графіку прибрано');
 }
@@ -1798,6 +1981,70 @@ function gddResetFields(i) {
   gddParams[i] = gddDefaults(overlay.content);
   gddOpenPanel(i);
   gddLiveUpdate(i);
+}
+// Зберігає ПОТОЧНІ заповнені поля як новий іменований пресет (напр. «Ранок»)
+// — на відміну від gddParams[i] (лише один набір, перезаписується),
+// пресетів може бути скільки завгодно на один файл.
+// Пошук серед пресетів — лише коли їх багато (>5). Фільтруємо напряму через
+// DOM (ховаємо/показуємо вже наявні "чіпи"), а НЕ перебудовуємо всю панель —
+// вона й так перемальовується на кожен символ поля вводу, тож звичайний
+// текстовий пошук зі своїм полем тут ризикував би тим самим «вилітанням
+// фокуса», що ми вже виправляли для Оголошень.
+function gddFilterPresets(i) {
+  pv2Prompt('Знайти пресет за назвою:', '', function(q) {
+    if (q === null) return;
+    const box = document.getElementById('gddPresetChips' + i);
+    if (!box) return;
+    const needle = q.trim().toLowerCase();
+    let shown = 0;
+    box.querySelectorAll('[data-preset-name]').forEach(function(el) {
+      const match = !needle || el.getAttribute('data-preset-name').indexOf(needle) > -1;
+      el.style.display = match ? '' : 'none';
+      if (match) shown++;
+    });
+    notify(needle ? '🔍 Знайдено: ' + shown : '🔍 Показано всі пресети');
+  });
+}
+function gddSavePreset(i) {
+  const overlay = (typeof htmlOverlays !== 'undefined') ? htmlOverlays[i] : null;
+  if (!overlay || typeof gddParams === 'undefined') return;
+  pv2Prompt('Назва пресету (напр. «Ранок», «Вечір»):', '', function(name) {
+    if (name === null) return;
+    if (!name.trim()) { notify('⚠️ Назва не може бути порожньою'); return; }
+    name = name.trim();
+    gddPresets[i] = gddPresets[i] || [];
+    const existing = gddPresets[i].find(p => p.name === name);
+    const snapshot = JSON.parse(JSON.stringify(gddParams[i] || {}));
+    if (existing) {
+      existing.values = snapshot;
+      notify('💾 Пресет «' + name + '» оновлено');
+    } else {
+      gddPresets[i].push({ name: name, values: snapshot });
+      notify('💾 Пресет «' + name + '» збережено');
+    }
+    saveGddPresets();
+    gddOpenPanel(i);
+  });
+}
+// Завантажує збережений пресет — замінює поточні gddParams[i] значеннями
+// пресету й одразу оновлює живий екран (якщо графіка зараз в ефірі).
+function gddLoadPreset(i, presetIdx) {
+  const overlay = (typeof htmlOverlays !== 'undefined') ? htmlOverlays[i] : null;
+  const preset = gddPresets[i] && gddPresets[i][presetIdx];
+  if (!overlay || !preset) return;
+  gddParams[i] = JSON.parse(JSON.stringify(preset.values));
+  saveGddParams();
+  gddOpenPanel(i);
+  gddLiveUpdate(i);
+  notify('📂 Пресет «' + preset.name + '» завантажено');
+}
+function gddDeletePreset(i, presetIdx) {
+  const preset = gddPresets[i] && gddPresets[i][presetIdx];
+  if (!preset) return;
+  gddPresets[i].splice(presetIdx, 1);
+  saveGddPresets();
+  gddOpenPanel(i);
+  notify('🗑 Пресет «' + preset.name + '» видалено');
 }
 
 
