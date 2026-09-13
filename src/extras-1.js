@@ -348,7 +348,7 @@ function sendHTMLToOutputN(n, html, label) {
   // extras-2.js — цей адресний шлях на конкретний вихід той хук не
   // проходить, тож без цього виклику «на вихід N» (H2R/Медіа/Таймер) не
   // потрапляло в «Журнал ефіру». Знайдено рев'ю коду.
-  if (typeof recordStat === 'function') recordStat('html', label);
+  if (typeof recordStat === 'function') recordStat('html', label, n);
   var myGen = _outSendGen[n];
   overlayPath(html).then(filePath => {
     // Поки готувався HTML, вихід очистили (чи послали туди щось інше) —
@@ -376,6 +376,20 @@ function pv2CloseOutput(n) {
     state.outputStates[n].open = false;
     pv2RenderOutputsCard();
   }).catch(() => {});
+}
+// «Закрити всі виходи» одним кліком — раніше доводилось тиснути «Закрити»
+// по черзі 4 рази (напр. в кінці служби чи щоб прибрати забуті відкриті
+// виходи). Питаємо підтвердження, як і інші небезпечні дії (та сама
+// свастика confirmDanger, що й у clearLive) — закриття не можна скасувати
+// одним кліком назад.
+function pv2CloseAllOutputs() {
+  const open = [1, 2, 3, 4].filter(n => state.outputStates[n] && state.outputStates[n].open);
+  if (!open.length) { notify('Усі виходи й так закриті'); return; }
+  if (state.ui && state.ui.confirmDanger !== false) {
+    if (!confirm('Закрити всі відкриті виходи (' + open.map(n => OUT_NAME[n]).join(', ') + ')?')) return;
+  }
+  open.forEach(n => pv2CloseOutput(n));
+  notify('✕ Усі виходи закрито');
 }
 // Тумблер відкрити/закрити для БУДЬ-ЯКОГО виходу за номером — те саме, що
 // toggleProjector()/toggleStream() роблять для 1/2 (F1/F2), але для решти.
@@ -430,6 +444,19 @@ function pv2RenderOutputsCard() {
       dot.title = open ? 'Відкрито' : 'Закрито';
     }
   }
+  updateSendBarOutputsBadge();
+}
+// Бейдж «N/4 відкрито» на постійній нижній панелі — видно з будь-якої
+// вкладки, не лише з «Виходів». Помаранчевий/сірий, коли не всі 4 відкриті —
+// це нормальний робочий стан (не помилка), просто нагадування, скільки
+// зараз реально видно оператору в Dock/списку вікон.
+function updateSendBarOutputsBadge() {
+  const el = document.getElementById('sendBarOutputsBadge');
+  if (!el) return;
+  const open = [1, 2, 3, 4].filter(n => state.outputStates[n] && state.outputStates[n].open);
+  el.textContent = open.length + '/4 відкрито';
+  el.style.color = open.length === 4 ? 'var(--green)' : (open.length === 0 ? 'var(--red)' : 'var(--text2)');
+  el.title = (open.length ? open.map(n => OUT_NAME[n]).join(', ') : 'Жодного виходу не відкрито') + ' — клік відкриває вкладку «Виходи»';
 }
 
 // ---- Стан розширених функцій. Пісні/оголошення/вибір/таймер ----
@@ -2274,7 +2301,11 @@ el.textContent = (i === 1 ? '📺' : i === 2 ? '🎥' : '🖥') + i + ': ' + (s.
 
 // ---- Збір статистики: обгортаємо doSend / doSendHTML додатку ----
 // (у прототипі статистика тільки відображалась, але не збиралась — виправлено)
-function recordStat(kind, name) {
+// output: номер виходу (1-4), коли відомо, куди саме пішов запис (адресна
+// відправка через sendHTMLToOutputN) — 'all', коли на всі дзеркальні
+// (doSend/doSendHTML), або відсутній/null, коли невідомо. Дозволяє «Журналу
+// ефіру» показувати й фільтрувати за виходом, а не лише хронологію.
+function recordStat(kind, name, output) {
   try {
     const sd = state.statsData;
     sd.totalOutputs = (sd.totalOutputs || 0) + 1;
@@ -2286,7 +2317,7 @@ function recordStat(kind, name) {
       if (kind === 'bible') { sd.bibleUsage = sd.bibleUsage || {}; sd.bibleUsage[name] = (sd.bibleUsage[name] || 0) + 1; }
     }
     sd.log = sd.log || [];
-    sd.log.push({t: Date.now(), kind: kind, name: name || ''});
+    sd.log.push({t: Date.now(), kind: kind, name: name || '', output: output || null});
     if (sd.log.length > 5000) sd.log = sd.log.slice(-5000);   // ~рік щотижневих служб для великої церкви
     saveStatistics();
     if (isActive('statistics')) updateStatistics();

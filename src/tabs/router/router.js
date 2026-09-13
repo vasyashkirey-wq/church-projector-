@@ -155,6 +155,7 @@ function renderRouterTab() {
 
     <div class="card"><div class="card-title">Швидкі дії</div>
       <button class="btn btn-primary btn-sm" onclick="pv2OpenOutput(1);pv2OpenOutput(2)">⚡ Відкрити проектор + трансляцію</button>
+      <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="pv2CloseAllOutputs()">✕ Закрити всі виходи</button>
       <button class="btn btn-ghost btn-sm" onclick="for(let i=1;i<=4;i++) setOutputRoute(i,'mirror')">Усі → дзеркало</button>
       <button class="btn btn-ghost btn-sm" onclick="for(let i=1;i<=4;i++) setOutputRoute(i,'graphics')">Усі → графіка</button>
       <button class="btn btn-ghost btn-sm" onclick="for(let i=1;i<=4;i++) pv2ClearOutput(i)">🚫 Очистити всі</button>

@@ -1913,6 +1913,13 @@ body.light-theme.modern-ui .tab-btn.active { background:linear-gradient(135deg,r
            видно й клікабельно з будь-якої вкладки. -->
       <button class="btn btn-success" id="sendBarGoLive" onclick="goLive()" title="Показати те, що зараз у прев'ю, на реальному екрані">🔴 В ЕФІР</button>
       <button class="btn btn-danger" onclick="clearProjector()">✕ Очистити</button>
+      <!-- Скільки з 4 виходів зараз відкрито — видно з БУДЬ-ЯКОЇ вкладки, а
+           не лише з «Виходів». Додано після живої плутанини: оператор
+           надіслав пісню на 2 виходи, а в Dock побачив усі 4 відкриті вікна
+           й не міг зрозуміти, звідки вони — бейдж одразу відповідає на
+           «скільки зараз відкрито», клік веде у «Виходи» перевірити які саме. -->
+      <span id="sendBarOutputsBadge" onclick="showTab('router')" title="Скільки виходів зараз відкрито — клік відкриває вкладку «Виходи»"
+            style="cursor:pointer;font-size:11px;color:var(--text2);white-space:nowrap;padding:4px 8px;border:1px solid var(--border);border-radius:6px">4 виходи</span>
     </div>
   </div>
 </div>

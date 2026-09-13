@@ -385,7 +385,8 @@ function pv2AllMirror() {
       // (а не ref, який містить суфікс слайда «(2/2)» і ламав «недавні пісні»).
       recordStat(isBible ? 'bible' : 'song',
         isBible ? ref
-                : ((typeof selectedSong !== 'undefined' && selectedSong) ? selectedSong.title : (ref || '')));
+                : ((typeof selectedSong !== 'undefined' && selectedSong) ? selectedSong.title : (ref || '')),
+        'all');
       if (pv2AllMirror()) { orig(text, ref); return; }   // всі однакові — стара швидка гілка
       orig(text, ref);            // оновлює прев'ю + шле лише на «дзеркальні» виходи
       // виходи з власним маршрутом отримують свій контент. rawText — справжній
@@ -403,7 +404,7 @@ function pv2AllMirror() {
   if (typeof doSendHTML === 'function' && !doSendHTML._pv2) {
     const origH = doSendHTML;
     window.doSendHTML = function(html, label) {
-      recordStat('html', label);
+      recordStat('html', label, 'all');
       origH(html, label);
       if (pv2AllMirror()) return;
       pv2LastContent = { kind: 'htmlraw', html: html, label: label };

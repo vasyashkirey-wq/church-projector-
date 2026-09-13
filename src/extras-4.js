@@ -935,7 +935,11 @@ function saveScenePreset() {
         fingerprint: (state.outputBind && state.outputBind[OUT_KIND[n]]) || null
       };
     }
-    state.scenePresets.push({ id: 'scene_' + Date.now(), name: name, outputs: outputs });
+    // Які виходи зараз відкриті — окремо від route/chroma/bg, щоб застосування
+    // сцени могло запропонувати закрити зайві (напр. «Репетиція» на 1-2 виходи
+    // після «Служби з графікою» на всі 4 лишала 3/4 мовчки висіти відкритими).
+    const openOutputs = [1, 2, 3, 4].filter(n => state.outputStates[n] && state.outputStates[n].open);
+    state.scenePresets.push({ id: 'scene_' + Date.now(), name: name, outputs: outputs, openOutputs: openOutputs });
     saveJSON(STORAGE_KEYS.scenePresets, state.scenePresets);
     markDirty('router');
     notify('🎬 Сцену «' + name + '» збережено (усі 4 виходи)');
@@ -970,6 +974,24 @@ function applyScenePreset(id) {
   saveJSON(STORAGE_KEYS.bg, state.outputBg);
   markDirty('router');
   notify('🎬 Сцена «' + p.name + '» застосована на всі 4 виходи');
+
+  // Сцена явно пам'ятає, які виходи мали бути відкриті (старі сцени, збережені
+  // до цього фіксу, openOutputs не мають — undefined, нічого не чіпаємо, щоб
+  // не закривати виходи всупереч звичці оператора). Ті, що пресет очікує
+  // відкритими, — відкриваємо самі; ті, що зайві й зараз відкриті, — питаємо.
+  if (Array.isArray(p.openOutputs)) {
+    p.openOutputs.forEach(n => {
+      if (!state.outputStates[n] || !state.outputStates[n].open) pv2OpenOutput(n);
+    });
+    const extra = [1, 2, 3, 4].filter(n =>
+      p.openOutputs.indexOf(n) < 0 && state.outputStates[n] && state.outputStates[n].open);
+    if (extra.length) {
+      const names = extra.map(n => OUT_NAME[n]).join(', ');
+      if (confirm('Сцена «' + p.name + '» не використовує: ' + names + '. Закрити їх?')) {
+        extra.forEach(n => pv2CloseOutput(n));
+      }
+    }
+  }
 }
 function deleteScenePreset(id) {
   const p = (state.scenePresets || []).find(x => x.id === id);

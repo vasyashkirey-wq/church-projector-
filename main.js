@@ -24,6 +24,19 @@ const OUTPUT_TITLES = { projector: 'Проектор (Вихід 1)', stream: '�
 let pendingDisplay = null;
 let wsServer = null;
 let httpServer = null;
+// Справжнє завершення застосунку (Cmd+Q/Alt+F4 на всій програмі, а не на
+// одному вихідному вікні) — 'close' на output-вікнах у цей момент теж
+// спрацював би (Electron закриває решту вікон при виході), і без цього
+// прапорця діалог «закрити вихід з ефіром?» блокував би завершення роботи.
+let appIsQuitting = false;
+
+// Останній 'display'-контент, реально надісланий на кожен вихід (адресно чи
+// через дзеркало) — потрібно для двох речей: (1) при перевідкритті виходу
+// (закрився й відкрився знову) одразу повернути те, що там було, а не чорний
+// екран; (2) при закритті вікна вирішити, чи це «щось в ефірі» (варто
+// перепитати оператора) чи порожньо/blackout (закриваємо мовчки). Не
+// персистентне — скидається з перезапуском програми, як і сам ефір.
+const lastContentByKind = { projector: null, stream: null, out3: null, out4: null };
 
 // ============================================================
 // БЕЗПЕКА ВІКОН, ЩО ПОКАЗУЮТЬ КОНТЕНТ (output/Stage/identify)
@@ -90,7 +103,7 @@ function createMainWindow() {
     // лишались відкритими без панелі керування, і другий запуск програми
     // («вже запущено — фокусуємо») не міг створити нове головне вікно.
     OUTPUT_KINDS.forEach(k => {
-      if (outputWins[k] && !outputWins[k].isDestroyed()) outputWins[k].close();
+      if (outputWins[k] && !outputWins[k].isDestroyed()) { outputWins[k].__intentionalClose = true; outputWins[k].close(); }
     });
     if (stageWin && !stageWin.isDestroyed()) stageWin.close();
     stopRemoteServer();
@@ -320,6 +333,48 @@ function createOutputWindow(kind, callback) {
         broadcastDisplay(pendingDisplay);
         pendingDisplay = null;
       }, 200);
+    } else if (lastContentByKind[kind]) {
+      // ВІДНОВЛЕННЯ ПРИ ПЕРЕВІДКРИТТІ: вихід закрився (монітор відвалився,
+      // випадковий Cmd+W/Alt+F4, чи оператор сам закрив і передумав) і
+      // відкрився знову — раніше показував чорний екран, доки не надішлеш
+      // щось нове. lastContentByKind живе, поки живий процес (не per-вікно),
+      // тож тут завжди останнє, що реально бачив ЦЕЙ вихід — і 'clear'/
+      // blackout сюди теж потрапляють, тож порожній вихід так порожнім і
+      // лишиться. pendingDisplay (гілка вище) — свіжіший за визначенням,
+      // тож коли обидва є, він у пріоритеті.
+      setTimeout(() => { if (!win.isDestroyed()) win.webContents.send('display', lastContentByKind[kind]); }, 250);
+    }
+  });
+
+  // ПОПЕРЕДЖЕННЯ ПРИ НЕОЧІКУВАНОМУ ЗАКРИТТІ (Cmd+W/Alt+F4 з фокусом саме на
+  // цьому вікні — вихідні вікна безрамкові, тож звичайного хрестика на них
+  // нема, але клавіатурне закриття лишається можливим). Явне закриття з
+  // самої програми ставить win.__intentionalClose = true заздалегідь (див.
+  // обробник IPC «close-output» нижче) і питання пропускає. Питаємо лише якщо
+  // на виході зараз реально щось в ефірі (не 'clear'/blackout) — порожній
+  // вихід можна закривати мовчки.
+  win.on('close', (e) => {
+    if (win.__intentionalClose || appIsQuitting) return;
+    const last = lastContentByKind[kind];
+    const isLive = !!(last && last.type && last.type !== 'clear');
+    if (!isLive) return;
+    e.preventDefault();
+    try {
+      const { dialog } = require('electron');
+      const choice = dialog.showMessageBoxSync(win, {
+        type: 'warning',
+        buttons: ['Закрити вихід', 'Скасувати'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Закрити вихід?',
+        message: `На «${OUTPUT_TITLES[kind]}» зараз щось в ефірі. Закрити вікно?`
+      });
+      if (choice === 0) { win.__intentionalClose = true; win.close(); }
+    } catch (err) {
+      // Діалог не вдалось показати — не блокуємо оператора назавжди,
+      // закриваємо як звичайно.
+      win.__intentionalClose = true;
+      win.close();
     }
   });
 
@@ -376,6 +431,7 @@ function findDisplayByFingerprint(fp) {
 // Шле на ВСІ відкриті виходи, ігноруючи маршрути (для очищення екранів)
 function broadcastAllOutputs(data) {
   OUTPUT_KINDS.forEach(k => {
+    lastContentByKind[k] = data;
     const w = outputWins[k];
     if (w && !w.isDestroyed() && !w.webContents.isLoading()) w.webContents.send('display', data);
   });
@@ -384,6 +440,7 @@ function broadcastAllOutputs(data) {
 function broadcastDisplay(data) {
   OUTPUT_KINDS.forEach(k => {
     if (!outputConfig.mirrorKinds.includes(k)) return; // має власний маршрут
+    lastContentByKind[k] = data;
     const w = outputWins[k];
     if (w && !w.isDestroyed() && !w.webContents.isLoading()) w.webContents.send('display', data);
   });
@@ -1149,7 +1206,7 @@ ipcMain.handle('open-projector', () => {
   return new Promise((resolve) => createOutputWindow('projector', () => resolve('opened')));
 });
 ipcMain.handle('close-projector', () => {
-  if (outputWins.projector && !outputWins.projector.isDestroyed()) outputWins.projector.close();
+  if (outputWins.projector && !outputWins.projector.isDestroyed()) { outputWins.projector.__intentionalClose = true; outputWins.projector.close(); }
   return 'closed';
 });
 ipcMain.handle('projector-status', () => {
@@ -1160,7 +1217,7 @@ ipcMain.handle('open-stream', () => {
   return new Promise((resolve) => createOutputWindow('stream', () => resolve('opened')));
 });
 ipcMain.handle('close-stream', () => {
-  if (outputWins.stream && !outputWins.stream.isDestroyed()) outputWins.stream.close();
+  if (outputWins.stream && !outputWins.stream.isDestroyed()) { outputWins.stream.__intentionalClose = true; outputWins.stream.close(); }
   return 'closed';
 });
 ipcMain.handle('stream-status', () => {
@@ -1215,7 +1272,7 @@ ipcMain.handle('set-output-display', (event, { kind, displayId }) => {
     // зроблений тут не переживе перезапуск.
     outputConfig[kind + 'Fingerprint'] = null;
     const w = outputWins[kind];
-    if (w && !w.isDestroyed()) w.close();
+    if (w && !w.isDestroyed()) { w.__intentionalClose = true; w.close(); }
     return outputConfig;
   }
 
@@ -1343,6 +1400,11 @@ ipcMain.handle('open-output', (event, kind) => {
 
 ipcMain.handle('close-output', (event, kind) => {
   const w = outputWins[kind];
+  // Явне закриття з самої програми (кнопка «Закрити»/«Закрити всі виходи») —
+  // не питаємо підтвердження, навіть якщо там зараз щось в ефірі. Питання
+  // «закрити вихід з ефіром?» (див. createOutputWindow) — лише для
+  // НЕОЧІКУВАНОГО закриття вікна напряму (Cmd+W/Alt+F4), не для цього шляху.
+  if (w) w.__intentionalClose = true;
   if (w && !w.isDestroyed()) w.close();
   return 'closed';
 });
@@ -1365,6 +1427,7 @@ ipcMain.handle('outputs-status', () => {
 ipcMain.handle('send-to-output', (event, { kind, type, payload }) => {
   const w = outputWins[kind];
   const data = { type, payload };
+  lastContentByKind[kind] = data;
   if (w && !w.isDestroyed() && !w.webContents.isLoading()) {
     w.webContents.send('display', data);
     return 'sent';
@@ -2785,6 +2848,7 @@ function maybeFinishQuit() {
 }
 
 app.on('before-quit', (event) => {
+  appIsQuitting = true;
   if (pendingDataWrites > 0 && !quitPending) {
     // Даємо записам шанс дописатись — але не тримаємо застосунок відкритим
     // вічно, якщо диск раптом "завис" (запобіжний тайм-аут).

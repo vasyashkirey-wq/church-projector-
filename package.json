@@ -22,6 +22,9 @@
     "test-projector-only-default": "node projector-only-default-test.js",
     "test-chroma-song": "node chroma-song-test.js",
     "test-font-lock": "node font-lock-test.js",
+    "test-font-max": "node font-max-test.js",
+    "test-outputs-improve": "node outputs-improve-test.js",
+    "test-scene-preset-outputs": "node scene-preset-outputs-test.js",
     "test-font-max": "node font-max-test.js"
   },
   "build": {

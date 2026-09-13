@@ -2144,6 +2144,57 @@ head('Сторож стабільного розміру шрифту (set-fit-g
   }
 })();
 
+head('Виходи: закрити всі / бейдж / відновлення контенту / сцена');
+(function () {
+  const m = SRC.main, ex = SRC.extras, ix = SRC.index, rt = read('src/tabs/router/router.js');
+  if (/function pv2CloseAllOutputs\(\)/.test(ex) && /onclick="pv2CloseAllOutputs\(\)"/.test(rt))
+    ok('«Закрити всі виходи»: функція визначена й підключена кнопкою у «Виходах»');
+  else bad('«Закрити всі виходи» не знайдено (функція чи кнопка)');
+
+  if (/id="sendBarOutputsBadge"/.test(ix) && /function updateSendBarOutputsBadge\(\)/.test(ex) && /updateSendBarOutputsBadge\(\);/.test(ex))
+    ok('бейдж «N/4 відкрито» на send-bar є в DOM і оновлюється з pv2RenderOutputsCard');
+  else bad('бейдж кількості відкритих виходів не знайдено або не підключено');
+
+  // Відновлення контенту при перевідкритті: lastContentByKind має писатись у
+  // send-to-output/broadcastDisplay/broadcastAllOutputs і читатись у
+  // createOutputWindow (гілка "else if" — ПІСЛЯ гілки pendingDisplay, інакше
+  // застаріший контент міг би перекрити щойно надісланий).
+  const restoreWrite = ['lastContentByKind[kind] = data;', 'lastContentByKind[k] = data;'];
+  const missingWrite = restoreWrite.filter(s => !m.includes(s));
+  if (!missingWrite.length) ok('lastContentByKind пишеться і в адресній відправці, і в broadcastDisplay/broadcastAllOutputs');
+  else bad('lastContentByKind НЕ пишеться в: ' + missingWrite.join(', '));
+  if (/if \(pendingDisplay\) \{[\s\S]{0,900}\} else if \(lastContentByKind\[kind\]\) \{[\s\S]{0,900}win\.webContents\.send\('display', lastContentByKind\[kind\]\)/.test(m))
+    ok('відновлення контенту на перевідкритому виході: pendingDisplay (свіжіший) у пріоритеті над lastContentByKind');
+  else bad('відновлення контенту при перевідкритті не знайдено або pendingDisplay втратив пріоритет');
+
+  // Підтвердження при НЕОЧІКУВАНОМУ закритті: інтенційні шляхи (close-output,
+  // close-projector, close-stream, закриття всіх при виході з mainWin, вихід
+  // із застосунку) МАЮТЬ ставити __intentionalClose, інакше діалог заважав би
+  // штатному закриттю або зависав би на виході з програми.
+  const intentionalSites = [
+    "if (w) w.__intentionalClose = true;",
+    "outputWins.projector.__intentionalClose = true;",
+    "outputWins.stream.__intentionalClose = true;",
+    "outputWins[k].__intentionalClose = true;"
+  ];
+  const missingIntentional = intentionalSites.filter(s => !m.includes(s));
+  if (!missingIntentional.length) ok('усі штатні шляхи закриття виходу позначають __intentionalClose (діалог не заважає)');
+  else bad('штатне закриття НЕ позначає __intentionalClose: ' + missingIntentional.join(', '));
+  if (/appIsQuitting = true;/.test(m) && /win\.on\('close', \(e\) => \{\s*if \(win\.__intentionalClose \|\| appIsQuitting\) return;/.test(m))
+    ok('вихід із застосунку (appIsQuitting) теж пропускає діалог — Cmd+Q не зависне');
+  else bad('appIsQuitting не перевіряється в обробнику close — вихід із програми міг би зависнути на діалозі');
+
+  // Сцена-пресет: openOutputs зберігається і читається (застосування само
+  // відкриває потрібні й пропонує закрити зайві) — старі сцени без
+  // openOutputs (undefined) не повинні чіпати нічого.
+  if (/const openOutputs = \[1, 2, 3, 4\]\.filter/.test(ex) && /openOutputs: openOutputs \}\);/.test(ex))
+    ok('saveScenePreset зберігає openOutputs (які виходи мали бути відкриті)');
+  else bad('saveScenePreset не зберігає openOutputs — застосування сцени не зможе запропонувати закрити зайві');
+  if (/if \(Array\.isArray\(p\.openOutputs\)\) \{/.test(ex) && /Закрити їх\?/.test(ex))
+    ok('applyScenePreset відкриває потрібні й питає про зайві виходи (тільки коли openOutputs — масив)');
+  else bad('applyScenePreset не обробляє openOutputs — стара поведінка (undefined) мала лишитись незмінною для старих сцен');
+})();
+
 head('Вбудовані шаблони графіки (GDD) — файли + підключення');
 (function () {
   const fs2 = require('fs');

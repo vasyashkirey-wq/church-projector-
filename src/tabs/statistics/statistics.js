@@ -11,11 +11,26 @@
 
 function renderStatisticsTab() {
 return `<div class="grid2"><div> <div class="card"><div class="card-title">📊 Статистика</div> <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;margin-bottom:3px"><div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Всього</div><div id="statTotalOutputs" style="font-size:12px;font-weight:700;color:var(--accent)">0</div></div><div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Найчастіше</div><div id="statMostUsed" style="font-size:12px;font-weight:700;color:var(--gold)">—</div></div><div style="background:var(--bg);border-radius:2px;padding:2px;text-align:center"><div style="font-size:11px;color:var(--text2)">Активність</div><div id="statActivity" style="font-size:12px;font-weight:700;color:var(--green)">0%</div></div></div> <div class="flex" style="margin-bottom:2px"><button class="btn btn-ghost btn-sm" onclick="updateStatistics()">🔄</button><button class="btn btn-ghost btn-sm" onclick="exportStatisticsExcel()">⬇ Excel</button><select id="statPeriod" style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:1px 2px;color:var(--text);font-size:11px;outline:none" onchange="updateStatistics()"><option value="day">День</option><option value="week">Тиждень</option><option value="month">Місяць</option><option value="year">Рік</option></select></div> <div id="statChart" style="background:var(--bg);border-radius:2px;padding:3px;height:35px;display:flex;align-items:flex-end;gap:1px;justify-content:space-between"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:6px;background:var(--accent);border-radius:1px;opacity:0.3"></div><div style="font-size:11px;color:var(--text2)">Пн</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:12px;background:var(--accent);border-radius:1px;opacity:0.5"></div><div style="font-size:11px;color:var(--text2)">Вт</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:18px;background:var(--accent);border-radius:1px;opacity:0.7"></div><div style="font-size:11px;color:var(--text2)">Ср</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:24px;background:var(--accent);border-radius:1px;opacity:0.9"></div><div style="font-size:11px;color:var(--text2)">Чт</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:30px;background:var(--accent);border-radius:1px;opacity:1"></div><div style="font-size:11px;color:var(--text2)">Пт</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:18px;background:var(--gold);border-radius:1px;opacity:0.7"></div><div style="font-size:11px;color:var(--text2)">Сб</div></div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px"><div style="width:100%;height:8px;background:var(--gold);border-radius:1px;opacity:0.4"></div><div style="font-size:11px;color:var(--text2)">Нд</div></div></div> </div></div><div> <div class="card"><div class="card-title">🎵 Топ пісень</div><div id="statTopSongs"><p class="text-muted">Немає</p></div></div> <div class="card"><div class="card-title">📖 Топ віршів</div><div id="statTopBible"><p class="text-muted">Немає</p></div></div> </div></div>` +
-  `<div class="card" style="border-color:var(--accent)"><div class="card-title">📜 Журнал ефіру</div><div class="card-sub">Хронологічний список — що саме йшло на екран і коли (той самий період, що вибрано вище). Окремо від «Топ пісень» — тут можна відновити, що показувалось о такій-то хвилині.</div><div id="liveJournalList" style="margin-top:6px;max-height:260px;overflow-y:auto"><p class="text-muted">Немає</p></div><button class="btn btn-ghost btn-sm" style="margin-top:6px;color:var(--red)" onclick="clearLiveJournal()">🗑 Очистити журнал</button></div>`;
+  `<div class="card" style="border-color:var(--accent)"><div class="card-title">📜 Журнал ефіру</div><div class="card-sub">Хронологічний список — що саме йшло на екран і коли (той самий період, що вибрано вище). Окремо від «Топ пісень» — тут можна відновити, що показувалось о такій-то хвилині.</div>` +
+  `<div style="margin-top:6px"><select id="journalOutputFilter" onchange="renderLiveJournal()" style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:3px 6px;color:var(--text);font-size:11px;outline:none">` +
+    `<option value="">Усі виходи</option><option value="all">На всі (дзеркало)</option>` +
+    `<option value="1">Вихід 1</option><option value="2">Вихід 2</option><option value="3">Вихід 3</option><option value="4">Вихід 4</option>` +
+  `</select></div>` +
+  `<div id="liveJournalList" style="margin-top:6px;max-height:260px;overflow-y:auto"><p class="text-muted">Немає</p></div><button class="btn btn-ghost btn-sm" style="margin-top:6px;color:var(--red)" onclick="clearLiveJournal()">🗑 Очистити журнал</button></div>`;
 }
 
 function _journalIcon(kind) {
   return kind === 'song' ? '🎵' : kind === 'bible' ? '📖' : '📺';
+}
+// Мітка виходу для запису журналу: конкретний номер (адресна відправка),
+// «на всі» (дзеркало) чи нічого, якщо запис ще старий (до цього фіксу) і
+// output не збережено.
+function _journalOutputLabel(output) {
+  if (output === 'all') return 'на всі';
+  if (output === 1 || output === 2 || output === 3 || output === 4) {
+    return (typeof OUT_NAME !== 'undefined' && OUT_NAME[output]) ? OUT_NAME[output] : ('Вихід ' + output);
+  }
+  return '';
 }
 
 function renderLiveJournal() {
@@ -24,15 +39,23 @@ function renderLiveJournal() {
   const period = ($('#statPeriod') && $('#statPeriod').value) || 'month';
   const spanMs = period === 'day' ? 24 * 3600 * 1000 : period === 'week' ? 7 * 24 * 3600 * 1000 : period === 'year' ? 365 * 24 * 3600 * 1000 : 30 * 24 * 3600 * 1000;
   const cutoff = Date.now() - spanMs;
-  const entries = (state.statsData.log || []).filter(e => e.t >= cutoff).slice(-200).reverse();
+  const outputFilter = ($('#journalOutputFilter') && $('#journalOutputFilter').value) || '';
+  let entries = (state.statsData.log || []).filter(e => e.t >= cutoff);
+  if (outputFilter) {
+    const want = outputFilter === 'all' ? 'all' : parseInt(outputFilter, 10);
+    entries = entries.filter(e => e.output === want);
+  }
+  entries = entries.slice(-200).reverse();
   if (!entries.length) { el.innerHTML = '<p class="text-muted">Немає</p>'; return; }
   el.innerHTML = entries.map(e => {
     const d = new Date(e.t);
     const time = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    const outLbl = _journalOutputLabel(e.output);
     return `<div style="display:flex;gap:6px;padding:3px 0;border-bottom:1px solid var(--border);font-size:11px">` +
       `<span style="color:var(--text2);min-width:36px">${time}</span>` +
       `<span>${_journalIcon(e.kind)}</span>` +
       `<span style="color:var(--text);flex:1">${esc(e.name || '—')}</span>` +
+      (outLbl ? `<span style="color:var(--accent);font-size:10px;white-space:nowrap">${esc(outLbl)}</span>` : '') +
       `</div>`;
   }).join('');
 }
